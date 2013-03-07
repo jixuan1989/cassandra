@@ -20,6 +20,7 @@ package org.apache.cassandra.db.marshal;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.cql.jdbc.JdbcLong;
+import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 public class LongType extends AbstractType<Long>
@@ -93,5 +94,10 @@ public class LongType extends AbstractType<Long>
     {
         if (bytes.remaining() != 8 && bytes.remaining() != 0)
             throw new MarshalException(String.format("Expected 8 or 0 byte long (%d)", bytes.remaining()));
+    }
+
+    public CQL3Type asCQL3Type()
+    {
+        return CQL3Type.Native.BIGINT;
     }
 }

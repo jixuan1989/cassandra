@@ -27,7 +27,9 @@ import java.util.List;
 import java.util.concurrent.ExecutionException;
 
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
+import org.apache.cassandra.OrderedJUnit4ClassRunner;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.exceptions.ConfigurationException;
@@ -43,6 +45,7 @@ import static org.apache.cassandra.Util.column;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
+@RunWith(OrderedJUnit4ClassRunner.class)
 public class ScrubTest extends SchemaLoader
 {
     public String TABLE = "Keyspace1";
@@ -137,11 +140,9 @@ public class ScrubTest extends SchemaLoader
         Table table = Table.open(TABLE);
         ColumnFamilyStore cfs = table.getColumnFamilyStore(CF3);
 
-        RowMutation rm;
-        rm = new RowMutation(TABLE, ByteBufferUtil.bytes(1));
         ColumnFamily cf = ColumnFamily.create(TABLE, CF3);
         cf.delete(new DeletionInfo(0, 1)); // expired tombstone
-        rm.add(cf);
+        RowMutation rm = new RowMutation(TABLE, ByteBufferUtil.bytes(1), cf);
         rm.applyUnsafe();
         cfs.forceBlockingFlush();
 
@@ -227,12 +228,10 @@ public class ScrubTest extends SchemaLoader
         {
             String key = String.valueOf(i);
             // create a row and update the birthdate value, test that the index query fetches the new version
-            RowMutation rm;
-            rm = new RowMutation(TABLE, ByteBufferUtil.bytes(key));
             ColumnFamily cf = ColumnFamily.create(TABLE, CF);
             cf.addColumn(column("c1", "1", 1L));
             cf.addColumn(column("c2", "2", 1L));
-            rm.add(cf);
+            RowMutation rm = new RowMutation(TABLE, ByteBufferUtil.bytes(key), cf);
             rm.applyUnsafe();
         }
 

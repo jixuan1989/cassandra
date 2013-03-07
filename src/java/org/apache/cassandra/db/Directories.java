@@ -110,6 +110,7 @@ public class Directories
                 catch (FSError e) 
                 {
                     // don't just let the default exception handler do this, we need the create loop to continue
+                    logger.error("Failed to create {} directory", dir);
                     FileUtils.handleFSError(e);
                 }
             }
@@ -122,11 +123,11 @@ public class Directories
      * @param dataDirectory
      * @return SSTable location
      */
-    public File getLocationForDisk(File dataDirectory)
+    public File getLocationForDisk(DataDirectory dataDirectory)
     {
         for (File dir : sstableDirectories)
         {
-            if (FileUtils.getCanonicalPath(dir).startsWith(FileUtils.getCanonicalPath(dataDirectory)))
+            if (dir.getAbsolutePath().startsWith(dataDirectory.location.getAbsolutePath()))
                 return dir;
         }
         return null;
@@ -192,35 +193,45 @@ public class Directories
     }
 
     /**
-     * Find location which is capable of holding given {@code estimatedSize}.
-     * First it looks through for directory with no current task running and
-     * the most free space available.
-     * If no such directory is available, it just chose the one with the most
-     * free space available.
+     * Finds location which is capable of holding given {@code estimatedSize}.
+     * Picks a non-blacklisted directory with most free space and least current tasks.
      * If no directory can hold given {@code estimatedSize}, then returns null.
      *
      * @param estimatedSize estimated size you need to find location to fit
      * @return directory capable of given estimated size, or null if none found
      */
-    public static DataDirectory getLocationCapableOfSize(long estimatedSize)
+    public DataDirectory getLocationCapableOfSize(long estimatedSize)
     {
-        // sort by available disk space
-        SortedSet<DataDirectory> directories = ImmutableSortedSet.copyOf(dataFileLocations);
+        List<DataDirectory> candidates = new ArrayList<DataDirectory>();
 
-        // if there is disk with sufficient space and no activity running on it, then use it
-        for (DataDirectory directory : directories)
+        // pick directories with enough space and so that resulting sstable dirs aren't blacklisted for writes.
+        for (DataDirectory dataDir : dataFileLocations)
         {
-            long spaceAvailable = directory.getEstimatedAvailableSpace();
-            if (estimatedSize < spaceAvailable && directory.currentTasks.get() == 0)
-                return directory;
+            File sstableDir = getLocationForDisk(dataDir);
+
+            if (BlacklistedDirectories.isUnwritable(sstableDir))
+                continue;
+
+            // need a separate check for sstableDir itself - could be a mounted separate disk or SSD just for this CF.
+            if (dataDir.getEstimatedAvailableSpace() > estimatedSize && sstableDir.getUsableSpace() * 0.9 > estimatedSize)
+                candidates.add(dataDir);
         }
 
-        // if not, use the one that has largest free space
-        if (estimatedSize < directories.first().getEstimatedAvailableSpace())
-            return directories.first();
-        else
-            return null;
+        // sort directories by free space, in _descending_ order.
+        Collections.sort(candidates);
+
+        // sort directories by load, in _ascending_ order.
+        Collections.sort(candidates, new Comparator<DataDirectory>()
+        {
+            public int compare(DataDirectory a, DataDirectory b)
+            {
+                return a.currentTasks.get() - b.currentTasks.get();
+            }
+        });
+
+        return candidates.isEmpty() ? null : candidates.get(0);
     }
+
 
     public static File getSnapshotDirectory(Descriptor desc, String snapshotName)
     {
@@ -387,6 +398,7 @@ public class Directories
         }
     }
 
+    @Deprecated
     public File tryGetLeveledManifest()
     {
         for (File dir : sstableDirectories)
@@ -402,14 +414,7 @@ public class Directories
         return null;
     }
 
-    public File getOrCreateLeveledManifest()
-    {
-        File manifestFile = tryGetLeveledManifest();
-        if (manifestFile == null)
-            manifestFile = new File(sstableDirectories[0], cfname + LeveledManifest.EXTENSION);
-        return manifestFile;
-    }
-
+    @Deprecated
     public void snapshotLeveledManifest(String snapshotName)
     {
         File manifest = tryGetLeveledManifest();

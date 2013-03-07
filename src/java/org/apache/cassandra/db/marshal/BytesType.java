@@ -20,6 +20,7 @@ package org.apache.cassandra.db.marshal;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.cql.jdbc.JdbcBytes;
+import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.Hex;
 
@@ -80,5 +81,10 @@ public class BytesType extends AbstractType<ByteBuffer>
         // Both asciiType and utf8Type really use bytes comparison and
         // bytesType validate everything, so it is compatible with the former.
         return this == previous || previous == AsciiType.instance || previous == UTF8Type.instance;
+    }
+
+    public CQL3Type asCQL3Type()
+    {
+        return CQL3Type.Native.BLOB;
     }
 }

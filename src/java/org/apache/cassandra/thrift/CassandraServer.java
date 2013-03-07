@@ -677,14 +677,16 @@ public class CassandraServer implements Cassandra.Iface
         ThriftValidation.validateColumnNames(metadata, column_parent, Arrays.asList(column.name));
         ThriftValidation.validateColumnData(metadata, column, column_parent.super_column != null);
 
-        RowMutation rm = new RowMutation(cState.getKeyspace(), key);
+        RowMutation rm;
         try
         {
             ByteBuffer name = column.name;
             if (metadata.isSuper())
                 name = CompositeType.build(column_parent.super_column, name);
 
-            rm.add(column_parent.column_family, name, column.value, column.timestamp, column.ttl);
+            ColumnFamily cf = ColumnFamily.create(Schema.instance.getId(cState.getKeyspace(), column_parent.column_family));
+            cf.addColumn(name, column.value, column.timestamp, column.ttl);
+            rm = new RowMutation(cState.getKeyspace(), key, cf);
         }
         catch (MarshalException e)
         {
@@ -728,7 +730,6 @@ public class CassandraServer implements Cassandra.Iface
                                                boolean allowCounterMutations)
     throws RequestValidationException
     {
-        List<String> cfamsSeen = new ArrayList<String>();
         List<IMutation> rowMutations = new ArrayList<IMutation>();
         ThriftClientState cState = state();
         String keyspace = cState.getKeyspace();
@@ -747,12 +748,7 @@ public class CassandraServer implements Cassandra.Iface
             {
                 String cfName = columnFamilyMutations.getKey();
 
-                // Avoid unneeded authorizations
-                if (!(cfamsSeen.contains(cfName)))
-                {
-                    cState.hasColumnFamilyAccess(keyspace, cfName, Permission.MODIFY);
-                    cfamsSeen.add(cfName);
-                }
+                cState.hasColumnFamilyAccess(keyspace, cfName, Permission.MODIFY);
 
                 CFMetaData metadata = ThriftValidation.validateColumnFamily(keyspace, cfName);
                 ThriftValidation.validateKey(metadata, key);
@@ -1425,6 +1421,8 @@ public class CassandraServer implements Cassandra.Iface
             cState.hasKeyspaceAccess(keyspace, Permission.CREATE);
             cf_def.unsetId(); // explicitly ignore any id set by client (Hector likes to set zero)
             CFMetaData cfm = CFMetaData.fromThrift(cf_def);
+            CFMetaData.validateCompactionOptions(cfm.compactionStrategyClass, cfm.compactionStrategyOptions);
+
             cfm.addDefaultIndexNames();
             MigrationManager.announceNewColumnFamily(cfm);
             return Schema.instance.getVersion().toString();
@@ -1465,13 +1463,6 @@ public class CassandraServer implements Cassandra.Iface
             ThriftValidation.validateKeyspaceNotSystem(ks_def.name);
             state().hasAllKeyspacesAccess(Permission.CREATE);
             ThriftValidation.validateKeyspaceNotYetExisting(ks_def.name);
-
-            // trial run to let ARS validate class + per-class options
-            AbstractReplicationStrategy.createReplicationStrategy(ks_def.name,
-                    AbstractReplicationStrategy.getClass(ks_def.strategy_class),
-                    StorageService.instance.getTokenMetadata(),
-                    DatabaseDescriptor.getEndpointSnitch(),
-                    ks_def.getStrategy_options());
 
             // generate a meaningful error if the user setup keyspace and/or column definition incorrectly
             for (CfDef cf : ks_def.cf_defs)
@@ -1560,6 +1551,7 @@ public class CassandraServer implements Cassandra.Iface
 
             CFMetaData.applyImplicitDefaults(cf_def);
             CFMetaData cfm = CFMetaData.fromThrift(cf_def);
+            CFMetaData.validateCompactionOptions(cfm.compactionStrategyClass, cfm.compactionStrategyOptions);
             cfm.addDefaultIndexNames();
             MigrationManager.announceColumnFamilyUpdate(cfm);
             return Schema.instance.getVersion().toString();

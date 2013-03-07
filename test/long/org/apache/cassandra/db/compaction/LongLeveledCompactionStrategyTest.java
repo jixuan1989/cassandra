@@ -84,14 +84,7 @@ public class LongLeveledCompactionStrategyTest extends SchemaLoader
                 {
                     public void run()
                     {
-                        try
-                        {
-                            t.execute(null);
-                        }
-                        finally
-                        {
-                            t.unmarkSSTables();
-                        }
+                        t.execute(null);
                     }
                 });
             }
@@ -123,6 +116,10 @@ public class LongLeveledCompactionStrategyTest extends SchemaLoader
                    assert overlaps.size() == 1 && overlaps.contains(sstable);
                }
             }
+        }
+        for (SSTableReader sstable : store.getSSTables())
+        {
+            assert sstable.getSSTableLevel() == sstable.getSSTableLevel();
         }
     }
 }

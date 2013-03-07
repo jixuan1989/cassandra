@@ -23,6 +23,7 @@ import java.text.ParseException;
 import java.util.UUID;
 
 import org.apache.cassandra.cql.jdbc.JdbcUUID;
+import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.UUIDGen;
@@ -241,5 +242,10 @@ public class UUIDType extends AbstractType<UUID>
         }
 
         return idBytes;
+    }
+
+    public CQL3Type asCQL3Type()
+    {
+        return CQL3Type.Native.UUID;
     }
 }

@@ -80,6 +80,7 @@ public class NodeProbe
     private PBSPredictorMBean PBSPredictorProxy;
     private StorageProxyMBean spProxy;
     private HintedHandOffManagerMBean hhProxy;
+    private boolean failed;
 
     /**
      * Creates a NodeProbe using the specified JMX host, port, username, and password.
@@ -217,7 +218,8 @@ public class NodeProbe
         try
         {
             ssProxy.addNotificationListener(runner, null, null);
-            runner.repairAndWait(ssProxy, isSequential, isLocal, primaryRange);
+            if (!runner.repairAndWait(ssProxy, isSequential, isLocal, primaryRange))
+                failed = true;
         }
         catch (Exception e)
         {
@@ -228,6 +230,29 @@ public class NodeProbe
             try
             {
                ssProxy.removeNotificationListener(runner);
+            }
+            catch (ListenerNotFoundException ignored) {}
+        }
+    }
+
+    public void forceRepairRangeAsync(final PrintStream out, final String tableName, boolean isSequential, boolean isLocal, final String startToken, final String endToken, String... columnFamilies) throws IOException
+    {
+        RepairRunner runner = new RepairRunner(out, tableName, columnFamilies);
+        try
+        {
+            ssProxy.addNotificationListener(runner, null, null);
+            if (!runner.repairRangeAndWait(ssProxy,  isSequential, isLocal, startToken, endToken))
+                failed = true;
+        }
+        catch (Exception e)
+        {
+            throw new IOException(e) ;
+        }
+        finally
+        {
+            try
+            {
+                ssProxy.removeNotificationListener(runner);
             }
             catch (ListenerNotFoundException ignored) {}
         }
@@ -579,7 +604,10 @@ public class NodeProbe
         ColumnFamilyStoreMBean cfsProxy = null;
         try
         {
-            Set<ObjectName> beans = mbeanServerConn.queryNames(new ObjectName("org.apache.cassandra.db:type=*ColumnFamilies,keyspace=" + ks + ",columnfamily=" + cf), null);
+            String type = cf.contains(".") ? "IndexColumnFamilies" : "ColumnFamilies";
+            Set<ObjectName> beans = mbeanServerConn.queryNames(
+                    new ObjectName("org.apache.cassandra.db:type=*" + type +",keyspace=" + ks + ",columnfamily=" + cf), null);
+
             if (beans.isEmpty())
                 throw new MalformedObjectNameException("couldn't find that bean");
             assert beans.size() == 1;
@@ -781,32 +809,81 @@ public class NodeProbe
     {
         ssProxy.resetLocalSchema();
     }
+
+    public boolean isFailed()
+    {
+        return failed;
+    }
 }
 
 class ColumnFamilyStoreMBeanIterator implements Iterator<Map.Entry<String, ColumnFamilyStoreMBean>>
 {
-    private Iterator<ObjectName> resIter;
     private MBeanServerConnection mbeanServerConn;
+    Iterator<Entry<String, ColumnFamilyStoreMBean>> mbeans;
 
     public ColumnFamilyStoreMBeanIterator(MBeanServerConnection mbeanServerConn)
-    throws MalformedObjectNameException, NullPointerException, IOException
+        throws MalformedObjectNameException, NullPointerException, IOException
     {
-        ObjectName query = new ObjectName("org.apache.cassandra.db:type=ColumnFamilies,*");
-        resIter = mbeanServerConn.queryNames(query, null).iterator();
         this.mbeanServerConn = mbeanServerConn;
+        List<Entry<String, ColumnFamilyStoreMBean>> cfMbeans = getCFSMBeans(mbeanServerConn, "ColumnFamilies");
+        cfMbeans.addAll(getCFSMBeans(mbeanServerConn, "IndexColumnFamilies"));
+        Collections.sort(cfMbeans, new Comparator<Entry<String, ColumnFamilyStoreMBean>>()
+        {
+            public int compare(Entry<String, ColumnFamilyStoreMBean> e1, Entry<String, ColumnFamilyStoreMBean> e2)
+            {
+                //compare keyspace, then CF name, then normal vs. index
+                int tableCmp = e1.getKey().compareTo(e2.getKey());
+                if(tableCmp != 0)
+                    return tableCmp;
+
+                // get CF name and split it for index name
+                String e1CF[] = e1.getValue().getColumnFamilyName().split("\\.");
+                String e2CF[] = e1.getValue().getColumnFamilyName().split("\\.");
+                assert e1CF.length <= 2 && e2CF.length <= 2 : "unexpected split count for column family name";
+
+                //if neither are indexes, just compare CF names
+                if(e1CF.length == 1 && e2CF.length == 1)
+                    return e1CF[0].compareTo(e2CF[0]);
+
+                //check if it's the same CF
+                int cfNameCmp = e1CF[0].compareTo(e2CF[0]);
+                if(cfNameCmp != 0)
+                    return cfNameCmp;
+
+                // if both are indexes (for the same CF), compare them
+                if(e1CF.length == 2 && e2CF.length == 2)
+                    return e1CF[1].compareTo(e2CF[1]);
+
+                //if length of e1CF is 1, it's not an index, so sort it higher
+                return e1CF.length == 1 ? 1 : -1;
+            }
+        });
+        mbeans = cfMbeans.iterator();
+    }
+
+    private List<Entry<String, ColumnFamilyStoreMBean>> getCFSMBeans(MBeanServerConnection mbeanServerConn, String type)
+            throws MalformedObjectNameException, IOException
+    {
+        ObjectName query = new ObjectName("org.apache.cassandra.db:type=" + type +",*");
+        Set<ObjectName> cfObjects = mbeanServerConn.queryNames(query, null);
+        List<Entry<String, ColumnFamilyStoreMBean>> mbeans = new ArrayList<Entry<String, ColumnFamilyStoreMBean>>(cfObjects.size());
+        for(ObjectName n : cfObjects)
+        {
+            String tableName = n.getKeyProperty("keyspace");
+            ColumnFamilyStoreMBean cfsProxy = JMX.newMBeanProxy(mbeanServerConn, n, ColumnFamilyStoreMBean.class);
+            mbeans.add(new AbstractMap.SimpleImmutableEntry<String, ColumnFamilyStoreMBean>(tableName, cfsProxy));
+        }
+        return mbeans;
     }
 
     public boolean hasNext()
     {
-        return resIter.hasNext();
+        return mbeans.hasNext();
     }
 
     public Entry<String, ColumnFamilyStoreMBean> next()
     {
-        ObjectName objectName = resIter.next();
-        String tableName = objectName.getKeyProperty("keyspace");
-        ColumnFamilyStoreMBean cfsProxy = JMX.newMBeanProxy(mbeanServerConn, objectName, ColumnFamilyStoreMBean.class);
-        return new AbstractMap.SimpleImmutableEntry<String, ColumnFamilyStoreMBean>(tableName, cfsProxy);
+        return mbeans.next();
     }
 
     public void remove()
@@ -856,6 +933,7 @@ class RepairRunner implements NotificationListener
     private final String keyspace;
     private final String[] columnFamilies;
     private int cmd;
+    private boolean success = true;
 
     RepairRunner(PrintStream out, String keyspace, String... columnFamilies)
     {
@@ -864,7 +942,7 @@ class RepairRunner implements NotificationListener
         this.columnFamilies = columnFamilies;
     }
 
-    public void repairAndWait(StorageServiceMBean ssProxy, boolean isSequential, boolean isLocal, boolean primaryRangeOnly) throws InterruptedException
+    public boolean repairAndWait(StorageServiceMBean ssProxy, boolean isSequential, boolean isLocal, boolean primaryRangeOnly) throws InterruptedException
     {
         cmd = ssProxy.forceRepairAsync(keyspace, isSequential, isLocal, primaryRangeOnly, columnFamilies);
         if (cmd > 0)
@@ -876,6 +954,22 @@ class RepairRunner implements NotificationListener
             String message = String.format("[%s] Nothing to repair for keyspace '%s'", format.format(System.currentTimeMillis()), keyspace);
             out.println(message);
         }
+        return success;
+    }
+
+    public boolean repairRangeAndWait(StorageServiceMBean ssProxy, boolean isSequential, boolean isLocal, String startToken, String endToken) throws InterruptedException
+    {
+        cmd = ssProxy.forceRepairRangeAsync(startToken, endToken, keyspace, isSequential, isLocal, columnFamilies);
+        if (cmd > 0)
+        {
+            condition.await();
+        }
+        else
+        {
+            String message = String.format("[%s] Nothing to repair for keyspace '%s'", format.format(System.currentTimeMillis()), keyspace);
+            out.println(message);
+        }
+        return success;
     }
 
     public void handleNotification(Notification notification, Object handback)
@@ -889,7 +983,9 @@ class RepairRunner implements NotificationListener
                 String message = String.format("[%s] %s", format.format(notification.getTimeStamp()), notification.getMessage());
                 out.println(message);
                 // repair status is int array with [0] = cmd number, [1] = status
-                if (status[1] == AntiEntropyService.Status.FINISHED.ordinal())
+                if (status[1] == AntiEntropyService.Status.SESSION_FAILED.ordinal())
+                    success = false;
+                else if (status[1] == AntiEntropyService.Status.FINISHED.ordinal())
                     condition.signalAll();
             }
         }

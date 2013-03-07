@@ -27,11 +27,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.google.common.collect.Iterables;
+import com.google.common.collect.SetMultimap;
+
+import org.apache.cassandra.db.compaction.LegacyLeveledManifest;
+import org.apache.cassandra.db.compaction.LeveledManifest;
 import org.apache.log4j.PropertyConfigurator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.auth.Auth;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.config.DatabaseDescriptor;
@@ -44,6 +47,7 @@ import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.thrift.ThriftServer;
 import org.apache.cassandra.utils.CLibrary;
 import org.apache.cassandra.utils.Mx4jTool;
+import org.apache.cassandra.utils.Pair;
 
 /**
  * The <code>CassandraDaemon</code> is an abstraction for a Cassandra daemon
@@ -193,17 +197,34 @@ public class CassandraDaemon
             System.exit(100);
         }
 
-        // setup Authenticator and Authorizer.
-        Auth.setup();
-
         // clean up debris in the rest of the tables
         for (String table : Schema.instance.getTables())
         {
             for (CFMetaData cfm : Schema.instance.getTableMetaData(table).values())
             {
+                if (LegacyLeveledManifest.manifestNeedsMigration(table,cfm.cfName))
+                {
+                    try
+                    {
+                        LegacyLeveledManifest.migrateManifests(table, cfm.cfName);
+                    }
+                    catch (IOException e)
+                    {
+                        logger.error("Could not migrate old leveled manifest. Move away the .json file in the data directory", e);
+                        System.exit(100);
+                    }
+                }
+
                 ColumnFamilyStore.scrubDataDirectories(table, cfm.cfName);
             }
         }
+        // clean up compaction leftovers
+        SetMultimap<Pair<String, String>, Integer> unfinishedCompactions = SystemTable.getUnfinishedCompactions();
+        for (Pair<String, String> kscf : unfinishedCompactions.keySet())
+        {
+            ColumnFamilyStore.removeUnfinishedCompactionLeftovers(kscf.left, kscf.right, unfinishedCompactions.get(kscf));
+        }
+        SystemTable.discardCompactionsInProgress();
 
         // initialize keyspaces
         for (String table : Schema.instance.getTables())

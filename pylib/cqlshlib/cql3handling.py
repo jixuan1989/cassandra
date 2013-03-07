@@ -39,6 +39,7 @@ class UnexpectedTableStructure(UserWarning):
         return 'Unexpected table structure; may not translate correctly to CQL. ' + self.msg
 
 SYSTEM_KEYSPACES = ('system', 'system_traces', 'system_auth')
+NONALTERBALE_KEYSPACES = ('system', 'system_traces')
 
 class Cql3ParsingRuleSet(CqlParsingRuleSet):
     keywords = set((
@@ -65,6 +66,7 @@ class Cql3ParsingRuleSet(CqlParsingRuleSet):
         ('index_interval', None),
         ('read_repair_chance', None),
         ('replicate_on_write', None),
+        ('populate_io_cache_on_flush', None),
     )
 
     old_columnfamily_layout_options = (
@@ -78,6 +80,7 @@ class Cql3ParsingRuleSet(CqlParsingRuleSet):
         ('index_interval', None),
         ('read_repair_chance', None),
         ('replicate_on_write', None),
+        ('populate_io_cache_on_flush', None),
     )
 
     new_columnfamily_layout_options = (
@@ -89,6 +92,7 @@ class Cql3ParsingRuleSet(CqlParsingRuleSet):
         ('index_interval', None),
         ('read_repair_chance', None),
         ('replicate_on_write', None),
+        ('populate_io_cache_on_flush', None),
     )
 
     old_columnfamily_layout_map_options = (
@@ -306,6 +310,8 @@ JUNK ::= /([ \t\r\f\v]+|(--|[/][/])[^\n\r]*([\n\r]|$)|[/][*].*?[*][/])/ ;
 
 <nonSystemKeyspaceName> ::= ksname=<cfOrKsName> ;
 
+<alterableKeyspaceName> ::= ksname=<cfOrKsName> ;
+
 <cfOrKsName> ::= <identifier>
                | <quotedName>
                | <unreservedKeyword>;
@@ -495,7 +501,7 @@ def cf_new_prop_val_completer(ctxt, cass):
     if this_opt in ('read_repair_chance', 'bloom_filter_fp_chance',
                     'dclocal_read_repair_chance'):
         return [Hint('<float_between_0_and_1>')]
-    if this_opt == 'replicate_on_write':
+    if this_opt in ('replicate_on_write', 'populate_io_cache_on_flush'):
         return ["'yes'", "'no'"]
     if this_opt in ('min_compaction_threshold', 'max_compaction_threshold',
                     'gc_grace_seconds', 'index_interval'):
@@ -631,7 +637,7 @@ def cf_old_prop_val_completer(ctxt, cass):
         return simple_cql_types
     if this_opt in ('read_repair_chance', 'bloom_filter_fp_chance'):
         return [Hint('<float_between_0_and_1>')]
-    if this_opt == 'replicate_on_write':
+    if this_opt in ('replicate_on_write', 'populate_io_cache_on_flush'):
         return [Hint('<yes_or_no>')]
     if this_opt in ('min_compaction_threshold', 'max_compaction_threshold', 'gc_grace_seconds'):
         return [Hint('<integer>')]
@@ -684,6 +690,11 @@ def ks_name_completer(ctxt, cass):
 @completer_for('nonSystemKeyspaceName', 'ksname')
 def ks_name_completer(ctxt, cass):
     ksnames = [n for n in cass.get_keyspace_names() if n not in SYSTEM_KEYSPACES]
+    return map(maybe_escape_name, ksnames)
+
+@completer_for('alterableKeyspaceName', 'ksname')
+def ks_name_completer(ctxt, cass):
+    ksnames = [n for n in cass.get_keyspace_names() if n not in NONALTERBALE_KEYSPACES]
     return map(maybe_escape_name, ksnames)
 
 @completer_for('columnFamilyName', 'ksname')
@@ -1242,13 +1253,13 @@ def alter_table_col_completer(ctxt, cass):
 explain_completion('alterInstructions', 'newcol', '<new_column_name>')
 
 syntax_rules += r'''
-<alterKeyspaceStatement> ::= "ALTER" ( "KEYSPACE" | "SCHEMA" ) ks=<nonSystemKeyspaceName>
+<alterKeyspaceStatement> ::= "ALTER" ( "KEYSPACE" | "SCHEMA" ) ks=<alterableKeyspaceName>
                                  "WITH" <newPropSpec> ( "AND" <newPropSpec> )*
                            ;
 '''
 
 syntax_rules += r'''
-<username> ::= user=( <identifier> | <stringLiteral> )
+<username> ::= name=( <identifier> | <stringLiteral> )
              ;
 
 <createUserStatement> ::= "CREATE" "USER" <username>
@@ -1295,18 +1306,25 @@ syntax_rules += r'''
              ;
 
 <dataResource> ::= ( "ALL" "KEYSPACES" )
-                 | ( "KEYSPACE" <nonSystemKeyspaceName> )
+                 | ( "KEYSPACE" <keyspaceName> )
                  | ( "TABLE"? <columnFamilyName> )
                  ;
 '''
 
+@completer_for('username', 'name')
+def username_name_completer(ctxt, cass):
+    def maybe_quote(name):
+        if CqlRuleSet.is_valid_cql3_name(name):
+            return name
+        return "'%s'" % name
 
-@completer_for('username', 'user')
-def username_user_completer(ctxt, cass):
-    # TODO: implement user autocompletion for grant/revoke/list/drop user/alter user
-    # with I could see a way to do this usefully, but I don't. I don't know
-    # how any Authorities other than AllowAllAuthorizer work :/
-    return [Hint('<username>')]
+    # disable completion for CREATE USER.
+    if ctxt.matched[0][0] == 'K_CREATE':
+        return [Hint('<username>')]
+
+    cursor = cass.conn.cursor()
+    cursor.execute("LIST USERS")
+    return [maybe_quote(row[0].replace("'", "''")) for row in cursor.fetchall()]
 
 # END SYNTAX/COMPLETION RULE DEFINITIONS
 

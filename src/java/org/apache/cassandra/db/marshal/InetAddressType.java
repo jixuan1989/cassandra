@@ -22,6 +22,7 @@ import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.cql.jdbc.JdbcInetAddress;
+import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 public class InetAddressType extends AbstractType<InetAddress>
@@ -80,5 +81,10 @@ public class InetAddressType extends AbstractType<InetAddress>
         {
             throw new MarshalException(String.format("Expected 4 or 16 byte inetaddress; got %s", ByteBufferUtil.bytesToHex(bytes)));
         }
+    }
+
+    public CQL3Type asCQL3Type()
+    {
+        return CQL3Type.Native.INET;
     }
 }

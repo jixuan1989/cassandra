@@ -21,7 +21,9 @@ import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.Map;
+import java.util.Set;
 
+import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.db.Column;
 import org.apache.cassandra.db.OnDiskAtom;
@@ -146,6 +148,12 @@ public abstract class AbstractType<T> implements Comparator<ByteBuffer>
 
     /* validate that the byte array is a valid sequence for the type we are supposed to be comparing */
     public abstract void validate(ByteBuffer bytes) throws MarshalException;
+
+    /* Most of our internal type should override that. */
+    public CQL3Type asCQL3Type()
+    {
+        return new CQL3Type.Custom(this);
+    }
 
     /** @deprecated use reverseComparator field instead */
     public Comparator<ByteBuffer> getReverseComparator()

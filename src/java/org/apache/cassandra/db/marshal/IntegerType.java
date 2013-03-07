@@ -21,6 +21,7 @@ import java.math.BigInteger;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.cql.jdbc.JdbcInteger;
+import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 public final class IntegerType extends AbstractType<BigInteger>
@@ -151,5 +152,10 @@ public final class IntegerType extends AbstractType<BigInteger>
     public void validate(ByteBuffer bytes) throws MarshalException
     {
         // no invalid integers.
+    }
+
+    public CQL3Type asCQL3Type()
+    {
+        return CQL3Type.Native.VARINT;
     }
 }

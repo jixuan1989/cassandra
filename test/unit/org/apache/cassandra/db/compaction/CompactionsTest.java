@@ -24,8 +24,14 @@ import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
+import com.google.common.base.Function;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.SetMultimap;
+import com.google.common.collect.Sets;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
+import org.apache.cassandra.OrderedJUnit4ClassRunner;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.config.DatabaseDescriptor;
@@ -40,9 +46,11 @@ import org.apache.cassandra.io.sstable.SSTableScanner;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.Pair;
 
 import static junit.framework.Assert.*;
 
+@RunWith(OrderedJUnit4ClassRunner.class)
 public class CompactionsTest extends SchemaLoader
 {
     public static final String TABLE1 = "Keyspace1";
@@ -263,7 +271,7 @@ public class CompactionsTest extends SchemaLoader
         int prevGeneration = sstable.descriptor.generation;
         String file = new File(sstable.descriptor.filenameFor(Component.DATA)).getName();
         // submit user defined compaction on flushed sstable
-        CompactionManager.instance.forceUserDefinedCompaction(TABLE1, file);
+        CompactionManager.instance.forceUserDefinedCompaction(file);
         // wait until user defined compaction finishes
         do
         {
@@ -273,6 +281,35 @@ public class CompactionsTest extends SchemaLoader
         sstables = cfs.getSSTables();
         assert sstables.size() == 1;
         assert sstables.iterator().next().descriptor.generation == prevGeneration + 1;
+    }
+
+    @Test
+    public void testCompactionLog() throws Exception
+    {
+        SystemTable.discardCompactionsInProgress();
+
+        String cf = "Standard4";
+        ColumnFamilyStore cfs = Table.open(TABLE1).getColumnFamilyStore(cf);
+        insertData(TABLE1, cf, 0, 1);
+        cfs.forceBlockingFlush();
+
+        Collection<SSTableReader> sstables = cfs.getSSTables();
+        assert !sstables.isEmpty();
+        Set<Integer> generations = Sets.newHashSet(Iterables.transform(sstables, new Function<SSTableReader, Integer>()
+        {
+            public Integer apply(SSTableReader sstable)
+            {
+                return sstable.descriptor.generation;
+            }
+        }));
+        UUID taskId = SystemTable.startCompaction(cfs, sstables);
+        SetMultimap<Pair<String, String>, Integer> compactionLogs = SystemTable.getUnfinishedCompactions();
+        Set<Integer> unfinishedCompactions = compactionLogs.get(Pair.create(TABLE1, cf));
+        assert unfinishedCompactions.containsAll(generations);
+
+        SystemTable.finishCompaction(taskId);
+        compactionLogs = SystemTable.getUnfinishedCompactions();
+        assert !compactionLogs.containsKey(Pair.create(TABLE1, cf));
     }
 
     private void testDontPurgeAccidentaly(String k, String cfname, boolean forceDeserialize) throws IOException, ExecutionException, InterruptedException
@@ -305,6 +342,9 @@ public class CompactionsTest extends SchemaLoader
 
         ColumnFamily cf = cfs.getColumnFamily(filter);
         assert cf == null || cf.isEmpty() : "should be empty: " + cf;
+
+        // Sleep one second so that the removal is indeed purgeable even with gcgrace == 0
+        Thread.sleep(1000);
 
         cfs.forceBlockingFlush();
 

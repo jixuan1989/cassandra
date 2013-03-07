@@ -20,6 +20,7 @@ package org.apache.cassandra.net;
 import java.io.*;
 import java.net.InetAddress;
 import java.net.Socket;
+import java.net.SocketException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,6 +43,17 @@ public class IncomingTcpConnection extends Thread
     {
         assert socket != null;
         this.socket = socket;
+        if (DatabaseDescriptor.getInternodeRecvBufferSize() != null)
+        {
+            try
+            {
+                this.socket.setReceiveBufferSize(DatabaseDescriptor.getInternodeRecvBufferSize());
+            }
+            catch (SocketException se)
+            {
+                logger.warn("Failed to set receive buffer size on internode socket.", se);
+            }
+        }
     }
 
     /**
@@ -178,8 +190,13 @@ public class IncomingTcpConnection extends Thread
         if (version < MessagingService.VERSION_12)
             input.readInt(); // size of entire message. in 1.0+ this is just a placeholder
 
-        String id = input.readUTF();
-        long timestamp = System.currentTimeMillis();;
+        int id;
+        if (version < MessagingService.VERSION_20)
+            id = Integer.valueOf(input.readUTF());
+        else
+            id = input.readInt();
+
+        long timestamp = System.currentTimeMillis();
         if (version >= MessagingService.VERSION_12)
         {
             // make sure to readInt, even if cross_node_to is not enabled

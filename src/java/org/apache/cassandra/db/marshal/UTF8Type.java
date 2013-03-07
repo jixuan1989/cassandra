@@ -20,6 +20,8 @@ package org.apache.cassandra.db.marshal;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.cql.jdbc.JdbcUTF8;
+import org.apache.cassandra.cql3.Constants;
+import org.apache.cassandra.cql3.CQL3Type;
 
 public class UTF8Type extends AbstractType<String>
 {
@@ -189,5 +191,10 @@ public class UTF8Type extends AbstractType<String>
         // Anything that is ascii is also utf8, and they both use bytes
         // comparison
         return this == previous || previous == AsciiType.instance;
+    }
+
+    public CQL3Type asCQL3Type()
+    {
+        return CQL3Type.Native.TEXT;
     }
 }

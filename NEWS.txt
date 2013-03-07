@@ -8,6 +8,65 @@ upgrade, just in case you need to roll back to the previous version.
 (Cassandra version X + 1 will always be able to read data files created
 by version X, but the inverse is not necessarily the case.)
 
+2.0.0
+=====
+
+Upgrading
+---------
+    - Replication and strategy options do not accept unknown options anymore.
+      This was already the case for CQL3 in 1.2 but this is now the case for
+      thrift to.
+
+
+1.2.3
+=====
+
+Upgrading
+---------
+    - CQL3 uses to be case-insensitive for property map key in ALTER and CREATE
+      statements. In other words:
+        CREATE KEYSPACE test WITH replication = { 'CLASS' : 'SimpleStrategy',
+                                                  'REPLICATION_FACTOR' : '1' }
+      was allowed. However, this was not consistent with the fact that string
+      literal are case sensitive in every other places and more importantly this
+      break NetworkTopologyStrategy for which DC names are case sensitive. Those
+      property map key are now case sensitive. So the statement above should be
+      changed to:
+        CREATE KEYSPACE test WITH replication = { 'class' : 'SimpleStrategy',
+                                                  'replication_factor' : '1' }
+
+
+1.2.2
+=====
+
+Upgrading
+---------
+    - CQL3 type validation for constants has been fixed, which may require
+      fixing queries that were relying on the previous loose validation. Please
+      refer to the CQL3 documentation (http://cassandra.apache.org/doc/cql3/CQL.html)
+      and in particular the changelog section for more details. Please note in
+      particular that inputing blobs as strings constants is now deprecated (in
+      favor of blob constants) and its support will be removed in a future
+      version.
+
+Features
+--------
+    - Built-in CQL3-based implementations of IAuthenticator (PasswordAuthenticator)
+      and IAuthorizer (CassandraAuthorizer) have been added. PasswordAuthenticator
+      stores usernames and hashed passwords in system_auth.credentials table;
+      CassandraAuthorizer stores permissions in system_auth.permissions table.
+    - system_auth keyspace is now alterable via ALTER KEYSPACE queries.
+      The default is SimpleStrategy with replication_factor of 1, but it's
+      advised to raise RF to at least 3 or 5, since CL.QUORUM is used for all
+      auth-related queries. It's also possible to change the strategy to NTS.
+    - Permissions caching with time-based expiration policy has been added to reduce
+      performance impact of authorization. Permission validity can be configured
+      using 'permissions_validity_in_ms' setting in cassandra.yaml. The default
+      is 2000 (2 seconds).
+    - SimpleAuthenticator and SimpleAuthorizer examples have been removed. Please
+      look at CassandraAuthorizer/PasswordAuthenticator instead.
+
+
 1.2.1
 =====
 
@@ -26,6 +85,8 @@ Upgrading
       since 1.2.0. However, Cassandra 1.2.0 was not complaining if CQL3 was set
       through set_cql_version but the now CQL2 only methods were used. This is
       now the case.
+    - Queries that uses unrecognized or bad compaction or replication strategy
+      options are now refused (instead of simply logging a warning).
 
 
 1.2

@@ -25,7 +25,7 @@
     <property name="debuglevel" value="source,lines,vars"/>
 
     <!-- default version and SCM information -->
-    <property name="base.version" value="1.2.0"/>
+    <property name="base.version" value="1.2.2"/>
     <property name="scm.connection" value="scm:git://git.apache.org/cassandra.git"/>
     <property name="scm.developerConnection" value="scm:git://git.apache.org/cassandra.git"/>
     <property name="scm.url" value="http://git-wip-us.apache.org/repos/asf?p=cassandra.git;a=tree"/>
@@ -331,6 +331,7 @@
         <scm connection="${scm.connection}" developerConnection="${scm.developerConnection}" url="${scm.url}"/>
         <dependencyManagement>
           <dependency groupId="org.xerial.snappy" artifactId="snappy-java" version="1.0.4.1"/>
+          <dependency groupId="net.jpountz.lz4" artifactId="lz4" version="1.1.0"/>
           <dependency groupId="com.ning" artifactId="compress-lzf" version="0.8.4"/>
           <dependency groupId="com.google.guava" artifactId="guava" version="12.0"/>
           <dependency groupId="commons-cli" artifactId="commons-cli" version="1.1"/>
@@ -378,8 +379,10 @@
           <dependency groupId="log4j" artifactId="log4j" version="1.2.16" />
           <dependency groupId="org.apache.cassandra" artifactId="cassandra-all" version="${version}" />
           <dependency groupId="org.apache.cassandra" artifactId="cassandra-thrift" version="${version}" />
-          <dependency groupId="com.yammer.metrics" artifactId="metrics-core" version="2.0.3" />
+          <dependency groupId="com.yammer.metrics" artifactId="metrics-core" version="2.2.0" />
           <dependency groupId="edu.stanford.ppl" artifactId="snaptree" version="0.1" />
+          <dependency groupId="org.mindrot" artifactId="jbcrypt" version="0.3m" />
+          <dependency groupId="io.netty" artifactId="netty" version="3.5.9.Final" />
         </dependencyManagement>
         <developer id="alakshman" name="Avinash Lakshman"/>
         <developer id="antelder" name="Anthony Elder"/>
@@ -445,6 +448,7 @@
                 version="${version}"/>
         <scm connection="${scm.connection}" developerConnection="${scm.developerConnection}" url="${scm.url}"/>
         <dependency groupId="org.xerial.snappy" artifactId="snappy-java"/>
+        <dependency groupId="net.jpountz.lz4" artifactId="lz4"/>
         <dependency groupId="com.ning" artifactId="compress-lzf"/>
         <dependency groupId="com.google.guava" artifactId="guava"/>
         <dependency groupId="commons-cli" artifactId="commons-cli"/>
@@ -461,6 +465,7 @@
         <dependency groupId="com.github.stephenc.high-scale-lib" artifactId="high-scale-lib"/>
         <dependency groupId="org.yaml" artifactId="snakeyaml"/>
         <dependency groupId="edu.stanford.ppl" artifactId="snaptree"/>
+        <dependency groupId="org.mindrot" artifactId="jbcrypt"/>
         <dependency groupId="com.yammer.metrics" artifactId="metrics-core"/>
         
         <dependency groupId="log4j" artifactId="log4j"/>
@@ -1061,7 +1066,6 @@
         <formatter type="xml" usefile="true"/>
         <formatter type="brief" usefile="false"/>
         <jvmarg value="-Dstorage-config=${test.conf}"/>
-        <jvmarg value="-Daccess.properties=${test.conf}/access.properties"/>
         <jvmarg value="-Dlog4j.configuration=log4j-junit.properties" />
         <jvmarg value="-javaagent:${basedir}/lib/jamm-0.2.5.jar" />
         <jvmarg value="-ea"/>
@@ -1117,6 +1121,7 @@
     <testmacro suitename="unit" inputdir="${test.unit.src}" timeout="60000">
       <jvmarg value="-Dlegacy-sstable-root=${test.data}/legacy-sstables"/>
       <jvmarg value="-Dcorrupt-sstable-root=${test.data}/corrupt-sstables"/>
+      <jvmarg value="-Dmigration-sstable-root=${test.data}/migration-sstables"/>
       <jvmarg value="-Dcassandra.ring_delay_ms=1000"/>
     </testmacro>
   </target>
@@ -1125,6 +1130,7 @@
     <testmacro suitename="unit" inputdir="${test.unit.src}" timeout="60000">
       <jvmarg value="-Dlegacy-sstable-root=${test.data}/legacy-sstables"/>
       <jvmarg value="-Dcorrupt-sstable-root=${test.data}/corrupt-sstables"/>
+      <jvmarg value="-Dmigration-sstable-root=${test.data}/migration-sstables"/>
       <jvmarg value="-Dcassandra.test.compression=true"/>
       <jvmarg value="-Dcassandra.ring_delay_ms=1000"/>
     </testmacro>

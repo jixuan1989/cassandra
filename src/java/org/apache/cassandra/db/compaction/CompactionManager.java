@@ -29,9 +29,7 @@ import javax.management.ObjectName;
 
 import com.google.common.base.Predicates;
 import com.google.common.base.Throwables;
-import com.google.common.collect.ConcurrentHashMultiset;
-import com.google.common.collect.Iterators;
-import com.google.common.collect.Multiset;
+import com.google.common.collect.*;
 import com.google.common.primitives.Longs;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,6 +42,7 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.Table;
 import org.apache.cassandra.db.commitlog.ReplayPosition;
 import org.apache.cassandra.db.compaction.CompactionInfo.Holder;
 import org.apache.cassandra.db.index.SecondaryIndex;
@@ -188,14 +187,7 @@ public class CompactionManager implements CompactionManagerMBean
                     logger.debug("No tasks available");
                     return;
                 }
-                try
-                {
-                    task.execute(metrics);
-                }
-                finally
-                {
-                    task.unmarkSSTables();
-                }
+                task.execute(metrics);
             }
             finally
             {
@@ -278,7 +270,6 @@ public class CompactionManager implements CompactionManagerMBean
         {
             public void perform(ColumnFamilyStore cfs, Collection<SSTableReader> sstables)
             {
-                assert !cfs.isIndex();
                 for (final SSTableReader sstable : sstables)
                 {
                     // SSTables are marked by the caller
@@ -332,23 +323,16 @@ public class CompactionManager implements CompactionManagerMBean
                     AbstractCompactionTask task = cfStore.getCompactionStrategy().getMaximalTask(gcBefore);
                     if (task == null)
                         return;
+                    // downgrade the lock acquisition
+                    compactionLock.readLock().lock();
+                    compactionLock.writeLock().unlock();
                     try
                     {
-                        // downgrade the lock acquisition
-                        compactionLock.readLock().lock();
-                        compactionLock.writeLock().unlock();
-                        try
-                        {
-                            task.execute(metrics);
-                        }
-                        finally
-                        {
-                            compactionLock.readLock().unlock();
-                        }
+                        task.execute(metrics);
                     }
                     finally
                     {
-                        task.unmarkSSTables();
+                        compactionLock.readLock().unlock();
                     }
                 }
                 finally
@@ -362,42 +346,32 @@ public class CompactionManager implements CompactionManagerMBean
         return executor.submit(runnable);
     }
 
-    public void forceUserDefinedCompaction(String ksname, String dataFiles)
+    public void forceUserDefinedCompaction(String dataFiles)
     {
-        if (!Schema.instance.getTables().contains(ksname))
-            throw new IllegalArgumentException("Unknown keyspace " + ksname);
-
         String[] filenames = dataFiles.split(",");
-        Collection<Descriptor> descriptors = new ArrayList<Descriptor>(filenames.length);
+        Multimap<Pair<String, String>, Descriptor> descriptors = ArrayListMultimap.create();
 
-        String cfname = null;
         for (String filename : filenames)
         {
             // extract keyspace and columnfamily name from filename
             Descriptor desc = Descriptor.fromFilename(filename.trim());
-            if (!desc.ksname.equals(ksname))
+            if (Schema.instance.getCFMetaData(desc) == null)
             {
-                throw new IllegalArgumentException("Given keyspace " + ksname + " does not match with file " + filename);
+                logger.warn("Schema does not exist for file {}. Skipping.", filename);
+                continue;
             }
-            if (cfname == null)
-            {
-                cfname = desc.cfname;
-            }
-            else if (!cfname.equals(desc.cfname))
-            {
-                throw new IllegalArgumentException("All provided sstables should be for the same column family");
-            }
-            File directory = new File(ksname + File.separator + cfname);
+            File directory = new File(desc.ksname + File.separator + desc.cfname);
+            // group by keyspace/columnfamily
             Pair<Descriptor, String> p = Descriptor.fromFilename(directory, filename.trim());
-            if (!p.right.equals(Component.DATA.name()))
-            {
-                throw new IllegalArgumentException(filename + " does not appear to be a data file");
-            }
-            descriptors.add(p.left);
+            Pair<String, String> key = Pair.create(p.left.ksname, p.left.cfname);
+            descriptors.put(key, p.left);
         }
 
-        ColumnFamilyStore cfs = Table.open(ksname).getColumnFamilyStore(cfname);
-        submitUserDefined(cfs, descriptors, getDefaultGcBefore(cfs));
+        for (Pair<String, String> key : descriptors.keySet())
+        {
+            ColumnFamilyStore cfs = Table.open(key.left).getColumnFamilyStore(key.right);
+            submitUserDefined(cfs, descriptors.get(key), getDefaultGcBefore(cfs));
+        }
     }
 
     public Future<?> submitUserDefined(final ColumnFamilyStore cfs, final Collection<Descriptor> dataFiles, final int gcBefore)
@@ -426,35 +400,15 @@ public class CompactionManager implements CompactionManagerMBean
                         }
                     }
 
-                    try
+                    if (sstables.isEmpty())
                     {
-                        if (sstables.isEmpty())
-                        {
-                            logger.info("No file to compact for user defined compaction");
-                        }
-                        // attempt to schedule the set
-                        else if (cfs.getDataTracker().markCompacting(sstables))
-                        {
-                            // success: perform the compaction
-                            try
-                            {
-                                AbstractCompactionStrategy strategy = cfs.getCompactionStrategy();
-                                AbstractCompactionTask task = strategy.getUserDefinedTask(sstables, gcBefore);
-                                task.execute(metrics);
-                            }
-                            finally
-                            {
-                                cfs.getDataTracker().unmarkCompacting(sstables);
-                            }
-                        }
-                        else
-                        {
-                            logger.info("SSTables for user defined compaction are already being compacted.");
-                        }
+                        logger.info("No files to compact for user defined compaction");
                     }
-                    finally
+                    else
                     {
-                        SSTableReader.releaseReferences(sstables);
+                        AbstractCompactionTask task = cfs.getCompactionStrategy().getUserDefinedTask(sstables, gcBefore);
+                        if (task != null)
+                            task.execute(metrics);
                     }
                 }
                 finally
@@ -470,19 +424,16 @@ public class CompactionManager implements CompactionManagerMBean
     // This is not efficent, do not use in any critical path
     private SSTableReader lookupSSTable(final ColumnFamilyStore cfs, Descriptor descriptor)
     {
-        SSTableReader found = null;
-        for (SSTableReader sstable : cfs.markCurrentSSTablesReferenced())
+        for (SSTableReader sstable : cfs.getSSTables())
         {
             // .equals() with no other changes won't work because in sstable.descriptor, the directory is an absolute path.
             // We could construct descriptor with an absolute path too but I haven't found any satisfying way to do that
             // (DB.getDataFileLocationForTable() may not return the right path if you have multiple volumes). Hence the
             // endsWith.
             if (sstable.descriptor.toString().endsWith(descriptor.toString()))
-                found = sstable;
-            else
-                sstable.releaseReference();
+                return sstable;
         }
-        return found;
+        return null;
     }
 
     /**
@@ -624,7 +575,7 @@ public class CompactionManager implements CompactionManagerMBean
                         AbstractCompactedRow compactedRow = controller.getCompactedRow(row);
                         if (compactedRow.isEmpty())
                             continue;
-                        writer = maybeCreateWriter(cfs, compactionFileLocation, expectedBloomFilterSize, writer, Collections.singletonList(sstable));
+                        writer = maybeCreateWriter(cfs, OperationType.CLEANUP, compactionFileLocation, expectedBloomFilterSize, writer, Collections.singletonList(sstable));
                         writer.append(compactedRow);
                         totalkeysWritten++;
                     }
@@ -706,6 +657,7 @@ public class CompactionManager implements CompactionManagerMBean
     }
 
     public static SSTableWriter maybeCreateWriter(ColumnFamilyStore cfs,
+                                                  OperationType compactionType,
                                                   File compactionFileLocation,
                                                   int expectedBloomFilterSize,
                                                   SSTableWriter writer,
@@ -714,7 +666,7 @@ public class CompactionManager implements CompactionManagerMBean
         if (writer == null)
         {
             FileUtils.createDirectory(compactionFileLocation);
-            writer = cfs.createCompactionWriter(expectedBloomFilterSize, compactionFileLocation, sstables);
+            writer = cfs.createCompactionWriter(compactionType, expectedBloomFilterSize, compactionFileLocation, sstables);
         }
         return writer;
     }

@@ -23,6 +23,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.Socket;
+import java.net.SocketException;
 import java.nio.ByteBuffer;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
@@ -46,6 +47,7 @@ public class OutboundTcpConnection extends Thread
     private static final Logger logger = LoggerFactory.getLogger(OutboundTcpConnection.class);
 
     private static final MessageOut CLOSE_SENTINEL = new MessageOut(MessagingService.Verb.INTERNAL_RESPONSE);
+    private volatile boolean isStopped = false;
 
     private static final int OPEN_RETRY_DELAY = 100; // ms between retries
 
@@ -71,11 +73,11 @@ public class OutboundTcpConnection extends Thread
     private static boolean isLocalDC(InetAddress targetHost)
     {
         String remoteDC = DatabaseDescriptor.getEndpointSnitch().getDatacenter(targetHost);
-        String localDC = DatabaseDescriptor.getEndpointSnitch().getDatacenter(DatabaseDescriptor.getRpcAddress());
+        String localDC = DatabaseDescriptor.getEndpointSnitch().getDatacenter(FBUtilities.getBroadcastAddress());
         return remoteDC.equals(localDC);
     }
 
-    public void enqueue(MessageOut<?> message, String id)
+    public void enqueue(MessageOut<?> message, int id)
     {
         expireMessages();
         try
@@ -88,16 +90,17 @@ public class OutboundTcpConnection extends Thread
         }
     }
 
-    void closeSocket()
+    void closeSocket(boolean destroyThread)
     {
         active.clear();
         backlog.clear();
-        enqueue(CLOSE_SENTINEL, null);
+        isStopped = destroyThread; // Exit loop to stop the thread
+        enqueue(CLOSE_SENTINEL, -1);
     }
 
     void softCloseSocket()
     {
-        enqueue(CLOSE_SENTINEL, null);
+        enqueue(CLOSE_SENTINEL, -1);
     }
 
     public int getTargetVersion()
@@ -131,6 +134,8 @@ public class OutboundTcpConnection extends Thread
             if (m == CLOSE_SENTINEL)
             {
                 disconnect();
+                if (isStopped)
+                    break;
                 continue;
             }
             if (qm.timestamp < System.currentTimeMillis() - m.getTimeout())
@@ -196,7 +201,7 @@ public class OutboundTcpConnection extends Thread
         }
     }
 
-    public static void write(MessageOut message, String id, long timestamp, DataOutputStream out, int version) throws IOException
+    public static void write(MessageOut message, int id, long timestamp, DataOutputStream out, int version) throws IOException
     {
         out.writeInt(MessagingService.PROTOCOL_MAGIC);
         if (version < MessagingService.VERSION_12)
@@ -206,7 +211,11 @@ public class OutboundTcpConnection extends Thread
             out.writeInt(-1);
         }
 
-        out.writeUTF(id);
+        if (version < MessagingService.VERSION_20)
+            out.writeUTF(String.valueOf(id));
+        else
+            out.writeInt(id);
+
         if (version >= MessagingService.VERSION_12)
         {
             // int cast cuts off the high-order half of the timestamp, which we can assume remains
@@ -270,6 +279,17 @@ public class OutboundTcpConnection extends Thread
                 else
                 {
                     socket.setTcpNoDelay(DatabaseDescriptor.getInterDCTcpNoDelay());
+                }
+                if (DatabaseDescriptor.getInternodeSendBufferSize() != null)
+                {
+                    try
+                    {
+                        socket.setSendBufferSize(DatabaseDescriptor.getInternodeSendBufferSize());
+                    }
+                    catch (SocketException se)
+                    {
+                        logger.warn("Failed to set send buffer size on internode socket.", se);
+                    }
                 }
                 out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream(), 4096));
 
@@ -353,10 +373,10 @@ public class OutboundTcpConnection extends Thread
     private static class QueuedMessage
     {
         final MessageOut<?> message;
-        final String id;
+        final int id;
         final long timestamp;
 
-        QueuedMessage(MessageOut<?> message, String id, long timestamp)
+        QueuedMessage(MessageOut<?> message, int id, long timestamp)
         {
             this.message = message;
             this.id = id;

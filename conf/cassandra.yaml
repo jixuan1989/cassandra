@@ -39,7 +39,8 @@ initial_token:
 # See http://wiki.apache.org/cassandra/HintedHandoff
 hinted_handoff_enabled: true
 # this defines the maximum amount of time a dead host will have hints
-# generated.  After it has been dead this long, hints will be dropped.
+# generated.  After it has been dead this long, new hints for it will not be
+# created until it has been seen alive and gone down again.
 max_hint_window_in_ms: 10800000 # 3 hours
 # throttle in KB's per second, per delivery thread
 hinted_handoff_throttle_in_kb: 1024
@@ -53,11 +54,30 @@ max_hints_delivery_threads: 2
 # Defaults to: false
 # populate_io_cache_on_flush: false
 
-# authentication backend, implementing IAuthenticator; used to identify users
+# Authentication backend, implementing IAuthenticator; used to identify users
+# Out of the box, Cassandra provides org.apache.cassandra.auth.{AllowAllAuthenticator,
+# PasswordAuthenticator}.
+#
+# - AllowAllAuthenticator performs no checks - set it to disable authentication.
+# - PasswordAuthenticator relies on username/password pairs to authenticate
+#   users. It keeps usernames and hashed passwords in system_auth.credentials table.
+#   Please increase system_auth keyspace replication factor if you use this authenticator.
 authenticator: org.apache.cassandra.auth.AllowAllAuthenticator
 
-# authorization backend, implementing IAuthorizer; used to limit access/provide permissions
+# Authorization backend, implementing IAuthorizer; used to limit access/provide permissions
+# Out of the box, Cassandra provides org.apache.cassandra.auth.{AllowAllAuthorizer,
+# CassandraAuthorizer}.
+#
+# - AllowAllAuthorizer allows any action to any user - set it to disable authorization.
+# - CassandraAuthorizer stores permissions in system_auth.permissions table. Please
+#   increase system_auth keyspace replication factor if you use this authorizer.
 authorizer: org.apache.cassandra.auth.AllowAllAuthorizer
+
+# Validity period for permissions cache (fetching permissions can be an
+# expensive operation depending on the authorizer, CassandraAuthorizer is
+# one example). Defaults to 2000, set to 0 to disable.
+# Will be disabled automatically for AllowAllAuthorizer.
+permissions_validity_in_ms: 2000
 
 # The partitioner is responsible for distributing rows (by key) across
 # nodes in the cluster.  Any IPartitioner may be used, including your
@@ -380,6 +400,18 @@ rpc_server_type: sync
 # rpc_send_buff_size_in_bytes:
 # rpc_recv_buff_size_in_bytes:
 
+# Uncomment to set socket buffer size for internode communication
+# Note that when setting this, the buffer size is limited by net.core.wmem_max
+# and when not setting it it is defined by net.ipv4.tcp_wmem
+# See:
+# /proc/sys/net/core/wmem_max
+# /proc/sys/net/core/rmem_max
+# /proc/sys/net/ipv4/tcp_wmem
+# /proc/sys/net/ipv4/tcp_wmem
+# and: man tcp
+# internode_send_buff_size_in_bytes:
+# internode_recv_buff_size_in_bytes:
+
 # Frame size for thrift (maximum field length).
 thrift_framed_transport_size_in_mb: 15
 
@@ -629,12 +661,15 @@ client_encryption_options:
     enabled: false
     keystore: conf/.keystore
     keystore_password: cassandra
+    # require_client_auth: false
+    # Set trustore and truststore_password if require_client_auth is true
+    # truststore: conf/.truststore
+    # truststore_password: cassandra
     # More advanced defaults below:
     # protocol: TLS
     # algorithm: SunX509
     # store_type: JKS
     # cipher_suites: [TLS_RSA_WITH_AES_128_CBC_SHA,TLS_RSA_WITH_AES_256_CBC_SHA]
-    # require_client_auth: false
 
 # internode_compression controls whether traffic between nodes is
 # compressed.

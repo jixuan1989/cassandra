@@ -168,7 +168,7 @@ public class MigrationManager implements IEndpointStateChangeSubscriber
     public void notifyCreateColumnFamily(CFMetaData cfm)
     {
         for (IMigrationListener listener : listeners)
-            listener.onCreateColumnFamly(cfm.ksName, cfm.cfName);
+            listener.onCreateColumnFamily(cfm.ksName, cfm.cfName);
     }
 
     public void notifyUpdateKeyspace(KSMetaData ksm)
@@ -180,7 +180,7 @@ public class MigrationManager implements IEndpointStateChangeSubscriber
     public void notifyUpdateColumnFamily(CFMetaData cfm)
     {
         for (IMigrationListener listener : listeners)
-            listener.onUpdateColumnFamly(cfm.ksName, cfm.cfName);
+            listener.onUpdateColumnFamily(cfm.ksName, cfm.cfName);
     }
 
     public void notifyDropKeyspace(KSMetaData ksm)
@@ -192,10 +192,15 @@ public class MigrationManager implements IEndpointStateChangeSubscriber
     public void notifyDropColumnFamily(CFMetaData cfm)
     {
         for (IMigrationListener listener : listeners)
-            listener.onDropColumnFamly(cfm.ksName, cfm.cfName);
+            listener.onDropColumnFamily(cfm.ksName, cfm.cfName);
     }
 
     public static void announceNewKeyspace(KSMetaData ksm) throws ConfigurationException
+    {
+        announceNewKeyspace(ksm, FBUtilities.timestampMicros());
+    }
+
+    public static void announceNewKeyspace(KSMetaData ksm, long timestamp) throws ConfigurationException
     {
         ksm.validate();
 
@@ -203,7 +208,7 @@ public class MigrationManager implements IEndpointStateChangeSubscriber
             throw new AlreadyExistsException(ksm.name);
 
         logger.info(String.format("Create new Keyspace: %s", ksm));
-        announce(ksm.toSchema(FBUtilities.timestampMicros()));
+        announce(ksm.toSchema(timestamp));
     }
 
     public static void announceNewColumnFamily(CFMetaData cfm) throws ConfigurationException
@@ -316,7 +321,6 @@ public class MigrationManager implements IEndpointStateChangeSubscriber
      */
     public static void passiveAnnounce(UUID version)
     {
-        assert Gossiper.instance.isEnabled();
         Gossiper.instance.addLocalApplicationState(ApplicationState.SCHEMA, StorageService.instance.valueFactory.schema(version));
         logger.debug("Gossiping my schema version " + version);
     }

@@ -31,6 +31,7 @@ import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.columniterator.OnDiskAtomIterator;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.SSTableReader;
 import org.apache.cassandra.io.sstable.SSTableScanner;
@@ -54,19 +55,8 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
         int configuredMaxSSTableSize = 5;
         if (options != null)
         {
-            String value = options.containsKey(SSTABLE_SIZE_OPTION) ? options.get(SSTABLE_SIZE_OPTION) : null;
-            if (value != null)
-            {
-                try
-                {
-                    configuredMaxSSTableSize = Integer.parseInt(value);
-                }
-                catch (NumberFormatException ex)
-                {
-                    logger.warn(String.format("%s is not a parsable int (base10) for %s using default value",
-                                              value, SSTABLE_SIZE_OPTION));
-                }
-            }
+            String value = options.containsKey(SSTABLE_SIZE_OPTION) ? options.get(SSTABLE_SIZE_OPTION) : "5";
+            configuredMaxSSTableSize = Integer.parseInt(value);
         }
         maxSSTableSizeInMB = configuredMaxSSTableSize;
 
@@ -105,32 +95,32 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
         return getMaximalTask(gcBefore);
     }
 
-    public synchronized AbstractCompactionTask getMaximalTask(int gcBefore)
+    public AbstractCompactionTask getMaximalTask(int gcBefore)
     {
-        Collection<SSTableReader> sstables = manifest.getCompactionCandidates();
-        OperationType op = OperationType.COMPACTION;
-        if (sstables.isEmpty())
+        while (true)
         {
-            // if there is no sstable to compact in standard way, try compacting based on droppable tombstone ratio
-            SSTableReader sstable = findDroppableSSTable(gcBefore);
-            if (sstable == null)
+            Collection<SSTableReader> sstables = manifest.getCompactionCandidates();
+            OperationType op = OperationType.COMPACTION;
+            if (sstables.isEmpty())
             {
-                logger.debug("No compaction necessary for {}", this);
-                return null;
+                // if there is no sstable to compact in standard way, try compacting based on droppable tombstone ratio
+                SSTableReader sstable = findDroppableSSTable(gcBefore);
+                if (sstable == null)
+                {
+                    logger.debug("No compaction necessary for {}", this);
+                    return null;
+                }
+                sstables = Collections.singleton(sstable);
+                op = OperationType.TOMBSTONE_COMPACTION;
             }
-            sstables = Collections.singleton(sstable);
-            op = OperationType.TOMBSTONE_COMPACTION;
-        }
 
-        if (!cfs.getDataTracker().markCompacting(sstables))
-        {
-            logger.debug("Unable to mark {} for compaction; probably a user-defined compaction got in the way", sstables);
-            return null;
+            if (cfs.getDataTracker().markCompacting(sstables))
+            {
+                LeveledCompactionTask newTask = new LeveledCompactionTask(cfs, sstables, gcBefore, maxSSTableSizeInMB);
+                newTask.setCompactionType(op);
+                return newTask;
+            }
         }
-
-        LeveledCompactionTask newTask = new LeveledCompactionTask(cfs, sstables, gcBefore, maxSSTableSizeInMB);
-        newTask.setCompactionType(op);
-        return newTask;
     }
 
     public AbstractCompactionTask getUserDefinedTask(Collection<SSTableReader> sstables, int gcBefore)
@@ -153,19 +143,7 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
         else if (notification instanceof SSTableListChangedNotification)
         {
             SSTableListChangedNotification listChangedNotification = (SSTableListChangedNotification) notification;
-            switch (listChangedNotification.compactionType)
-            {
-                // Cleanup, scrub and updateSSTable shouldn't promote (see #3989)
-                case CLEANUP:
-                case SCRUB:
-                case UPGRADE_SSTABLES:
-                case TOMBSTONE_COMPACTION: // Also when performing tombstone removal.
-                    manifest.replace(listChangedNotification.removed, listChangedNotification.added);
-                    break;
-                default:
-                    manifest.promote(listChangedNotification.removed, listChangedNotification.added);
-                    break;
-            }
+            manifest.replace(listChangedNotification.removed, listChangedNotification.added);
         }
     }
 
@@ -178,7 +156,7 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
     {
         Multimap<Integer, SSTableReader> byLevel = ArrayListMultimap.create();
         for (SSTableReader sstable : sstables)
-            byLevel.get(manifest.levelOf(sstable)).add(sstable);
+            byLevel.get(sstable.getSSTableLevel()).add(sstable);
 
         List<ICompactionScanner> scanners = new ArrayList<ICompactionScanner>(sstables.size());
         for (Integer level : byLevel.keySet())
@@ -210,7 +188,7 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
         private final Iterator<SSTableReader> sstableIterator;
         private final long totalLength;
 
-        private SSTableScanner currentScanner;
+        private ICompactionScanner currentScanner;
         private long positionOffset;
 
         public LeveledScanner(Collection<SSTableReader> sstables, Range<Token> range)
@@ -299,14 +277,43 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
             if (sstables.isEmpty())
                 continue;
 
+            Set<SSTableReader> compacting = cfs.getDataTracker().getCompacting();
             for (SSTableReader sstable : sstables)
             {
                 if (sstable.getEstimatedDroppableTombstoneRatio(gcBefore) <= tombstoneThreshold)
                     continue level;
-                else if (!sstable.isMarkedSuspect() && worthDroppingTombstones(sstable, gcBefore))
+                else if (!compacting.contains(sstable) && !sstable.isMarkedSuspect() && worthDroppingTombstones(sstable, gcBefore))
                     return sstable;
             }
         }
         return null;
+    }
+
+    public static Map<String, String> validateOptions(Map<String, String> options) throws ConfigurationException
+    {
+        Map<String, String> uncheckedOptions = AbstractCompactionStrategy.validateOptions(options);
+
+        String size = options.containsKey(SSTABLE_SIZE_OPTION) ? options.get(SSTABLE_SIZE_OPTION) : "1";
+        try
+        {
+            int ssSize = Integer.parseInt(size);
+            if (ssSize < 1)
+            {
+                throw new ConfigurationException(String.format("%s must be larger than 0, but was %s", SSTABLE_SIZE_OPTION, ssSize));
+            }
+        }
+        catch (NumberFormatException ex)
+        {
+            throw new ConfigurationException(String.format("%s is not a parsable int (base10) for %s", size, SSTABLE_SIZE_OPTION), ex);
+        }
+
+        uncheckedOptions.remove(SSTABLE_SIZE_OPTION);
+
+        return uncheckedOptions;
+    }
+
+    public int getNextLevel(Collection<SSTableReader> sstables, OperationType operationType)
+    {
+        return manifest.getNextLevel(sstables, operationType);
     }
 }

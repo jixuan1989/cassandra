@@ -25,6 +25,7 @@ import com.yammer.metrics.stats.Snapshot;
 import org.apache.cassandra.stress.operations.*;
 import org.apache.cassandra.stress.util.CassandraClient;
 import org.apache.cassandra.stress.util.Operation;
+import org.apache.cassandra.transport.SimpleClient;
 
 public class StressAction extends Thread
 {
@@ -89,6 +90,8 @@ public class StressAction extends Thread
         int interval = client.getProgressInterval();
         int epochIntervals = client.getProgressInterval() * 10;
         long testStartTime = System.currentTimeMillis();
+        
+        StressStatistics stats = new StressStatistics(client, output);
 
         while (!terminate)
         {
@@ -142,6 +145,14 @@ public class StressAction extends Thread
                                              keyDelta / interval,
                                              latency.getMedian(), latency.get95thPercentile(), latency.get999thPercentile(),
                                              currentTimeInSeconds));
+
+                if (client.outputStatistics()) {
+                    stats.addIntervalStats(total, 
+                                           opDelta / interval, 
+                                           keyDelta / interval, 
+                                           latency, 
+                                           currentTimeInSeconds);
+                        }
             }
         }
 
@@ -156,11 +167,14 @@ public class StressAction extends Thread
             if (consumer.getReturnCode() == FAILURE)
                 returnCode = FAILURE;
 
-        if (returnCode == SUCCESS)
+        if (returnCode == SUCCESS) {            
+            if (client.outputStatistics())
+                stats.printStats();
             // marking an end of the output to the client
-            output.println("END");
-        else
+            output.println("END");            
+        } else {
             output.println("FAILURE");
+        }
 
     }
 
@@ -218,29 +232,60 @@ public class StressAction extends Thread
 
         public void run()
         {
-            CassandraClient connection = client.getClient();
-
-            for (int i = 0; i < items; i++)
+            if (client.use_native_protocol)
             {
-                if (stop)
-                    break;
+                SimpleClient connection = client.getNativeClient();
 
-                try
+                for (int i = 0; i < items; i++)
                 {
-                    operations.take().run(connection); // running job
-                }
-                catch (Exception e)
-                {
-                    if (output == null)
+                    if (stop)
+                        break;
+
+                    try
                     {
-                        System.err.println(e.getMessage());
-                        returnCode = StressAction.FAILURE;
-                        System.exit(-1);
+                        operations.take().run(connection); // running job
                     }
+                    catch (Exception e)
+                    {
+                        if (output == null)
+                        {
+                            System.err.println(e.getMessage());
+                            returnCode = StressAction.FAILURE;
+                            System.exit(-1);
+                        }
 
-                    output.println(e.getMessage());
-                    returnCode = StressAction.FAILURE;
-                    break;
+                        output.println(e.getMessage());
+                        returnCode = StressAction.FAILURE;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                CassandraClient connection = client.getClient();
+
+                for (int i = 0; i < items; i++)
+                {
+                    if (stop)
+                        break;
+
+                    try
+                    {
+                        operations.take().run(connection); // running job
+                    }
+                    catch (Exception e)
+                    {
+                        if (output == null)
+                        {
+                            System.err.println(e.getMessage());
+                            returnCode = StressAction.FAILURE;
+                            System.exit(-1);
+                        }
+
+                        output.println(e.getMessage());
+                        returnCode = StressAction.FAILURE;
+                        break;
+                    }
                 }
             }
         }

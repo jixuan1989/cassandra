@@ -140,7 +140,9 @@ public class CliClient
         INDEX_INTERVAL,
         MEMTABLE_FLUSH_PERIOD_IN_MS,
         CACHING,
-        DEFAULT_TIME_TO_LIVE
+        DEFAULT_TIME_TO_LIVE,
+        SPECULATIVE_RETRY,
+        POPULATE_IO_CACHE_ON_FLUSH
     }
 
     private static final String DEFAULT_PLACEMENT_STRATEGY = "org.apache.cassandra.locator.NetworkTopologyStrategy";
@@ -195,6 +197,12 @@ public class CliClient
     {
         sessionState.out.println("Welcome to Cassandra CLI version " + FBUtilities.getReleaseVersionString() + "\n");
         sessionState.out.println(getHelp().banner);
+    }
+
+    private void printCQL3TablesWarning(String cmd)
+    {
+        sessionState.err.println("\nWARNING: CQL3 tables are intentionally omitted from '" + cmd + "' output.");
+        sessionState.err.println("See https://issues.apache.org/jira/browse/CASSANDRA-4377 for details.\n");
     }
 
     // Execute a CLI Statement
@@ -1338,6 +1346,12 @@ public class CliClient
             case INDEX_INTERVAL:
                 cfDef.setIndex_interval(Integer.parseInt(mValue));
                 break;
+            case SPECULATIVE_RETRY:
+                cfDef.setSpeculative_retry(CliUtils.unescapeSQLString(mValue));
+                break;
+            case POPULATE_IO_CACHE_ON_FLUSH:
+                cfDef.setPopulate_io_cache_on_flush(Boolean.parseBoolean(mValue));
+                break;
             default:
                 //must match one of the above or we'd throw an exception at the valueOf statement above.
                 assert(false);
@@ -1683,6 +1697,8 @@ public class CliClient
         if (!CliMain.isConnected())
             return;
 
+        printCQL3TablesWarning("show keyspaces");
+
         List<KsDef> keySpaces = thriftClient.describe_keyspaces();
 
         Collections.sort(keySpaces, new KsDefNamesComparator());
@@ -1697,6 +1713,8 @@ public class CliClient
     {
         if (!CliMain.isConnected())
             return;
+
+        printCQL3TablesWarning("show schema");
 
         final List<KsDef> keyspaces = thriftClient.describe_keyspaces();
         Collections.sort(keyspaces, new KsDefNamesComparator());
@@ -1786,6 +1804,7 @@ public class CliClient
 
         writeAttr(output, false, "read_repair_chance", cfDef.read_repair_chance);
         writeAttr(output, false, "dclocal_read_repair_chance", cfDef.dclocal_read_repair_chance);
+        writeAttr(output, false, "populate_io_cache_on_flush", cfDef.populate_io_cache_on_flush);
         writeAttr(output, false, "gc_grace", cfDef.gc_grace_seconds);
         writeAttr(output, false, "min_compaction_threshold", cfDef.min_compaction_threshold);
         writeAttr(output, false, "max_compaction_threshold", cfDef.max_compaction_threshold);
@@ -1793,6 +1812,7 @@ public class CliClient
         writeAttr(output, false, "compaction_strategy", cfDef.compaction_strategy);
         writeAttr(output, false, "caching", cfDef.caching);
         writeAttr(output, false, "default_time_to_live", cfDef.default_time_to_live);
+        writeAttr(output, false, "speculative_retry", cfDef.speculative_retry);
 
         if (cfDef.isSetBloom_filter_fp_chance())
             writeAttr(output, false, "bloom_filter_fp_chance", cfDef.bloom_filter_fp_chance);
@@ -2158,11 +2178,13 @@ public class CliClient
         sessionState.out.printf("      Compaction min/max thresholds: %s/%s%n", cf_def.min_compaction_threshold, cf_def.max_compaction_threshold);
         sessionState.out.printf("      Read repair chance: %s%n", cf_def.read_repair_chance);
         sessionState.out.printf("      DC Local Read repair chance: %s%n", cf_def.dclocal_read_repair_chance);
+        sessionState.out.printf("      Populate IO Cache on flush: %b%n", cf_def.populate_io_cache_on_flush);
         sessionState.out.printf("      Replicate on write: %s%n", cf_def.replicate_on_write);
         sessionState.out.printf("      Caching: %s%n", cf_def.caching);
         sessionState.out.printf("      Default time to live: %s%n", cf_def.default_time_to_live);
         sessionState.out.printf("      Bloom Filter FP chance: %s%n", cf_def.isSetBloom_filter_fp_chance() ? cf_def.bloom_filter_fp_chance : "default");
         sessionState.out.printf("      Index interval: %s%n", cf_def.isSetIndex_interval() ? cf_def.index_interval : "default");
+        sessionState.out.printf("      Speculative Retry: %s%n", cf_def.speculative_retry);
 
         // if we have connection to the cfMBean established
         if (cfMBean != null)
@@ -2230,6 +2252,8 @@ public class CliClient
     {
         if (!CliMain.isConnected())
             return;
+
+        printCQL3TablesWarning("describe");
 
         int argCount = statement.getChildCount();
 

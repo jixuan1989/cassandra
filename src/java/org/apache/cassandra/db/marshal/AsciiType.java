@@ -20,6 +20,7 @@ package org.apache.cassandra.db.marshal;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.cql.jdbc.JdbcAscii;
+import org.apache.cassandra.cql3.CQL3Type;
 
 public class AsciiType extends AbstractType<String>
 {
@@ -68,5 +69,10 @@ public class AsciiType extends AbstractType<String>
             if (b < 0 || b > 127)
                 throw new MarshalException("Invalid byte for ascii: " + Byte.toString(b));
         }
+    }
+
+    public CQL3Type asCQL3Type()
+    {
+        return CQL3Type.Native.ASCII;
     }
 }

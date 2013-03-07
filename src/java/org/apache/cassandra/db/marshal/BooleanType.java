@@ -20,6 +20,8 @@ package org.apache.cassandra.db.marshal;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.cql.jdbc.JdbcBoolean;
+import org.apache.cassandra.cql3.Constants;
+import org.apache.cassandra.cql3.CQL3Type;
 
 public class BooleanType extends AbstractType<Boolean>
 {
@@ -76,5 +78,10 @@ public class BooleanType extends AbstractType<Boolean>
   {
       if (bytes.remaining() != 1 && bytes.remaining() != 0)
           throw new MarshalException(String.format("Expected 1 or 0 byte value (%d)", bytes.remaining()));
+  }
+
+  public CQL3Type asCQL3Type()
+  {
+      return CQL3Type.Native.BOOLEAN;
   }
 }

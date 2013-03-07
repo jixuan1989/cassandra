@@ -23,7 +23,6 @@ import com.google.common.collect.ImmutableMap;
 import org.apache.commons.lang.ObjectUtils;
 import org.apache.commons.lang.StringUtils;
 
-import org.apache.cassandra.auth.Auth;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.db.*;
@@ -82,12 +81,14 @@ public final class KSMetaData
                                                 CFMetaData.RangeXfersCf,
                                                 CFMetaData.LocalCf,
                                                 CFMetaData.PeersCf,
+                                                CFMetaData.PeerEventsCf,
                                                 CFMetaData.HintsCf,
                                                 CFMetaData.IndexCf,
                                                 CFMetaData.CounterIdCf,
                                                 CFMetaData.SchemaKeyspacesCf,
                                                 CFMetaData.SchemaColumnFamiliesCf,
                                                 CFMetaData.SchemaColumnsCf,
+                                                CFMetaData.CompactionLogCF,
                                                 CFMetaData.OldStatusCf,
                                                 CFMetaData.OldHintsCf,
                                                 CFMetaData.OldMigrationsCf,
@@ -99,12 +100,6 @@ public final class KSMetaData
     {
         List<CFMetaData> cfDefs = Arrays.asList(CFMetaData.TraceSessionsCf, CFMetaData.TraceEventsCf);
         return new KSMetaData(Tracing.TRACE_KS, SimpleStrategy.class, ImmutableMap.of("replication_factor", "1"), true, cfDefs);
-    }
-
-    public static KSMetaData authKeyspace()
-    {
-        List<CFMetaData> cfDefs = Arrays.asList(CFMetaData.AuthUsersCf);
-        return new KSMetaData(Auth.AUTH_KS, SimpleStrategy.class, ImmutableMap.of("replication_factor", "1"), true, cfDefs);
     }
 
     public static KSMetaData testMetadata(String name, Class<? extends AbstractReplicationStrategy> strategyClass, Map<String, String> strategyOptions, CFMetaData... cfDefs)
@@ -211,7 +206,7 @@ public final class KSMetaData
         // Attempt to instantiate the ARS, which will throw a ConfigException if the strategy_options aren't fully formed
         TokenMetadata tmd = StorageService.instance.getTokenMetadata();
         IEndpointSnitch eps = DatabaseDescriptor.getEndpointSnitch();
-        AbstractReplicationStrategy.createReplicationStrategy(name, strategyClass, tmd, eps, strategyOptions);
+        AbstractReplicationStrategy.validateReplicationStrategy(name, strategyClass, tmd, eps, strategyOptions);
 
         for (CFMetaData cfm : cfMetaData.values())
             cfm.validate();

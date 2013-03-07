@@ -33,6 +33,8 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.Futures;
+
+import org.apache.cassandra.db.compaction.LeveledManifest;
 import org.cliffc.high_scale_lib.NonBlockingHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,9 +43,11 @@ import org.apache.cassandra.cache.IRowCacheEntry;
 import org.apache.cassandra.cache.RowCacheKey;
 import org.apache.cassandra.cache.RowCacheSentinel;
 import org.apache.cassandra.concurrent.JMXEnabledThreadPoolExecutor;
-import org.apache.cassandra.concurrent.NamedThreadFactory;
-import org.apache.cassandra.concurrent.StageManager;
-import org.apache.cassandra.config.*;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.CFMetaData.SpeculativeRetry;
+import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.columniterator.OnDiskAtomIterator;
 import org.apache.cassandra.db.commitlog.CommitLog;
 import org.apache.cassandra.db.commitlog.ReplayPosition;
@@ -59,6 +63,7 @@ import org.apache.cassandra.db.index.SecondaryIndexManager;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.dht.*;
 import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.io.FSReadError;
 import org.apache.cassandra.io.compress.CompressionParameters;
 import org.apache.cassandra.io.sstable.*;
 import org.apache.cassandra.io.sstable.Descriptor;
@@ -115,6 +120,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     private final AtomicLong liveRatioComputedAt = new AtomicLong(32);
 
     public final ColumnFamilyMetrics metric;
+    public volatile long sampleLatency = Long.MAX_VALUE;
 
     public void reload()
     {
@@ -265,34 +271,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         {
             Directories.SSTableLister sstableFiles = directories.sstableLister().skipTemporary(true);
             Collection<SSTableReader> sstables = SSTableReader.batchOpen(sstableFiles.list().entrySet(), metadata, this.partitioner);
-
-            if (metadata.getDefaultValidator().isCommutative())
-            {
-                // Filter non-compacted sstables, remove compacted ones
-                Set<Integer> compactedSSTables = new HashSet<Integer>();
-                for (SSTableReader sstable : sstables)
-                    compactedSSTables.addAll(sstable.getAncestors());
-
-                Set<SSTableReader> liveSSTables = new HashSet<SSTableReader>();
-                for (SSTableReader sstable : sstables)
-                {
-                    if (compactedSSTables.contains(sstable.descriptor.generation))
-                    {
-                        logger.info("{} is already compacted and will be removed.", sstable);
-                        sstable.markCompacted(); // we need to mark as compacted to be deleted
-                        sstable.releaseReference(); // this amount to deleting the sstable
-                    }
-                    else
-                    {
-                        liveSSTables.add(sstable);
-                    }
-                }
-                data.addInitialSSTables(liveSSTables);
-            }
-            else
-            {
-                data.addInitialSSTables(sstables);
-            }
+            data.addInitialSSTables(sstables);
         }
 
         if (caching == Caching.ALL || caching == Caching.KEYS_ONLY)
@@ -321,6 +300,27 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         {
             throw new RuntimeException(e);
         }
+        StorageService.optionalTasks.scheduleWithFixedDelay(new Runnable()
+        {
+            public void run()
+            {
+                SpeculativeRetry retryPolicy = ColumnFamilyStore.this.metadata.getSpeculativeRetry();
+                switch (retryPolicy.type)
+                {
+                    case PERCENTILE:
+                        double percentile = retryPolicy.value / 100d;
+                        // get percentile and convert it to MS insted of dealing with micro
+                        sampleLatency = (long) (metric.readLatency.latency.getSnapshot().getValue(percentile) / 1000);
+                        break;
+                    case CUSTOM:
+                        sampleLatency = retryPolicy.value;
+                        break;
+                    default:
+                        sampleLatency = Long.MAX_VALUE;
+                        break;
+                }
+            }
+        }, 30, 30, TimeUnit.SECONDS);
     }
 
     /** call when dropping or renaming a CF. Performs mbean housekeeping and invalidates CFS to other operations */
@@ -469,6 +469,72 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         }
     }
 
+    /**
+     * Replacing compacted sstables is atomic as far as observers of DataTracker are concerned, but not on the
+     * filesystem: first the new sstables are renamed to "live" status (i.e., the tmp marker is removed), then
+     * their ancestors are removed.
+     *
+     * If an unclean shutdown happens at the right time, we can thus end up with both the new ones and their
+     * ancestors "live" in the system.  This is harmless for normal data, but for counters it can cause overcounts.
+     *
+     * To prevent this, we record sstables being compacted in the system keyspace.  If we find unfinished
+     * compactions, we remove the new ones (since those may be incomplete -- under LCS, we may create multiple
+     * sstables from any given ancestor).
+     */
+    public static void removeUnfinishedCompactionLeftovers(String keyspace, String columnfamily, Set<Integer> unfinishedGenerations)
+    {
+        Directories directories = Directories.create(keyspace, columnfamily);
+
+        // sanity-check unfinishedGenerations
+        Set<Integer> allGenerations = new HashSet<Integer>();
+        for (Descriptor desc : directories.sstableLister().list().keySet())
+            allGenerations.add(desc.generation);
+        if (!allGenerations.containsAll(unfinishedGenerations))
+        {
+            throw new IllegalStateException("Unfinished compactions reference missing sstables."
+                                            + " This should never happen since compactions are marked finished before we start removing the old sstables.");
+        }
+
+        // remove new sstables from compactions that didn't complete, and compute
+        // set of ancestors that shouldn't exist anymore
+        Set<Integer> completedAncestors = new HashSet<Integer>();
+        for (Map.Entry<Descriptor, Set<Component>> sstableFiles : directories.sstableLister().list().entrySet())
+        {
+            Descriptor desc = sstableFiles.getKey();
+            Set<Component> components = sstableFiles.getValue();
+
+            SSTableMetadata meta;
+            try
+            {
+                meta = SSTableMetadata.serializer.deserialize(desc);
+            }
+            catch (IOException e)
+            {
+                throw new FSReadError(e, desc.filenameFor(Component.STATS));
+            }
+
+            Set<Integer> ancestors = meta.ancestors;
+            if (!ancestors.isEmpty() && unfinishedGenerations.containsAll(ancestors))
+            {
+                SSTable.delete(desc, components);
+            }
+            else
+            {
+                completedAncestors.addAll(ancestors);
+            }
+        }
+
+        // remove old sstables from compactions that did complete
+        for (Map.Entry<Descriptor, Set<Component>> sstableFiles : directories.sstableLister().list().entrySet())
+        {
+            Descriptor desc = sstableFiles.getKey();
+            Set<Component> components = sstableFiles.getValue();
+
+            if (completedAncestors.contains(desc.generation))
+                SSTable.delete(desc, components);
+        }
+    }
+
     // must be called after all sstables are loaded since row cache merges all row versions
     public void initRowCache()
     {
@@ -525,6 +591,21 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 throw new RuntimeException(String.format("Can't open incompatible SSTable! Current version %s, found file: %s",
                                                          Descriptor.Version.CURRENT,
                                                          descriptor));
+
+            // force foreign sstables to level 0
+            try
+            {
+                if (new File(descriptor.filenameFor(Component.STATS)).exists())
+                {
+                    SSTableMetadata oldMetadata = SSTableMetadata.serializer.deserialize(descriptor);
+                    LeveledManifest.mutateLevel(oldMetadata, descriptor, descriptor.filenameFor(Component.STATS), 0);
+                }
+            }
+            catch (IOException e)
+            {
+                SSTableReader.logOpenException(entry.getKey(), e);
+                continue;
+            }
 
             Descriptor newDescriptor = new Descriptor(descriptor.version,
                                                       descriptor.directory,
@@ -711,8 +792,17 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
         if (clean)
         {
-            logger.debug("forceFlush requested but everything is clean in {}", name);
-            return Futures.immediateCheckedFuture(null);
+            // We could have a memtable for this column family that is being
+            // flushed. Make sure the future returned wait for that so callers can
+            // assume that any data inserted prior to the call are fully flushed
+            // when the future returns (see #5241).
+            return postFlushExecutor.submit(new Runnable()
+            {
+                public void run()
+                {
+                    logger.debug("forceFlush requested but everything is clean in {}", name);
+                }
+            });
         }
 
         return switchMemtable(true, false);
@@ -849,7 +939,6 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         for (SSTableReader sstable : sstables)
         {
             Set<SSTableReader> overlaps = ImmutableSet.copyOf(tree.search(Interval.<RowPosition, SSTableReader>create(sstable.first, sstable.last)));
-            assert overlaps.contains(sstable);
             results = results == null ? overlaps : Sets.union(results, overlaps).immutableCopy();
         }
         results = Sets.difference(results, ImmutableSet.copyOf(sstables));
@@ -1343,7 +1432,6 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     /**
       * Iterate over a range of rows and columns from memtables/sstables.
       *
-      * @param superColumn optional SuperColumn to slice subcolumns of; null to slice top-level columns
       * @param range Either a Bounds, which includes start key, or a Range, which does not.
       * @param columnFilter description of the columns we're interested in for each row
      */
@@ -1897,10 +1985,11 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         return intern(name);
     }
 
-    public SSTableWriter createCompactionWriter(long estimatedRows, File location, Collection<SSTableReader> sstables)
+    public SSTableWriter createCompactionWriter(OperationType operationType, long estimatedRows, File location, Collection<SSTableReader> sstables)
     {
         ReplayPosition rp = ReplayPosition.getReplayPosition(sstables);
         SSTableMetadata.Collector sstableMetadataCollector = SSTableMetadata.createCollector().replayPosition(rp);
+        sstableMetadataCollector.sstableLevel(compactionStrategy.getNextLevel(sstables, operationType));
 
         // Get the max timestamp of the precompacted sstables
         // and adds generation of live ancestors
@@ -1908,6 +1997,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         {
             sstableMetadataCollector.updateMinTimestamp(sstable.getMinTimestamp());
             sstableMetadataCollector.updateMaxTimestamp(sstable.getMaxTimestamp());
+
             sstableMetadataCollector.addAncestor(sstable.descriptor.generation);
             for (Integer i : sstable.getAncestors())
             {

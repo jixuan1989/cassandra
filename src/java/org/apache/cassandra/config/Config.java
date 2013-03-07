@@ -36,6 +36,7 @@ public class Config
     public String authenticator;
     public String authority; // for backwards compatibility - will log a warning.
     public String authorizer;
+    public int permissions_validity_in_ms = 2000;
 
     /* Hashing strategy Random or OPHF */
     public String partitioner;
@@ -90,6 +91,8 @@ public class Config
     public Integer rpc_max_threads = null;
     public Integer rpc_send_buff_size_in_bytes;
     public Integer rpc_recv_buff_size_in_bytes;
+    public Integer internode_send_buff_size_in_bytes;
+    public Integer internode_recv_buff_size_in_bytes;
 
     public Boolean start_native_transport = false;
     public Integer native_transport_port = 9042;
@@ -166,7 +169,7 @@ public class Config
 
     public boolean inter_dc_tcp_nodelay = false;
 
-    private static boolean loadYaml = true;
+    private static boolean isClientMode = false;
     private static boolean outboundBindAny = false;
 
     public static boolean getOutboundBindAny()
@@ -179,14 +182,14 @@ public class Config
         outboundBindAny = value;
     }
 
-    public static boolean getLoadYaml()
+    public static boolean isClientMode()
     {
-       return loadYaml;
+       return isClientMode;
     }
 
-    public static void setLoadYaml(boolean value)
+    public static void setClientMode(boolean clientMode)
     {
-        loadYaml = value;
+        isClientMode = clientMode;
     }
 
     public static enum CommitLogSync

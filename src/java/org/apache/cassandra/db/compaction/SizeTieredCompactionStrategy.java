@@ -23,7 +23,9 @@ import java.util.Map.Entry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.cql3.CFPropDefs;
 import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.SSTableReader;
 import org.apache.cassandra.utils.Pair;
 
@@ -52,21 +54,18 @@ public class SizeTieredCompactionStrategy extends AbstractCompactionStrategy
         bucketLow = optionValue == null ? DEFAULT_BUCKET_LOW : Double.parseDouble(optionValue);
         optionValue = options.get(BUCKET_HIGH_KEY);
         bucketHigh = optionValue == null ? DEFAULT_BUCKET_HIGH : Double.parseDouble(optionValue);
-        if (bucketHigh <= bucketLow)
-        {
-            logger.warn("Bucket low/high marks for {} incorrect, using defaults.", cfs.name);
-            bucketLow = DEFAULT_BUCKET_LOW;
-            bucketHigh = DEFAULT_BUCKET_HIGH;
-        }
         cfs.setCompactionThresholds(cfs.metadata.getMinCompactionThreshold(), cfs.metadata.getMaxCompactionThreshold());
     }
 
-    public synchronized AbstractCompactionTask getNextBackgroundTask(final int gcBefore)
+    private List<SSTableReader> getNextBackgroundSSTables(final int gcBefore)
     {
-        if (cfs.isCompactionDisabled())
+        // make local copies so they can't be changed out from under us mid-method
+        int minThreshold = cfs.getMinimumCompactionThreshold();
+        int maxThreshold = cfs.getMaximumCompactionThreshold();
+        if (minThreshold == 0 || maxThreshold == 0)
         {
             logger.debug("Compaction is currently disabled.");
-            return null;
+            return Collections.emptyList();
         }
 
         Set<SSTableReader> candidates = cfs.getUncompactingSSTables();
@@ -77,7 +76,7 @@ public class SizeTieredCompactionStrategy extends AbstractCompactionStrategy
         List<List<SSTableReader>> prunedBuckets = new ArrayList<List<SSTableReader>>();
         for (List<SSTableReader> bucket : buckets)
         {
-            if (bucket.size() < cfs.getMinimumCompactionThreshold())
+            if (bucket.size() < minThreshold)
                 continue;
 
             Collections.sort(bucket, new Comparator<SSTableReader>()
@@ -87,7 +86,8 @@ public class SizeTieredCompactionStrategy extends AbstractCompactionStrategy
                     return o1.descriptor.generation - o2.descriptor.generation;
                 }
             });
-            prunedBuckets.add(bucket.subList(0, Math.min(bucket.size(), cfs.getMaximumCompactionThreshold())));
+            List<SSTableReader> prunedBucket = bucket.subList(0, Math.min(bucket.size(), maxThreshold));
+            prunedBuckets.add(prunedBucket);
         }
 
         if (prunedBuckets.isEmpty())
@@ -104,10 +104,10 @@ public class SizeTieredCompactionStrategy extends AbstractCompactionStrategy
             }
 
             if (prunedBuckets.isEmpty())
-                return null;
+                return Collections.emptyList();
         }
 
-        List<SSTableReader> smallestBucket = Collections.min(prunedBuckets, new Comparator<List<SSTableReader>>()
+        return Collections.min(prunedBuckets, new Comparator<List<SSTableReader>>()
         {
             public int compare(List<SSTableReader> o1, List<SSTableReader> o2)
             {
@@ -127,23 +127,44 @@ public class SizeTieredCompactionStrategy extends AbstractCompactionStrategy
                 return n / sstables.size();
             }
         });
+    }
 
-        if (!cfs.getDataTracker().markCompacting(smallestBucket))
+    public AbstractCompactionTask getNextBackgroundTask(int gcBefore)
+    {
+        while (true)
         {
-            logger.debug("Unable to mark {} for compaction; probably a user-defined compaction got in the way", smallestBucket);
-            return null;
-        }
+            List<SSTableReader> smallestBucket = getNextBackgroundSSTables(gcBefore);
 
-        return new CompactionTask(cfs, smallestBucket, gcBefore);
+            if (smallestBucket.isEmpty())
+                return null;
+
+            if (cfs.getDataTracker().markCompacting(smallestBucket))
+                return new CompactionTask(cfs, smallestBucket, gcBefore);
+        }
     }
 
     public AbstractCompactionTask getMaximalTask(final int gcBefore)
     {
-        return cfs.getSSTables().isEmpty() ? null : new CompactionTask(cfs, filterSuspectSSTables(cfs.getSSTables()), gcBefore);
+        while (true)
+        {
+            List<SSTableReader> sstables = filterSuspectSSTables(cfs.getUncompactingSSTables());
+            if (sstables.isEmpty())
+                return null;
+            if (cfs.getDataTracker().markCompacting(sstables))
+                return new CompactionTask(cfs, sstables, gcBefore);
+        }
     }
 
     public AbstractCompactionTask getUserDefinedTask(Collection<SSTableReader> sstables, final int gcBefore)
     {
+        assert !sstables.isEmpty(); // checked for by CM.submitUserDefined
+
+        if (!cfs.getDataTracker().markCompacting(sstables))
+        {
+            logger.debug("Unable to mark {} for compaction; probably a background compaction got to it first.  You can disable background compactions temporarily if this is a problem", sstables);
+            return null;
+        }
+
         return new CompactionTask(cfs, sstables, gcBefore).setUserDefined(true);
     }
 
@@ -225,6 +246,59 @@ public class SizeTieredCompactionStrategy extends AbstractCompactionStrategy
     public long getMaxSSTableSize()
     {
         return Long.MAX_VALUE;
+    }
+
+    public static Map<String, String> validateOptions(Map<String, String> options) throws ConfigurationException
+    {
+        Map<String, String> uncheckedOptions = AbstractCompactionStrategy.validateOptions(options);
+
+        String optionValue = options.get(MIN_SSTABLE_SIZE_KEY);
+        try
+        {
+            long minSSTableSize = optionValue == null ? DEFAULT_MIN_SSTABLE_SIZE : Long.parseLong(optionValue);
+            if (minSSTableSize < 0)
+            {
+                throw new ConfigurationException(String.format("%s must be non negative: %d", MIN_SSTABLE_SIZE_KEY, minSSTableSize));
+            }
+        }
+        catch (NumberFormatException e)
+        {
+            throw new ConfigurationException(String.format("%s is not a parsable int (base10) for %s", optionValue, MIN_SSTABLE_SIZE_KEY), e);
+        }
+
+        double bucketLow, bucketHigh;
+        optionValue = options.get(BUCKET_LOW_KEY);
+        try
+        {
+            bucketLow = optionValue == null ? DEFAULT_BUCKET_LOW : Double.parseDouble(optionValue);
+        }
+        catch (NumberFormatException e)
+        {
+            throw new ConfigurationException(String.format("%s is not a parsable int (base10) for %s", optionValue, DEFAULT_BUCKET_LOW), e);
+        }
+
+        optionValue = options.get(BUCKET_HIGH_KEY);
+        try
+        {
+            bucketHigh = optionValue == null ? DEFAULT_BUCKET_HIGH : Double.parseDouble(optionValue);
+        }
+        catch (NumberFormatException e)
+        {
+            throw new ConfigurationException(String.format("%s is not a parsable int (base10) for %s", optionValue, DEFAULT_BUCKET_HIGH), e);
+        }
+
+        if (bucketHigh <= bucketLow)
+        {
+            throw new ConfigurationException(String.format("Bucket high value (%s) is less than or equal bucket low value (%s)", bucketHigh, bucketLow));
+        }
+
+        uncheckedOptions.remove(MIN_SSTABLE_SIZE_KEY);
+        uncheckedOptions.remove(BUCKET_LOW_KEY);
+        uncheckedOptions.remove(BUCKET_HIGH_KEY);
+        uncheckedOptions.remove(CFPropDefs.KW_MINCOMPACTIONTHRESHOLD);
+        uncheckedOptions.remove(CFPropDefs.KW_MAXCOMPACTIONTHRESHOLD);
+
+        return uncheckedOptions;
     }
 
     public String toString()

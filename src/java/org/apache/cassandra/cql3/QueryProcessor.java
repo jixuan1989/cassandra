@@ -136,15 +136,18 @@ public class QueryProcessor
     throws RequestExecutionException, RequestValidationException
     {
         logger.trace("CQL QUERY: {}", queryString);
-        return processStatement(getStatement(queryString, queryState.getClientState()).statement, cl, queryState, Collections.<ByteBuffer>emptyList());
+        CQLStatement prepared = getStatement(queryString, queryState.getClientState()).statement;
+        if (prepared.getBoundsTerms() > 0)
+            throw new InvalidRequestException("Cannot execute query with bind variables");
+        return processStatement(prepared, cl, queryState, Collections.<ByteBuffer>emptyList());
     }
 
-    public static UntypedResultSet process(String query) throws RequestExecutionException
+    public static UntypedResultSet process(String query, ConsistencyLevel cl) throws RequestExecutionException
     {
         try
         {
             QueryState state = new QueryState(new ClientState(true));
-            ResultMessage result = process(query, ConsistencyLevel.ONE, state);
+            ResultMessage result = process(query, cl, state);
             if (result instanceof ResultMessage.Rows)
                 return new UntypedResultSet(((ResultMessage.Rows)result).result);
             else

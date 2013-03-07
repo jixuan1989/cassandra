@@ -65,6 +65,8 @@ public class NodeCmd
     private static final Pair<String, String> PRIMARY_RANGE_OPT = Pair.create("pr", "partitioner-range");
     private static final Pair<String, String> SNAPSHOT_REPAIR_OPT = Pair.create("snapshot", "with-snapshot");
     private static final Pair<String, String> LOCAL_DC_REPAIR_OPT = Pair.create("local", "in-local-dc");
+    private static final Pair<String, String> START_TOKEN_OPT = Pair.create("st", "start-token");
+    private static final Pair<String, String> END_TOKEN_OPT = Pair.create("et", "end-token");
 
     private static final String DEFAULT_HOST = "127.0.0.1";
     private static final int DEFAULT_PORT = 7199;
@@ -85,6 +87,8 @@ public class NodeCmd
         options.addOption(PRIMARY_RANGE_OPT, false, "only repair the first range returned by the partitioner for the node");
         options.addOption(SNAPSHOT_REPAIR_OPT, false, "repair one node at a time using snapshots");
         options.addOption(LOCAL_DC_REPAIR_OPT, false, "only repair against nodes in the same datacenter");
+        options.addOption(START_TOKEN_OPT, true, "token at which repair range starts");
+        options.addOption(END_TOKEN_OPT, true, "token at which repair range ends");
     }
 
     public NodeCmd(NodeProbe probe)
@@ -748,7 +752,12 @@ public class NodeCmd
             // print out column family statistics for this table
             for (ColumnFamilyStoreMBean cfstore : columnFamilies)
             {
-                outs.println("\t\tColumn Family: " + cfstore.getColumnFamilyName());
+                String cfName = cfstore.getColumnFamilyName();
+                if(cfName.contains("."))
+                    outs.println("\t\tColumn Family (index): " + cfName);
+                else
+                    outs.println("\t\tColumn Family: " + cfName);
+
                 outs.println("\t\tSSTable count: " + cfstore.getLiveSSTableCount());
                 int[] leveledSStables = cfstore.getSSTableCountPerLevel();
                 if (leveledSStables != null)
@@ -1222,7 +1231,7 @@ public class NodeCmd
                 }
             }
         }
-        System.exit(0);
+        System.exit(probe.isFailed() ? 1 : 0);
     }
 
     private static Throwable findInnermostThrowable(Throwable ex)
@@ -1342,28 +1351,31 @@ public class NodeCmd
                     boolean snapshot = cmd.hasOption(SNAPSHOT_REPAIR_OPT.left);
                     boolean localDC = cmd.hasOption(LOCAL_DC_REPAIR_OPT.left);
                     boolean primaryRange = cmd.hasOption(PRIMARY_RANGE_OPT.left);
-                    probe.forceRepairAsync(System.out, keyspace, snapshot, localDC, primaryRange, columnFamilies);
+                    if (cmd.hasOption(START_TOKEN_OPT.left) || cmd.hasOption(END_TOKEN_OPT.left))
+                        probe.forceRepairRangeAsync(System.out, keyspace, snapshot, localDC, cmd.getOptionValue(START_TOKEN_OPT.left), cmd.getOptionValue(END_TOKEN_OPT.left), columnFamilies);
+                    else
+                        probe.forceRepairAsync(System.out, keyspace, snapshot, localDC, primaryRange, columnFamilies);
                     break;
                 case FLUSH   :
                     try { probe.forceTableFlush(keyspace, columnFamilies); }
-                    catch (ExecutionException ee) { err(ee, "Error occured during flushing"); }
+                    catch (ExecutionException ee) { err(ee, "Error occurred during flushing"); }
                     break;
                 case COMPACT :
                     try { probe.forceTableCompaction(keyspace, columnFamilies); }
-                    catch (ExecutionException ee) { err(ee, "Error occured during compaction"); }
+                    catch (ExecutionException ee) { err(ee, "Error occurred during compaction"); }
                     break;
                 case CLEANUP :
                     if (keyspace.equals(Table.SYSTEM_KS)) { break; } // Skip cleanup on system cfs.
                     try { probe.forceTableCleanup(keyspace, columnFamilies); }
-                    catch (ExecutionException ee) { err(ee, "Error occured during cleanup"); }
+                    catch (ExecutionException ee) { err(ee, "Error occurred during cleanup"); }
                     break;
                 case SCRUB :
                     try { probe.scrub(keyspace, columnFamilies); }
-                    catch (ExecutionException ee) { err(ee, "Error occured while scrubbing keyspace " + keyspace); }
+                    catch (ExecutionException ee) { err(ee, "Error occurred while scrubbing keyspace " + keyspace); }
                     break;
                 case UPGRADESSTABLES :
                     try { probe.upgradeSSTables(keyspace, columnFamilies); }
-                    catch (ExecutionException ee) { err(ee, "Error occured while upgrading the sstables for keyspace " + keyspace); }
+                    catch (ExecutionException ee) { err(ee, "Error occurred while upgrading the sstables for keyspace " + keyspace); }
                     break;
                 default:
                     throw new RuntimeException("Unreachable code.");

@@ -38,6 +38,7 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.concurrent.JMXEnabledThreadPoolExecutor;
 import org.apache.cassandra.concurrent.NamedThreadFactory;
 import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.filter.*;
 import org.apache.cassandra.db.marshal.AbstractType;
@@ -52,6 +53,7 @@ import org.apache.cassandra.gms.FailureDetector;
 import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.SSTable;
+import org.apache.cassandra.metrics.HintedHandoffMetrics;
 import org.apache.cassandra.net.IAsyncCallback;
 import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
@@ -94,6 +96,8 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
     private static final int PAGE_SIZE = 128;
     private static final int LARGE_NUMBER = 65536; // 64k nodes ought to be enough for anybody.
 
+    public final HintedHandoffMetrics metrics = new HintedHandoffMetrics();
+
     private volatile boolean hintedHandOffPaused = false;
 
     static final CompositeType comparator = CompositeType.getInstance(Arrays.<AbstractType<?>>asList(UUIDType.instance, Int32Type.instance));
@@ -105,6 +109,29 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
                                                                                  TimeUnit.SECONDS,
                                                                                  new LinkedBlockingQueue<Runnable>(),
                                                                                  new NamedThreadFactory("HintedHandoff", Thread.MIN_PRIORITY), "internal");
+
+    /**
+     * Returns a mutation representing a Hint to be sent to <code>targetId</code>
+     * as soon as it becomes available again.
+     */
+    public static RowMutation hintFor(RowMutation mutation, UUID targetId) throws IOException
+    {
+        UUID hintId = UUIDGen.getTimeUUID();
+
+        // The hint TTL is set at the smallest GCGraceSeconds for any of the CFs in the RM;
+        // this ensures that deletes aren't "undone" by delivery of an old hint
+        int ttl = Integer.MAX_VALUE;
+        for (ColumnFamily cf : mutation.getColumnFamilies())
+            ttl = Math.min(ttl, cf.metadata().getGcGraceSeconds());
+
+        // serialize the hint with id and version as a composite column name
+        ByteBuffer name = comparator.decompose(hintId, MessagingService.current_version);
+        ByteBuffer value = ByteBuffer.wrap(FBUtilities.serialize(mutation, RowMutation.serializer, MessagingService.current_version));
+        ColumnFamily cf = ColumnFamily.create(Schema.instance.getCFMetaData(Table.SYSTEM_KS, SystemTable.HINTS_CF));
+        cf.addColumn(name, value, System.currentTimeMillis(), ttl);
+
+        return new RowMutation(Table.SYSTEM_KS, UUIDType.instance.decompose(targetId), cf);
+    }
 
     public void start()
     {
@@ -124,6 +151,7 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
             public void run()
             {
                 scheduleAllDeliveries();
+                metrics.log();
             }
         };
         StorageService.optionalTasks.scheduleWithFixedDelay(runnable, 10, 10, TimeUnit.MINUTES);
@@ -394,16 +422,13 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
             }
         }
 
-        if (rowsReplayed.get() > 0)
+        try
         {
-            try
-            {
-                compact().get();
-            }
-            catch (Exception e)
-            {
-                throw new RuntimeException(e);
-            }
+            compact().get();
+        }
+        catch (Exception e)
+        {
+            throw new RuntimeException(e);
         }
 
         logger.info(String.format("Finished hinted handoff of %s rows to endpoint %s", rowsReplayed, endpoint));

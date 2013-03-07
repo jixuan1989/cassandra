@@ -21,6 +21,7 @@ import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.cql.jdbc.JdbcDecimal;
+import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 public class DecimalType extends AbstractType<BigDecimal>
@@ -84,5 +85,10 @@ public class DecimalType extends AbstractType<BigDecimal>
     public void validate(ByteBuffer bytes) throws MarshalException
     {
         // no useful check for invalid decimals.
+    }
+
+    public CQL3Type asCQL3Type()
+    {
+        return CQL3Type.Native.DECIMAL;
     }
 }

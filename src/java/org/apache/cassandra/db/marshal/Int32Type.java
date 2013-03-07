@@ -20,6 +20,7 @@ package org.apache.cassandra.db.marshal;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.cql.jdbc.JdbcInt32;
+import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 public class Int32Type extends AbstractType<Integer>
@@ -95,4 +96,8 @@ public class Int32Type extends AbstractType<Integer>
             throw new MarshalException(String.format("Expected 4 or 0 byte int (%d)", bytes.remaining()));
     }
 
+    public CQL3Type asCQL3Type()
+    {
+        return CQL3Type.Native.INT;
+    }
 }

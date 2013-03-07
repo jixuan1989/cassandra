@@ -18,7 +18,6 @@
 package org.apache.cassandra.db;
 
 import java.io.DataInput;
-import java.io.DataInputStream;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -31,7 +30,6 @@ import org.apache.cassandra.config.KSMetaData;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.marshal.UUIDType;
 import org.apache.cassandra.io.IVersionedSerializer;
-import org.apache.cassandra.io.util.FastByteArrayInputStream;
 import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.thrift.ColumnOrSuperColumn;
@@ -40,6 +38,8 @@ import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.UUIDGen;
 
+// TODO convert this to a Builder pattern instead of encouraging RM.add directly,
+// which is less-efficient since we have to keep a mutable HashMap around
 public class RowMutation implements IMutation
 {
     public static final RowMutationSerializer serializer = new RowMutationSerializer();
@@ -49,19 +49,21 @@ public class RowMutation implements IMutation
     private final String table;
     private final ByteBuffer key;
     // map of column family id to mutations for that column family.
-    protected Map<UUID, ColumnFamily> modifications = new HashMap<UUID, ColumnFamily>();
-
-    private final Map<Integer, byte[]> preserializedBuffers = new HashMap<Integer, byte[]>();
+    private final Map<UUID, ColumnFamily> modifications;
 
     public RowMutation(String table, ByteBuffer key)
     {
         this(table, key, new HashMap<UUID, ColumnFamily>());
     }
 
+    public RowMutation(String table, ByteBuffer key, ColumnFamily cf)
+    {
+        this(table, key, Collections.singletonMap(cf.id(), cf));
+    }
+
     public RowMutation(String table, Row row)
     {
-        this(table, row.key.key);
-        add(row.cf);
+        this(table, row.key.key, row.cf);
     }
 
     protected RowMutation(String table, ByteBuffer key, Map<UUID, ColumnFamily> modifications)
@@ -94,30 +96,6 @@ public class RowMutation implements IMutation
     public ColumnFamily getColumnFamily(UUID cfId)
     {
         return modifications.get(cfId);
-    }
-
-    /**
-     * Returns mutation representing a Hints to be sent to <code>address</code>
-     * as soon as it becomes available.  See HintedHandoffManager for more details.
-     */
-    public static RowMutation hintFor(RowMutation mutation, UUID targetId) throws IOException
-    {
-        RowMutation rm = new RowMutation(Table.SYSTEM_KS, UUIDType.instance.decompose(targetId));
-        UUID hintId = UUIDGen.getTimeUUID();
-
-        // determine the TTL for the RowMutation
-        // this is set at the smallest GCGraceSeconds for any of the CFs in the RM
-        // this ensures that deletes aren't "undone" by delivery of an old hint
-        int ttl = Integer.MAX_VALUE;
-        for (ColumnFamily cf : mutation.getColumnFamilies())
-            ttl = Math.min(ttl, cf.metadata().getGcGraceSeconds());
-
-        // serialize the hint with id and version as a composite column name
-        ByteBuffer name = HintedHandOffManager.comparator.decompose(hintId, MessagingService.current_version);
-        ByteBuffer value = ByteBuffer.wrap(mutation.getSerializedBuffer(MessagingService.current_version));
-        rm.add(SystemTable.HINTS_CF, name, value, System.currentTimeMillis(), ttl);
-
-        return rm;
     }
 
     /*
@@ -232,17 +210,6 @@ public class RowMutation implements IMutation
         return new MessageOut<RowMutation>(verb, this, serializer);
     }
 
-    public synchronized byte[] getSerializedBuffer(int version) throws IOException
-    {
-        byte[] bytes = preserializedBuffers.get(version);
-        if (bytes == null)
-        {
-            bytes = FBUtilities.serialize(this, serializer, version);
-            preserializedBuffers.put(version, bytes);
-        }
-        return bytes;
-    }
-
     public String toString()
     {
         return toString(false);
@@ -270,25 +237,6 @@ public class RowMutation implements IMutation
     }
 
 
-    public static RowMutation fromBytes(byte[] raw, int version) throws IOException
-    {
-        RowMutation rm = serializer.deserialize(new DataInputStream(new FastByteArrayInputStream(raw)), version);
-        boolean hasCounters = false;
-        for (Map.Entry<UUID, ColumnFamily> entry : rm.modifications.entrySet())
-        {
-            if (entry.getValue().metadata().getDefaultValidator().isCommutative())
-            {
-                hasCounters = true;
-                break;
-            }
-        }
-
-        // We need to deserialize at least once for counters to cleanup the delta
-        if (!hasCounters && version == MessagingService.current_version)
-            rm.preserializedBuffers.put(version, raw);
-        return rm;
-    }
-
     public static class RowMutationSerializer implements IVersionedSerializer<RowMutation>
     {
         public void serialize(RowMutation rm, DataOutput dos, int version) throws IOException
@@ -312,19 +260,36 @@ public class RowMutation implements IMutation
         {
             String table = dis.readUTF();
             ByteBuffer key = ByteBufferUtil.readWithShortLength(dis);
-            Map<UUID, ColumnFamily> modifications = new HashMap<UUID, ColumnFamily>();
             int size = dis.readInt();
-            for (int i = 0; i < size; ++i)
+
+            Map<UUID, ColumnFamily> modifications;
+            if (size == 1)
             {
-                // We used to uselessly write the cf id here
-                if (version < MessagingService.VERSION_12)
-                    ColumnFamily.serializer.deserializeCfId(dis, version);
-                ColumnFamily cf = ColumnFamily.serializer.deserialize(dis, flag, TreeMapBackedSortedColumns.factory(), version);
-                // We don't allow RowMutation with null column family, so we should never get null back.
-                assert cf != null;
-                modifications.put(cf.id(), cf);
+                ColumnFamily cf = deserializeOneCf(dis, version, flag);
+                modifications = Collections.singletonMap(cf.id(), cf);
             }
+            else
+            {
+                modifications = new HashMap<UUID, ColumnFamily>();
+                for (int i = 0; i < size; ++i)
+                {
+                    ColumnFamily cf = deserializeOneCf(dis, version, flag);
+                    modifications.put(cf.id(), cf);
+                }
+            }
+
             return new RowMutation(table, key, modifications);
+        }
+
+        private ColumnFamily deserializeOneCf(DataInput dis, int version, ColumnSerializer.Flag flag) throws IOException
+        {
+            // We used to uselessly write the cf id here
+            if (version < MessagingService.VERSION_12)
+                ColumnFamily.serializer.deserializeCfId(dis, version);
+            ColumnFamily cf = ColumnFamily.serializer.deserialize(dis, flag, TreeMapBackedSortedColumns.factory(), version);
+            // We don't allow RowMutation with null column family, so we should never get null back.
+            assert cf != null;
+            return cf;
         }
 
         public RowMutation deserialize(DataInput dis, int version) throws IOException

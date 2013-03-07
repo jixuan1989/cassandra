@@ -497,7 +497,7 @@ public class ThriftValidation
         {
             // start_token/end_token can wrap, but key/token should not
             RowPosition stop = p.getTokenFactory().fromString(range.end_token).maxKeyBound(p);
-            if (RowPosition.forKey(range.start_key, p).compareTo(stop) > 0)
+            if (RowPosition.forKey(range.start_key, p).compareTo(stop) > 0 && !stop.isMinimum())
                 throw new org.apache.cassandra.exceptions.InvalidRequestException("Start key's token sorts after end token");
         }
 
@@ -599,13 +599,14 @@ public class ThriftValidation
 
     public static IDiskAtomFilter asIFilter(SlicePredicate sp, CFMetaData metadata, ByteBuffer superColumn)
     {
-        AbstractType<?> comparator = metadata.isSuper()
-                                   ? ((CompositeType)metadata.comparator).types.get(superColumn == null ? 0 : 1)
-                                   : metadata.comparator;
         SliceRange sr = sp.slice_range;
         IDiskAtomFilter filter;
         if (sr == null)
         {
+            AbstractType<?> comparator = metadata.isSuper()
+                    ? ((CompositeType)metadata.comparator).types.get(superColumn == null ? 0 : 1)
+                    : metadata.comparator;
+
             SortedSet<ByteBuffer> ss = new TreeSet<ByteBuffer>(comparator);
             ss.addAll(sp.column_names);
             filter = new NamesQueryFilter(ss);

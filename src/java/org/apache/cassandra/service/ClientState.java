@@ -18,7 +18,12 @@
 package org.apache.cassandra.service;
 
 import java.util.*;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
 import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,6 +36,7 @@ import org.apache.cassandra.db.Table;
 import org.apache.cassandra.exceptions.AuthenticationException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.exceptions.UnauthorizedException;
+import org.apache.cassandra.utils.Pair;
 import org.apache.cassandra.utils.SemanticVersion;
 
 /**
@@ -43,6 +49,9 @@ public class ClientState
 
     private static final Set<IResource> READABLE_SYSTEM_RESOURCES = new HashSet<IResource>(5);
     private static final Set<IResource> PROTECTED_AUTH_RESOURCES = new HashSet<IResource>();
+
+    // User-level permissions cache.
+    private static final LoadingCache<Pair<AuthenticatedUser, IResource>, Set<Permission>> permissionsCache = initPermissionsCache();
 
     static
     {
@@ -143,11 +152,12 @@ public class ClientState
         if (internalCall)
             return;
         validateLogin();
-        preventSystemKSSchemaModification(keyspace, perm);
+        preventSystemKSSchemaModification(keyspace, resource, perm);
         if (perm.equals(Permission.SELECT) && READABLE_SYSTEM_RESOURCES.contains(resource))
             return;
         if (PROTECTED_AUTH_RESOURCES.contains(resource))
-            throw new UnauthorizedException(String.format("Resource %s is inaccessible", resource));
+            if (perm.equals(Permission.CREATE) || perm.equals(Permission.ALTER) || perm.equals(Permission.DROP))
+                throw new UnauthorizedException(String.format("%s schema is protected", resource));
         ensureHasPermission(perm, resource);
     }
 
@@ -164,10 +174,18 @@ public class ClientState
                                                       resource));
     }
 
-    private void preventSystemKSSchemaModification(String keyspace, Permission perm) throws UnauthorizedException
+    private void preventSystemKSSchemaModification(String keyspace, DataResource resource, Permission perm) throws UnauthorizedException
     {
-        if (Schema.systemKeyspaceNames.contains(keyspace.toLowerCase()) && !(perm.equals(Permission.SELECT) || perm.equals(Permission.MODIFY)))
+        // we only care about schema modification.
+        if (!(perm.equals(Permission.ALTER) || perm.equals(Permission.DROP) || perm.equals(Permission.CREATE)))
+            return;
+
+        if (Schema.systemKeyspaceNames.contains(keyspace.toLowerCase()))
             throw new UnauthorizedException(keyspace + " keyspace is not user-modifiable.");
+
+        // we want to allow altering AUTH_KS itself.
+        if (keyspace.equals(Auth.AUTH_KS) && !(resource.isKeyspaceLevel() && perm.equals(Permission.ALTER)))
+            throw new UnauthorizedException(String.format("Cannot %s %s", perm, resource));
     }
 
     public void validateLogin() throws UnauthorizedException
@@ -180,7 +198,7 @@ public class ClientState
     {
         validateLogin();
         if (user.isAnonymous())
-            throw new UnauthorizedException("You have to be logged in to perform this query");
+            throw new UnauthorizedException("You have to be logged in and not anonymous to perform this request");
     }
 
     private static void validateKeyspace(String keyspace) throws InvalidRequestException
@@ -239,8 +257,39 @@ public class ClientState
         return new SemanticVersion[]{ cql, cql3 };
     }
 
+    private static LoadingCache<Pair<AuthenticatedUser, IResource>, Set<Permission>> initPermissionsCache()
+    {
+        if (DatabaseDescriptor.getAuthorizer() instanceof AllowAllAuthorizer)
+            return null;
+
+        int validityPeriod = DatabaseDescriptor.getPermissionsValidity();
+        if (validityPeriod <= 0)
+            return null;
+
+        return CacheBuilder.newBuilder().expireAfterWrite(validityPeriod, TimeUnit.MILLISECONDS)
+                                        .build(new CacheLoader<Pair<AuthenticatedUser, IResource>, Set<Permission>>()
+                                        {
+                                            public Set<Permission> load(Pair<AuthenticatedUser, IResource> userResource)
+                                            {
+                                                return DatabaseDescriptor.getAuthorizer().authorize(userResource.left,
+                                                                                                    userResource.right);
+                                            }
+                                        });
+    }
+
     private Set<Permission> authorize(IResource resource)
     {
-        return DatabaseDescriptor.getAuthorizer().authorize(user, resource);
+        // AllowAllAuthorizer or manually disabled caching.
+        if (permissionsCache == null)
+            return DatabaseDescriptor.getAuthorizer().authorize(user, resource);
+
+        try
+        {
+            return permissionsCache.get(Pair.create(user, resource));
+        }
+        catch (ExecutionException e)
+        {
+            throw new RuntimeException(e);
+        }
     }
 }

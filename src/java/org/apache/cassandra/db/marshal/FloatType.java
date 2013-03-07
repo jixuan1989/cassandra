@@ -20,6 +20,7 @@ package org.apache.cassandra.db.marshal;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.cql.jdbc.JdbcFloat;
+import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 
@@ -86,5 +87,10 @@ public class FloatType extends AbstractType<Float>
     {
         if (bytes.remaining() != 4 && bytes.remaining() != 0)
             throw new MarshalException(String.format("Expected 4 or 0 byte value for a float (%d)", bytes.remaining()));
+    }
+
+    public CQL3Type asCQL3Type()
+    {
+        return CQL3Type.Native.FLOAT;
     }
 }

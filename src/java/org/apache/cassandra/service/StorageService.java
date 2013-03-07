@@ -35,6 +35,9 @@ import javax.management.NotificationBroadcasterSupport;
 import javax.management.ObjectName;
 
 import com.google.common.collect.*;
+
+import com.google.common.util.concurrent.AtomicDouble;
+import org.apache.cassandra.db.index.SecondaryIndex;
 import org.apache.log4j.Level;
 import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
@@ -90,6 +93,8 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
     /* JMX notification serial number counter */
     private final AtomicLong notificationSerialNumber = new AtomicLong();
+
+    private final AtomicDouble severity = new AtomicDouble();
 
     private static int getRingDelay()
     {
@@ -448,7 +453,8 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                 else
                 {
                     tokenMetadata.updateNormalTokens(loadedTokens.get(ep), ep);
-                    tokenMetadata.updateHostId(loadedHostIds.get(ep), ep);
+                    if (loadedHostIds.containsKey(ep))
+                        tokenMetadata.updateHostId(loadedHostIds.get(ep), ep);
                     Gossiper.instance.addSavedEndpoint(ep);
                 }
             }
@@ -744,8 +750,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             logger.info("Startup completed! Now serving reads.");
             assert tokenMetadata.sortedTokens().size() > 0;
 
-            // setup default superuser (if needed).
-            Auth.setupSuperuser();
+            Auth.setup();
         }
         else
         {
@@ -784,8 +789,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             logger.info("Leaving write survey mode and joining ring at operator request");
             assert tokenMetadata.sortedTokens().size() > 0;
 
-            // setup default superuser (if needed).
-            Auth.setupSuperuser();
+            Auth.setup();
         }
     }
 
@@ -900,12 +904,11 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     /**
      * Gossip about the known severity of the events in this node
      */
-    public synchronized boolean reportSeverity(double incr)
+    public boolean reportSeverity(double incr)
     {
         if (!Gossiper.instance.isEnabled())
             return false;
-        double update = getSeverity(FBUtilities.getBroadcastAddress()) + incr;
-        VersionedValue updated = StorageService.instance.valueFactory.severity(update);
+        VersionedValue updated = StorageService.instance.valueFactory.severity(severity.addAndGet(incr));
         Gossiper.instance.addLocalApplicationState(ApplicationState.SEVERITY, updated);
         return true;
     }
@@ -1176,16 +1179,16 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                     handleStateRelocating(endpoint, pieces);
                 break;
             case RELEASE_VERSION:
-                SystemTable.updatePeerInfo(endpoint, "release_version", value.value);
+                SystemTable.updatePeerInfo(endpoint, "release_version", quote(value.value));
                 break;
             case DC:
-                SystemTable.updatePeerInfo(endpoint, "data_center", value.value);
+                SystemTable.updatePeerInfo(endpoint, "data_center", quote(value.value));
                 break;
             case RACK:
-                SystemTable.updatePeerInfo(endpoint, "rack", value.value);
+                SystemTable.updatePeerInfo(endpoint, "rack", quote(value.value));
                 break;
             case RPC_ADDRESS:
-                SystemTable.updatePeerInfo(endpoint, "rpc_address", value.value);
+                SystemTable.updatePeerInfo(endpoint, "rpc_address", quote(value.value));
                 break;
             case SCHEMA:
                 SystemTable.updatePeerInfo(endpoint, "schema_version", value.value);
@@ -1194,6 +1197,11 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                 SystemTable.updatePeerInfo(endpoint, "host_id", value.value);
                 break;
         }
+    }
+
+    private String quote(String value)
+    {
+        return "'" + value + "'";
     }
 
     private byte[] getApplicationStateValue(InetAddress endpoint, ApplicationState appstate)
@@ -1549,7 +1557,10 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             }
         }
         else // now that the gossiper has told us about this nonexistent member, notify the gossiper to remove it
+        {
+            addExpireTimeIfFound(endpoint, extractExpireTime(pieces, MessagingService.instance().getVersion(endpoint)));
             removeEndpoint(endpoint);
+        }
     }
 
     private void excise(Collection<Token> tokens, InetAddress endpoint)
@@ -2076,7 +2087,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             throw new RuntimeException("Cleanup of the system table is neither necessary nor wise");
 
         CounterId.OneShotRenewer counterIdRenewer = new CounterId.OneShotRenewer();
-        for (ColumnFamilyStore cfStore : getValidColumnFamilies(tableName, columnFamilies))
+        for (ColumnFamilyStore cfStore : getValidColumnFamilies(false, false, tableName, columnFamilies))
         {
             cfStore.forceCleanup(counterIdRenewer);
         }
@@ -2084,19 +2095,19 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
     public void scrub(String tableName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
     {
-        for (ColumnFamilyStore cfStore : getValidColumnFamilies(tableName, columnFamilies))
+        for (ColumnFamilyStore cfStore : getValidColumnFamilies(false, false, tableName, columnFamilies))
             cfStore.scrub();
     }
 
     public void upgradeSSTables(String tableName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
     {
-        for (ColumnFamilyStore cfStore : getValidColumnFamilies(tableName, columnFamilies))
+        for (ColumnFamilyStore cfStore : getValidColumnFamilies(true, true, tableName, columnFamilies))
             cfStore.sstablesRewrite();
     }
 
     public void forceTableCompaction(String tableName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
     {
-        for (ColumnFamilyStore cfStore : getValidColumnFamilies(tableName, columnFamilies))
+        for (ColumnFamilyStore cfStore : getValidColumnFamilies(false, false, tableName, columnFamilies))
         {
             cfStore.forceMajorCompaction();
         }
@@ -2149,7 +2160,9 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             throw new IOException("You must supply a table name");
 
         if (columnFamilyName == null)
-            throw new IOException("You mus supply a column family name");
+            throw new IOException("You must supply a column family name");
+        if (columnFamilyName.contains("."))
+            throw new IllegalArgumentException("Cannot take a snapshot of a secondary index by itself. Run snapshot on the column family that owns the index.");
 
         if (tag == null || tag.equals(""))
             throw new IOException("You must supply a snapshot name.");
@@ -2199,7 +2212,13 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             logger.debug("Cleared out snapshot directories");
     }
 
-    public Iterable<ColumnFamilyStore> getValidColumnFamilies(String tableName, String... cfNames) throws IOException
+    /**
+     * @param allowIndexes Allow index CF names to be passed in
+     * @param autoAddIndexes Automatically add secondary indexes if a CF has them
+     * @param tableName keyspace
+     * @param cfNames CFs
+     */
+    public Iterable<ColumnFamilyStore> getValidColumnFamilies(boolean allowIndexes, boolean autoAddIndexes, String tableName, String... cfNames) throws IOException
     {
         Table table = getValidTable(tableName);
 
@@ -2211,14 +2230,49 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         Set<ColumnFamilyStore> valid = new HashSet<ColumnFamilyStore>();
         for (String cfName : cfNames)
         {
-            ColumnFamilyStore cfStore = table.getColumnFamilyStore(cfName);
+            //if the CF name is an index, just flush the CF that owns the index
+            String baseCfName = cfName;
+            String idxName = null;
+            if (cfName.contains(".")) // secondary index
+            {
+                if(!allowIndexes)
+                {
+                   logger.warn("Operation not allowed on secondary Index column family ({})", cfName);
+                    continue;
+                }
+
+                String[] parts = cfName.split("\\.", 2);
+                baseCfName = parts[0];
+                idxName = parts[1];
+            }
+
+            ColumnFamilyStore cfStore = table.getColumnFamilyStore(baseCfName);
             if (cfStore == null)
             {
                 // this means there was a cf passed in that is not recognized in the keyspace. report it and continue.
-                logger.warn(String.format("Invalid column family specified: %s. Proceeding with others.", cfName));
+                logger.warn(String.format("Invalid column family specified: %s. Proceeding with others.", baseCfName));
                 continue;
             }
-            valid.add(cfStore);
+            if (idxName != null)
+            {
+                Collection< SecondaryIndex > indexes = cfStore.indexManager.getIndexesByNames(new HashSet<String>(Arrays.asList(cfName)));
+                if (indexes.isEmpty())
+                    logger.warn(String.format("Invalid column family index specified: %s/%s. Proceeding with others.", baseCfName, idxName));
+                else
+                    valid.add(Iterables.get(indexes, 0).getIndexCfs());
+            }
+            else
+            {
+                valid.add(cfStore);
+                if(autoAddIndexes)
+                {
+                    for(SecondaryIndex si : cfStore.indexManager.getIndexes())
+                    {
+                        logger.info("adding secondary index {} to operation", si.getIndexName());
+                        valid.add(si.getIndexCfs());
+                    }
+                }
+            }
         }
         return valid;
     }
@@ -2232,7 +2286,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     public void forceTableFlush(final String tableName, final String... columnFamilies)
                 throws IOException, ExecutionException, InterruptedException
     {
-        for (ColumnFamilyStore cfStore : getValidColumnFamilies(tableName, columnFamilies))
+        for (ColumnFamilyStore cfStore : getValidColumnFamilies(true, false, tableName, columnFamilies))
         {
             logger.debug("Forcing flush on keyspace " + tableName + ", CF " + cfStore.name);
             cfStore.forceBlockingFlush();
@@ -2252,20 +2306,35 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         jmxNotification.setUserData(userObject);
         sendNotification(jmxNotification);
     }
-
     public int forceRepairAsync(final String keyspace, final boolean isSequential, final boolean isLocal, final boolean primaryRange, final String... columnFamilies)
     {
-        if (Table.SYSTEM_KS.equals(keyspace) || Tracing.TRACE_KS.equals(keyspace) || Auth.AUTH_KS.equals(keyspace))
+        final Collection<Range<Token>> ranges = primaryRange ? Collections.singletonList(getLocalPrimaryRange()) : getLocalRanges(keyspace);
+        return forceRepairAsync(keyspace, isSequential, isLocal, ranges, columnFamilies);
+    }
+
+    public int forceRepairAsync(final String keyspace, final boolean isSequential, final boolean isLocal, final Collection<Range<Token>> ranges, final String... columnFamilies)
+    {
+        if (Table.SYSTEM_KS.equals(keyspace) || Tracing.TRACE_KS.equals(keyspace))
             return 0;
 
         final int cmd = nextRepairCommand.incrementAndGet();
-        final Collection<Range<Token>> ranges = primaryRange ? Collections.singletonList(getLocalPrimaryRange()) : getLocalRanges(keyspace);
         if (ranges.size() > 0)
         {
             new Thread(createRepairTask(cmd, keyspace, ranges, isSequential, isLocal, columnFamilies)).start();
         }
         return cmd;
     }
+
+    public int forceRepairRangeAsync(String beginToken, String endToken, final String tableName, boolean isSequential, boolean isLocal, final String... columnFamilies)
+    {
+        Token parsedBeginToken = getPartitioner().getTokenFactory().fromString(beginToken);
+        Token parsedEndToken = getPartitioner().getTokenFactory().fromString(endToken);
+
+        logger.info("starting user-requested repair of range ({}, {}] for keyspace {} and column families {}",
+                new Object[] {parsedBeginToken, parsedEndToken, tableName, columnFamilies});
+        return forceRepairAsync(tableName, isSequential, isLocal, Collections.singleton(new Range<Token>(parsedBeginToken, parsedEndToken)), columnFamilies);
+    }
+
 
     /**
      * Trigger proactive repair for a table and column families.
@@ -2295,7 +2364,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
     public void forceTableRepairRange(final String tableName, final Collection<Range<Token>> ranges, boolean isSequential, boolean  isLocal, final String... columnFamilies) throws IOException
     {
-        if (Table.SYSTEM_KS.equals(tableName) || Tracing.TRACE_KS.equals(tableName) || Auth.AUTH_KS.equals(tableName))
+        if (Schema.systemKeyspaceNames.contains(tableName))
             return;
         createRepairTask(nextRepairCommand.incrementAndGet(), tableName, ranges, isSequential, isLocal, columnFamilies).run();
     }
@@ -2313,7 +2382,17 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                 List<AntiEntropyService.RepairFuture> futures = new ArrayList<AntiEntropyService.RepairFuture>(ranges.size());
                 for (Range<Token> range : ranges)
                 {
-                    AntiEntropyService.RepairFuture future = forceTableRepair(range, keyspace, isSequential, isLocal, columnFamilies);
+                    AntiEntropyService.RepairFuture future;
+                    try
+                    {
+                        future = forceTableRepair(range, keyspace, isSequential, isLocal, columnFamilies);
+                    }
+                    catch (IllegalArgumentException e)
+                    {
+                        logger.error("Repair session failed:", e);
+                        sendNotification("repair", message, new int[]{cmd, AntiEntropyService.Status.SESSION_FAILED.ordinal()});
+                        continue;
+                    }
                     if (future == null)
                         continue;
                     futures.add(future);
@@ -2359,7 +2438,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     public AntiEntropyService.RepairFuture forceTableRepair(final Range<Token> range, final String tableName, boolean isSequential, boolean  isLocal, final String... columnFamilies) throws IOException
     {
         ArrayList<String> names = new ArrayList<String>();
-        for (ColumnFamilyStore cfStore : getValidColumnFamilies(tableName, columnFamilies))
+        for (ColumnFamilyStore cfStore : getValidColumnFamilies(false, false, tableName, columnFamilies))
         {
             names.add(cfStore.name);
         }
@@ -2688,12 +2767,14 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         setMode(Mode.LEAVING, "streaming data to other nodes", true);
 
         CountDownLatch latch = streamRanges(rangesToStream);
+        CountDownLatch hintsLatch = streamHints();
 
         // wait for the transfer runnables to signal the latch.
         logger.debug("waiting for stream aks.");
         try
         {
             latch.await();
+            hintsLatch.await();
         }
         catch (InterruptedException e)
         {
@@ -2702,6 +2783,47 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         logger.debug("stream acks all received.");
         leaveRing();
         onFinish.run();
+    }
+
+    private CountDownLatch streamHints()
+    {
+        if (HintedHandOffManager.instance.listEndpointsPendingHints().size() == 0)
+            return new CountDownLatch(0);
+
+        // gather all live nodes in the cluster that aren't also leaving
+        List<InetAddress> candidates = new ArrayList<InetAddress>(StorageService.instance.getTokenMetadata().cloneAfterAllLeft().getAllEndpoints());
+        candidates.remove(FBUtilities.getBroadcastAddress());
+        for (Iterator<InetAddress> iter = candidates.iterator(); iter.hasNext(); )
+        {
+            InetAddress address = iter.next();
+            if (!FailureDetector.instance.isAlive(address))
+                iter.remove();
+        }
+
+        if (candidates.isEmpty())
+        {
+            logger.warn("Unable to stream hints since no live endpoints seen");
+            return new CountDownLatch(0);
+        }
+        else
+        {
+            // stream to the closest peer as chosen by the snitch
+            DatabaseDescriptor.getEndpointSnitch().sortByProximity(FBUtilities.getBroadcastAddress(), candidates);
+            InetAddress hintsDestinationHost = candidates.get(0);
+
+            // stream all hints -- range list will be a singleton of "the entire ring"
+            Token token = StorageService.getPartitioner().getMinimumToken();
+            List<Range<Token>> ranges = Collections.singletonList(new Range<Token>(token, token));
+
+            CountDownLatch latch = new CountDownLatch(1);
+            StreamOut.transferRanges(hintsDestinationHost,
+                                     Table.open(Table.SYSTEM_KS),
+                                     Collections.singletonList(Table.open(Table.SYSTEM_KS).getColumnFamilyStore(SystemTable.HINTS_CF)),
+                                     ranges,
+                                     new CountingDownStreamCallback(latch, hintsDestinationHost),
+                                     OperationType.UNBOOTSTRAP);
+            return latch;
+        }
     }
 
     public void move(String newToken) throws IOException
@@ -3474,26 +3596,39 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                 final List<Range<Token>> ranges = rangesEntry.getValue();
                 final InetAddress newEndpoint = rangesEntry.getKey();
 
-                final IStreamCallback callback = new IStreamCallback()
-                {
-                    public void onSuccess()
-                    {
-                        latch.countDown();
-                    }
-
-                    public void onFailure()
-                    {
-                        logger.warn("Streaming to " + newEndpoint + " failed");
-                        onSuccess(); // calling onSuccess for latch countdown
-                    }
-                };
-
                 // TODO each call to transferRanges re-flushes, this is potentially a lot of waste
-                StreamOut.transferRanges(newEndpoint, Table.open(table), ranges, callback, OperationType.UNBOOTSTRAP);
+                StreamOut.transferRanges(newEndpoint,
+                                         Table.open(table),
+                                         ranges,
+                                         new CountingDownStreamCallback(latch, newEndpoint),
+                                         OperationType.UNBOOTSTRAP);
             }
         }
         return latch;
     }
+
+    class CountingDownStreamCallback implements IStreamCallback
+    {
+        private final CountDownLatch latch;
+        private final InetAddress targetAddr;
+
+        CountingDownStreamCallback(CountDownLatch latch, InetAddress targetAddr)
+        {
+            this.latch = latch;
+            this.targetAddr = targetAddr;
+        }
+
+        public void onSuccess()
+        {
+            latch.countDown();
+        }
+
+        public void onFailure()
+        {
+            logger.warn("Streaming to " + targetAddr + " failed");
+            onSuccess(); // calling onSuccess for latch countdown
+        }
+    };
 
     /**
      * Used to request ranges from endpoints in the ring (will block until all data is fetched and ready)

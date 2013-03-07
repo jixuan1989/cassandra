@@ -21,21 +21,14 @@ import java.io.File;
 import java.io.IOException;
 import java.util.*;
 
-import javax.print.attribute.IntegerSyntax;
-
-import com.google.common.base.Predicates;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Throwables;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Iterators;
-import com.google.common.primitives.Longs;
 import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.db.ColumnFamilyStore;
-import org.apache.cassandra.db.DecoratedKey;
-import org.apache.cassandra.db.RowIndexEntry;
+import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.compaction.CompactionManager.CompactionExecutorStatsCollector;
 import org.apache.cassandra.io.sstable.*;
 import org.apache.cassandra.utils.CloseableIterator;
@@ -60,12 +53,7 @@ public class CompactionTask extends AbstractCompactionTask
         return totalBytesCompacted += bytesCompacted;
     }
 
-    /**
-     * For internal use and testing only.  The rest of the system should go through the submit* methods,
-     * which are properly serialized.
-     * Caller is in charge of marking/unmarking the sstables as compacting.
-     */
-    public int execute(CompactionExecutorStatsCollector collector)
+    protected int executeInternal(CompactionExecutorStatsCollector collector)
     {
         this.collector = collector;
         run();
@@ -98,11 +86,11 @@ public class CompactionTask extends AbstractCompactionTask
      * which are properly serialized.
      * Caller is in charge of marking/unmarking the sstables as compacting.
      */
-    protected void runWith(File dataDirectory) throws Exception
+    protected void runWith(File sstableDirectory) throws Exception
     {
         // The collection of sstables passed may be empty (but not null); even if
         // it is not empty, it may compact down to nothing if all rows are deleted.
-        assert sstables != null && dataDirectory != null;
+        assert sstables != null && sstableDirectory != null;
 
         if (DatabaseDescriptor.isSnapshotBeforeCompaction())
             cfs.snapshotWithoutFlush(System.currentTimeMillis() + "-compact-" + cfs.name);
@@ -110,6 +98,8 @@ public class CompactionTask extends AbstractCompactionTask
         // sanity check: all sstables must belong to the same cfs
         for (SSTableReader sstable : toCompact)
             assert sstable.descriptor.cfname.equals(cfs.name);
+
+        UUID taskId = SystemTable.startCompaction(cfs, toCompact);
 
         CompactionController controller = new CompactionController(cfs, toCompact, gcBefore);
         // new sstables from flush can be added during a compaction, but only the compaction can remove them,
@@ -153,7 +143,7 @@ public class CompactionTask extends AbstractCompactionTask
                 return;
             }
 
-            SSTableWriter writer = cfs.createCompactionWriter(keysPerSSTable, cfs.directories.getLocationForDisk(dataDirectory), toCompact);
+            SSTableWriter writer = cfs.createCompactionWriter(compactionType, keysPerSSTable, sstableDirectory, toCompact);
             writers.add(writer);
             while (iter.hasNext())
             {
@@ -191,7 +181,7 @@ public class CompactionTask extends AbstractCompactionTask
                 {
                     // tmp = false because later we want to query it with descriptor from SSTableReader
                     cachedKeyMap.put(writer.descriptor.asTemporary(false), cachedKeys);
-                    writer = cfs.createCompactionWriter(keysPerSSTable, cfs.directories.getLocationForDisk(dataDirectory), toCompact);
+                    writer = cfs.createCompactionWriter(compactionType, keysPerSSTable, sstableDirectory, toCompact);
                     writers.add(writer);
                     cachedKeys = new HashMap<DecoratedKey, RowIndexEntry>();
                 }
@@ -236,6 +226,11 @@ public class CompactionTask extends AbstractCompactionTask
                 throw new RuntimeException(e);
             }
 
+            // point of no return -- the new sstables are live on disk; next we'll start deleting the old ones
+            // (in replaceCompactedSSTables)
+            if (taskId != null)
+                SystemTable.finishCompaction(taskId);
+
             if (collector != null)
                 collector.finishCompaction(ci);
         }
@@ -248,30 +243,34 @@ public class CompactionTask extends AbstractCompactionTask
                sstable.cacheKey(entry.getKey(), entry.getValue());
         }
 
-        // log a bunch of statistics about the result
-        long dTime = System.currentTimeMillis() - startTime;
-        long startsize = SSTable.getTotalBytes(toCompact);
-        long endsize = SSTable.getTotalBytes(sstables);
-        double ratio = (double)endsize / (double)startsize;
-
-        StringBuilder builder = new StringBuilder();
-        for (SSTableReader reader : sstables)
-            builder.append(reader.descriptor.baseFilename()).append(",");
-
-        double mbps = dTime > 0 ? (double)endsize/(1024*1024)/((double)dTime/1000) : 0;
-        long totalSourceRows = 0;
-        String mergeSummary = "";
-        for (int i = 0; i < ci.getMergedRowCounts().length; i++)
+        if (logger.isInfoEnabled())
         {
-            int rows = i + 1;
-            int count = ci.getMergedRowCounts()[i];
-            totalSourceRows += rows * count;
-            mergeSummary += String.format("%d:%d, ", rows, count);
-        }
+            // log a bunch of statistics about the result
+            long dTime = System.currentTimeMillis() - startTime;
+            long startsize = SSTable.getTotalBytes(toCompact);
+            long endsize = SSTable.getTotalBytes(sstables);
+            double ratio = (double)endsize / (double)startsize;
 
-        logger.info(String.format("Compacted %d sstables to [%s].  %,d bytes to %,d (~%d%% of original) in %,dms = %fMB/s.  %,d total rows, %,d unique.  Row merge counts were {%s}",
-                                  toCompact.size(), builder.toString(), startsize, endsize, (int) (ratio * 100), dTime, mbps, totalSourceRows, totalkeysWritten, mergeSummary));
-        logger.debug(String.format("CF Total Bytes Compacted: %,d", CompactionTask.addToTotalBytesCompacted(endsize)));
+            StringBuilder builder = new StringBuilder();
+            for (SSTableReader reader : sstables)
+                builder.append(reader.descriptor.baseFilename()).append(",");
+
+            double mbps = dTime > 0 ? (double)endsize/(1024*1024)/((double)dTime/1000) : 0;
+            long totalSourceRows = 0;
+            long[] counts = ci.getMergedRowCounts();
+            StringBuilder mergeSummary = new StringBuilder(counts.length * 10);
+            for (int i = 0; i < counts.length; i++)
+            {
+                int rows = i + 1;
+                long count = counts[i];
+                totalSourceRows += rows * count;
+                mergeSummary.append(String.format("%d:%d, ", rows, count));
+            }
+
+            logger.info(String.format("Compacted %d sstables to [%s].  %,d bytes to %,d (~%d%% of original) in %,dms = %fMB/s.  %,d total rows, %,d unique.  Row merge counts were {%s}",
+                                      toCompact.size(), builder.toString(), startsize, endsize, (int) (ratio * 100), dTime, mbps, totalSourceRows, totalkeysWritten, mergeSummary.toString()));
+            logger.debug(String.format("CF Total Bytes Compacted: %,d", CompactionTask.addToTotalBytesCompacted(endsize)));
+        }
     }
 
     protected boolean partialCompactionsAcceptable()

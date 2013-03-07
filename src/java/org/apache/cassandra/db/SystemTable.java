@@ -18,7 +18,6 @@
 package org.apache.cassandra.db;
 
 import java.io.DataInputStream;
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
@@ -26,37 +25,33 @@ import java.nio.charset.CharacterCodingException;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
 
+import com.google.common.base.Function;
 import com.google.common.collect.HashMultimap;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.SetMultimap;
 import com.google.common.collect.Sets;
+import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.avro.ipc.ByteBufferInputStream;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.KSMetaData;
 import org.apache.cassandra.config.Schema;
-import org.apache.cassandra.db.commitlog.ReplayPosition;
-import org.apache.cassandra.db.marshal.UUIDType;
-import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.db.columniterator.IdentityQueryFilter;
+import org.apache.cassandra.db.commitlog.ReplayPosition;
 import org.apache.cassandra.db.filter.QueryFilter;
-import org.apache.cassandra.db.marshal.AsciiType;
-import org.apache.cassandra.db.marshal.BytesType;
-import org.apache.cassandra.db.marshal.UTF8Type;
+import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.io.sstable.SSTableReader;
 import org.apache.cassandra.io.util.DataOutputBuffer;
-import org.apache.cassandra.io.util.FastByteArrayOutputStream;
 import org.apache.cassandra.locator.IEndpointSnitch;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.thrift.cassandraConstants;
-import org.apache.cassandra.utils.ByteBufferUtil;
-import org.apache.cassandra.utils.CounterId;
-import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.Pair;
+import org.apache.cassandra.utils.*;
 
 import static org.apache.cassandra.cql3.QueryProcessor.processInternal;
 
@@ -66,6 +61,7 @@ public class SystemTable
 
     // see CFMetaData for schema definitions
     public static final String PEERS_CF = "peers";
+    public static final String PEER_EVENTS_CF = "peer_events";
     public static final String LOCAL_CF = "local";
     public static final String INDEX_CF = "IndexInfo";
     public static final String COUNTER_ID_CF = "NodeIdInfo";
@@ -76,6 +72,7 @@ public class SystemTable
     public static final String SCHEMA_KEYSPACES_CF = "schema_keyspaces";
     public static final String SCHEMA_COLUMNFAMILIES_CF = "schema_columnfamilies";
     public static final String SCHEMA_COLUMNS_CF = "schema_columns";
+    public static final String COMPACTION_LOG = "compactions_in_progress";
 
     @Deprecated
     public static final String OLD_STATUS_CF = "LocationInfo";
@@ -186,6 +183,74 @@ public class SystemTable
         }
     }
 
+    /**
+     * Write compaction log, except columfamilies under system keyspace.
+     *
+     * @param cfs
+     * @param toCompact sstables to compact
+     * @return compaction task id or null if cfs is under system keyspace
+     */
+    public static UUID startCompaction(ColumnFamilyStore cfs, Iterable<SSTableReader> toCompact)
+    {
+        if (Table.SYSTEM_KS.equals(cfs.table.getName()))
+            return null;
+
+        UUID compactionId = UUIDGen.getTimeUUID();
+        String req = "INSERT INTO system.%s (id, keyspace_name, columnfamily_name, inputs) VALUES (%s, '%s', '%s', {%s})";
+        Iterable<Integer> generations = Iterables.transform(toCompact, new Function<SSTableReader, Integer>()
+        {
+            public Integer apply(SSTableReader sstable)
+            {
+                return sstable.descriptor.generation;
+            }
+        });
+        processInternal(String.format(req, COMPACTION_LOG, compactionId, cfs.table.getName(), cfs.name, StringUtils.join(Sets.newHashSet(generations), ',')));
+        forceBlockingFlush(COMPACTION_LOG);
+        return compactionId;
+    }
+
+    public static void finishCompaction(UUID taskId)
+    {
+        assert taskId != null;
+
+        String req = "DELETE FROM system.%s WHERE id = %s";
+        processInternal(String.format(req, COMPACTION_LOG, taskId));
+        forceBlockingFlush(COMPACTION_LOG);
+    }
+
+    /**
+     * @return unfinished compactions, grouped by keyspace/columnfamily pair.
+     */
+    public static SetMultimap<Pair<String, String>, Integer> getUnfinishedCompactions()
+    {
+        String req = "SELECT * FROM system.%s";
+        UntypedResultSet resultSet = processInternal(String.format(req, COMPACTION_LOG));
+
+        SetMultimap<Pair<String, String>, Integer> unfinishedCompactions = HashMultimap.create();
+        for (UntypedResultSet.Row row : resultSet)
+        {
+            String keyspace = row.getString("keyspace_name");
+            String columnfamily = row.getString("columnfamily_name");
+            Set<Integer> inputs = row.getSet("inputs", Int32Type.instance);
+
+            unfinishedCompactions.putAll(Pair.create(keyspace, columnfamily), inputs);
+        }
+        return unfinishedCompactions;
+    }
+
+    public static void discardCompactionsInProgress()
+    {
+        ColumnFamilyStore compactionLog = Table.open(Table.SYSTEM_KS).getColumnFamilyStore(COMPACTION_LOG);
+        try
+        {
+            compactionLog.truncate().get();
+        }
+        catch (Exception e)
+        {
+            throw new RuntimeException(e);
+        }
+    }
+
     public static void saveTruncationPosition(ColumnFamilyStore cfs, ReplayPosition position)
     {
         String req = "UPDATE system.%s SET truncated_at = truncated_at + %s WHERE key = '%s'";
@@ -204,7 +269,7 @@ public class SystemTable
         {
             throw new RuntimeException(e);
         }
-        return String.format("{'%s': '%s'}",
+        return String.format("{%s: 0x%s}",
                              cfs.metadata.cfId,
                              ByteBufferUtil.bytesToHex(ByteBuffer.wrap(out.getData(), 0, out.getLength())));
     }
@@ -262,8 +327,15 @@ public class SystemTable
         if (ep.equals(FBUtilities.getBroadcastAddress()))
             return;
 
-        String req = "INSERT INTO system.%s (peer, %s) VALUES ('%s', '%s')";
+        String req = "INSERT INTO system.%s (peer, %s) VALUES ('%s', %s)";
         processInternal(String.format(req, PEERS_CF, columnName, ep.getHostAddress(), value));
+    }
+
+    public static synchronized void updateHintsDropped(InetAddress ep, UUID timePeriod, int value)
+    {
+        // with 30 day TTL
+        String req = "UPDATE system.%s USING TTL 2592000 SET hints_dropped[ %s ] = %s WHERE peer = '%s'";
+        processInternal(String.format(req, PEER_EVENTS_CF, timePeriod.toString(), value, ep.getHostAddress()));
     }
 
     public static synchronized void updateSchemaVersion(UUID version)
@@ -394,7 +466,7 @@ public class SystemTable
         for (UntypedResultSet.Row row : processInternal("SELECT peer, data_center, rack from system." + PEERS_CF))
         {
             InetAddress peer = row.getInetAddress("peer");
-            if (row.has("data_center"))
+            if (row.has("data_center") && row.has("rack"))
             {
                 Map<String, String> dcRack = new HashMap<String, String>();
                 dcRack.put("data_center", row.getString("data_center"));
@@ -535,8 +607,7 @@ public class SystemTable
     {
         ColumnFamily cf = ColumnFamily.create(Table.SYSTEM_KS, INDEX_CF);
         cf.addColumn(new Column(ByteBufferUtil.bytes(indexName), ByteBufferUtil.EMPTY_BYTE_BUFFER, FBUtilities.timestampMicros()));
-        RowMutation rm = new RowMutation(Table.SYSTEM_KS, ByteBufferUtil.bytes(table));
-        rm.add(cf);
+        RowMutation rm = new RowMutation(Table.SYSTEM_KS, ByteBufferUtil.bytes(table), cf);
         rm.apply();
         forceBlockingFlush(INDEX_CF);
     }
@@ -570,7 +641,7 @@ public class SystemTable
         hostId = UUID.randomUUID();
         logger.warn("No host ID found, created {} (Note: This should happen exactly once per node).", hostId);
 
-        req = "INSERT INTO system.%s (key, host_id) VALUES ('%s', '%s')";
+        req = "INSERT INTO system.%s (key, host_id) VALUES ('%s', %s)";
         processInternal(String.format(req, LOCAL_CF, LOCAL_KEY, hostId));
         return hostId;
     }
@@ -612,8 +683,7 @@ public class SystemTable
 
         ColumnFamily cf = ColumnFamily.create(Table.SYSTEM_KS, COUNTER_ID_CF);
         cf.addColumn(new Column(newCounterId.bytes(), ip, now));
-        RowMutation rm = new RowMutation(Table.SYSTEM_KS, ALL_LOCAL_NODE_ID_KEY);
-        rm.add(cf);
+        RowMutation rm = new RowMutation(Table.SYSTEM_KS, ALL_LOCAL_NODE_ID_KEY, cf);
         rm.apply();
         forceBlockingFlush(COUNTER_ID_CF);
     }
@@ -693,11 +763,10 @@ public class SystemTable
                 continue;
 
             RowMutation mutation = mutationMap.get(schemaRow.key);
-
             if (mutation == null)
             {
-                mutationMap.put(schemaRow.key, new RowMutation(Table.SYSTEM_KS, schemaRow));
-                continue;
+                mutation = new RowMutation(Table.SYSTEM_KS, schemaRow.key.key);
+                mutationMap.put(schemaRow.key, mutation);
             }
 
             mutation.add(schemaRow.cf);
