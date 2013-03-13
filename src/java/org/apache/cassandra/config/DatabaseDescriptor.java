@@ -129,8 +129,8 @@ public class DatabaseDescriptor
     {
         conf = config;
 
-        if (!System.getProperty("os.arch").contains("64"))
-            logger.info("32bit JVM detected.  It is recommended to run Cassandra on a 64bit JVM for better performance.");
+        logger.info("Data files directories: " + Arrays.toString(conf.data_file_directories));
+        logger.info("Commit log directory: " + conf.commitlog_directory);
 
         if (conf.commitlog_sync == null)
         {
@@ -189,14 +189,6 @@ public class DatabaseDescriptor
         /* Authentication and authorization backend, implementing IAuthenticator and IAuthorizer */
         if (conf.authenticator != null)
             authenticator = FBUtilities.construct(conf.authenticator, "authenticator");
-
-        if (conf.authority != null)
-        {
-            logger.warn("Please rename 'authority' to 'authorizer' in cassandra.yaml");
-            if (!conf.authority.equals("org.apache.cassandra.auth.AllowAllAuthority"))
-                throw new ConfigurationException("IAuthority interface has been deprecated,"
-                        + " please implement IAuthorizer instead.");
-        }
 
         if (conf.authorizer != null)
             authorizer = FBUtilities.construct(conf.authorizer, "authorizer");
@@ -376,6 +368,10 @@ public class DatabaseDescriptor
             logger.debug("setting auto_bootstrap to " + conf.auto_bootstrap);
         }
 
+        logger.info((conf.multithreaded_compaction ? "" : "Not ") + "using multi-threaded compaction");
+
+        logger.info((conf.multithreaded_compaction ? "" : "Not ") + "using multi-threaded compaction");
+
         if (conf.in_memory_compaction_limit_in_mb != null && conf.in_memory_compaction_limit_in_mb <= 0)
         {
             throw new ConfigurationException("in_memory_compaction_limit_in_mb must be a positive integer");
@@ -551,7 +547,7 @@ public class DatabaseDescriptor
                 {
                     public boolean accept(File pathname)
                     {
-                        return pathname.isDirectory();
+                        return (pathname.isDirectory() && !Schema.systemKeyspaceNames.contains(pathname.getName()));
                     }
                 }).length;
 
@@ -1102,21 +1098,6 @@ public class DatabaseDescriptor
         return conf.client_encryption_options;
     }
 
-    public static double getFlushLargestMemtablesAt()
-    {
-        return conf.flush_largest_memtables_at;
-    }
-
-    public static double getReduceCacheSizesAt()
-    {
-        return conf.reduce_cache_sizes_at;
-    }
-
-    public static double getReduceCacheCapacityTo()
-    {
-        return conf.reduce_cache_capacity_to;
-    }
-
     public static int getHintedHandoffThrottleInKB()
     {
         return conf.hinted_handoff_throttle_in_kb;
@@ -1130,20 +1111,6 @@ public class DatabaseDescriptor
     public static boolean getPreheatKeyCache()
     {
         return conf.compaction_preheat_key_cache;
-    }
-
-    public static void validateMemtableThroughput(int sizeInMB) throws ConfigurationException
-    {
-        if (sizeInMB <= 0)
-            throw new ConfigurationException("memtable_throughput_in_mb must be greater than 0.");
-    }
-
-    public static void validateMemtableOperations(double operationsInMillions) throws ConfigurationException
-    {
-        if (operationsInMillions <= 0)
-            throw new ConfigurationException("memtable_operations_in_millions must be greater than 0.0.");
-        if (operationsInMillions > Long.MAX_VALUE / 1024 * 1024)
-            throw new ConfigurationException("memtable_operations_in_millions must be less than " + Long.MAX_VALUE / 1024 * 1024);
     }
 
     public static boolean isIncrementalBackupsEnabled()

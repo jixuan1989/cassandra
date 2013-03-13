@@ -124,7 +124,39 @@ public class CassandraDaemon
      */
     protected void setup()
     {
-        logger.info("JVM vendor/version: {}/{}", System.getProperty("java.vm.name"), System.getProperty("java.version") );
+        // log warnings for different kinds of sub-optimal JVMs.  tldr use 64-bit Oracle >= 1.6u32
+        if (!System.getProperty("os.arch").contains("64"))
+            logger.info("32bit JVM detected.  It is recommended to run Cassandra on a 64bit JVM for better performance.");
+        String javaVersion = System.getProperty("java.version");
+        String javaVmName = System.getProperty("java.vm.name");
+        logger.info("JVM vendor/version: {}/{}", javaVmName, javaVersion);
+        if (javaVmName.contains("OpenJDK"))
+        {
+            // There is essentially no QA done on OpenJDK builds, and
+            // clusters running OpenJDK have seen many heap and load issues.
+            logger.warn("OpenJDK is not recommended. Please upgrade to the newest Oracle Java release");
+        }
+        else if (!javaVmName.contains("HotSpot"))
+        {
+            logger.warn("Non-Oracle JVM detected.  Some features, such as immediate unmap of compacted SSTables, may not work as intended");
+        }
+        else
+        {
+            String[] java_version = javaVersion.split("_");
+            String java_major = java_version[0];
+            int java_minor = (java_version.length > 1) ? Integer.parseInt(java_version[1]) : 0;
+            if (java_major.equals("1.6.0"))
+            {
+                // These need to be updated from time to time, but these are currently valid (12.18.2012)
+                if (java_minor < 29)
+                    // Seen to be a major contributing factor for heap and load issues
+                    logger.error("Your JVM is out of date. Please upgrade to the newest Oracle Java 6.");
+                else if (java_minor < 32)
+                    // Updates 32+ have been seen to work well enough in the wild
+                    logger.warn("Your JVM is out of date. Please upgrade to the newest Oracle Java 6.");
+            }
+        }
+
         logger.info("Heap size: {}/{}", Runtime.getRuntime().totalMemory(), Runtime.getRuntime().maxMemory());
         logger.info("Classpath: {}", System.getProperty("java.class.path"));
         CLibrary.tryMlockall();
