@@ -34,7 +34,6 @@ import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.SSTableReader;
-import org.apache.cassandra.io.sstable.SSTableScanner;
 import org.apache.cassandra.notifications.INotification;
 import org.apache.cassandra.notifications.INotificationConsumer;
 import org.apache.cassandra.notifications.SSTableAddedNotification;
@@ -87,9 +86,9 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
      * the only difference between background and maximal in LCS is that maximal is still allowed
      * (by explicit user request) even when compaction is disabled.
      */
-    public AbstractCompactionTask getNextBackgroundTask(int gcBefore)
+    public synchronized AbstractCompactionTask getNextBackgroundTask(int gcBefore)
     {
-        if (cfs.isCompactionDisabled())
+        if (!isActive || cfs.isCompactionDisabled())
             return null;
 
         return getMaximalTask(gcBefore);
@@ -167,12 +166,14 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
             {
                 // L0 makes no guarantees about overlapping-ness.  Just create a direct scanner for each
                 for (SSTableReader sstable : byLevel.get(level))
-                    scanners.add(sstable.getDirectScanner(range));
+                    scanners.add(sstable.getScanner(range));
             }
             else
             {
                 // Create a LeveledScanner that only opens one sstable at a time, in sorted order
-                scanners.add(new LeveledScanner(byLevel.get(level), range));
+                List<SSTableReader> intersecting = LeveledScanner.intersecting(byLevel.get(level), range);
+                if (!intersecting.isEmpty())
+                    scanners.add(new LeveledScanner(intersecting, range));
             }
         }
 
@@ -194,19 +195,46 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
         public LeveledScanner(Collection<SSTableReader> sstables, Range<Token> range)
         {
             this.range = range;
-            this.sstables = new ArrayList<SSTableReader>(sstables);
-            Collections.sort(this.sstables, SSTable.sstableComparator);
-            sstableIterator = this.sstables.iterator();
-            currentScanner = sstableIterator.next().getDirectScanner(range);
 
+            // add only sstables that intersect our range, and estimate how much data that involves
+            this.sstables = new ArrayList<SSTableReader>(sstables.size());
             long length = 0;
             for (SSTableReader sstable : sstables)
-                length += sstable.uncompressedLength();
+            {
+                this.sstables.add(sstable);
+                long estimatedKeys = sstable.estimatedKeys();
+                double estKeysInRangeRatio = 1.0;
+
+                if (estimatedKeys > 0 && range != null)
+                    estKeysInRangeRatio = ((double) sstable.estimatedKeysForRanges(Collections.singleton(range))) / estimatedKeys;
+
+                length += sstable.uncompressedLength() * estKeysInRangeRatio;
+            }
+
             totalLength = length;
+            Collections.sort(this.sstables, SSTable.sstableComparator);
+            sstableIterator = this.sstables.iterator();
+            assert sstableIterator.hasNext(); // caller should check intersecting first
+            currentScanner = sstableIterator.next().getScanner(range);
+        }
+
+        public static List<SSTableReader> intersecting(Collection<SSTableReader> sstables, Range<Token> range)
+        {
+            ArrayList<SSTableReader> filtered = new ArrayList<SSTableReader>();
+            for (SSTableReader sstable : sstables)
+            {
+                Range<Token> sstableRange = new Range<Token>(sstable.first.getToken(), sstable.last.getToken(), sstable.partitioner);
+                if (range == null || sstableRange.intersects(range))
+                    filtered.add(sstable);
+            }
+            return filtered;
         }
 
         protected OnDiskAtomIterator computeNext()
         {
+            if (currentScanner == null)
+                return endOfData();
+
             try
             {
                 while (true)
@@ -222,7 +250,7 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
                         currentScanner = null;
                         return endOfData();
                     }
-                    currentScanner = sstableIterator.next().getDirectScanner(range);
+                    currentScanner = sstableIterator.next().getScanner(range);
                 }
             }
             catch (IOException e)

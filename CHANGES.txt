@@ -1,19 +1,36 @@
 2.0
+ * Improve LeveledScanner work estimation (CASSANDRA-5250)
+ * Replace compaction lock with runWithCompactionsDisabled (CASSANDRA-3430)
  * Change Message IDs to ints (CASSANDRA-5307)
  * Move sstable level information into the Stats component, removing the
    need for a separate Manifest file (CASSANDRA-4872)
  * avoid serializing to byte[] on commitlog append (CASSANDRA-5199)
  * make index_interval configurable per columnfamily (CASSANDRA-3961)
- * add default_tim_to_live (CASSANDRA-3974)
+ * add default_time_to_live (CASSANDRA-3974)
  * add memtable_flush_period_in_ms (CASSANDRA-4237)
  * replace supercolumns internally by composites (CASSANDRA-3237, 5123)
  * upgrade thrift to 0.9.0 (CASSANDRA-3719)
- * drop unnecessary keyspace from user-defined compaction API (CASSANDRA-5139)
+ * drop unnecessary keyspace parameter from user-defined compaction API 
+   (CASSANDRA-5139)
  * more robust solution to incomplete compactions + counters (CASSANDRA-5151)
  * Change order of directory searching for c*.in.sh (CASSANDRA-3983)
- * Add tool to reset SSTable level (CASSANDRA-5271)
+ * Add tool to reset SSTable compaction level for LCS (CASSANDRA-5271)
  * Allow custom configuration loader (CASSANDRA-5045)
  * Remove memory emergency pressure valve logic (CASSANDRA-3534)
+ * Reduce request latency with eager retry (CASSANDRA-4705)
+ * cqlsh: Remove ASSUME command (CASSANDRA-5331)
+
+
+1.2.4
+ * Fix mixing prepared statements between keyspaces (CASSANDRA-5352)
+ * Fix consistency level during bootstrap - strike 3 (CASSANDRA-5354)
+ * Fix transposed arguments in AlreadyExistsException (CASSANDRA-5362)
+ * Improve asynchronous hint delivery (CASSANDRA-5179)
+ * Fix Guava dependency version (12.0 -> 13.0.1) for Maven (CASSANDRA-5364)
+ * Validate that provided CQL3 collection value are < 64K (CASSANDRA-5355)
+ * Change Kernel Page Cache skipping into row preheating (disabled by default)
+   (CASSANDRA-4937)
+
 
 
 1.2.3
@@ -38,13 +55,17 @@
  * Fix repair -pr for vnodes (CASSANDRA-5329)
  * Relax CL for auth queries for non-default users (CASSANDRA-5310)
  * Fix AssertionError during repair (CASSANDRA-5245)
+ * Don't announce migrations to pre-1.2 nodes (CASSANDRA-5334)
 Merged from 1.1:
+ * add tmp flag to Descriptor hashcode (CASSANDRA-4021)
  * fix logging of "Found table data in data directories" when only system tables
    are present (CASSANDRA-5289)
  * cli: Add JMX authentication support (CASSANDRA-5080)
  * nodetool: ability to repair specific range (CASSANDRA-5280)
  * Fix possible assertion triggered in SliceFromReadCommand (CASSANDRA-5284)
  * cqlsh: Add inet type support on Windows (ipv4-only) (CASSANDRA-4801)
+ * Fix race when initializing ColumnFamilyStore (CASSANDRA-5350)
+ * Add UseTLAB JVM flag (CASSANDRA-5361)
 
 
 1.2.2
