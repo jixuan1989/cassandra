@@ -1,4 +1,4 @@
-
+This is a modified Cassandra,which is called LaUD.
 
 Cassandra is a highly scalable, eventually consistent, distributed, structured 
 key-value store. 
