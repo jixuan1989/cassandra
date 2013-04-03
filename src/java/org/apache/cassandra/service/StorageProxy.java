@@ -320,7 +320,7 @@ public class StorageProxy implements StorageProxyMBean
 
     private static void asyncRemoveFromBatchlog(Collection<InetAddress> endpoints, UUID uuid)
     {
-        ColumnFamily cf = ColumnFamily.create(Schema.instance.getCFMetaData(Table.SYSTEM_KS, SystemTable.BATCHLOG_CF));
+        ColumnFamily cf = EmptyColumns.factory.create(Schema.instance.getCFMetaData(Table.SYSTEM_KS, SystemTable.BATCHLOG_CF));
         cf.delete(new DeletionInfo(FBUtilities.timestampMicros(), (int) (System.currentTimeMillis() / 1000)));
         AbstractWriteResponseHandler handler = new WriteResponseHandler(endpoints,
                                                                         Collections.<InetAddress>emptyList(),
@@ -639,14 +639,14 @@ public class StorageProxy implements StorageProxyMBean
 
         // Add all the other destinations of the same message as a FORWARD_HEADER entry
         FastByteArrayOutputStream bos = new FastByteArrayOutputStream();
-        DataOutputStream dos = new DataOutputStream(bos);
-        dos.writeInt(targets.size() - 1);
+        DataOutputStream out = new DataOutputStream(bos);
+        out.writeInt(targets.size() - 1);
         while (iter.hasNext())
         {
             InetAddress destination = iter.next();
-            CompactEndpointSerializationHelper.serialize(destination, dos);
+            CompactEndpointSerializationHelper.serialize(destination, out);
             int id = MessagingService.instance().addCallback(handler, message, destination, message.getTimeout());
-            dos.writeInt(id);
+            out.writeInt(id);
             logger.trace("Adding FWD message to {}@{}", id, destination);
         }
         message = message.withParameter(RowMutation.FORWARD_TO, bos.toByteArray());

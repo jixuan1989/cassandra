@@ -81,7 +81,7 @@ public class ReadCallback<TMessage, TResolved> implements IAsyncCallback<TMessag
 
     public ReadCallback<TMessage, TResolved> withNewResolver(IResponseResolver<TMessage, TResolved> newResolver)
     {
-        return new ReadCallback(newResolver, consistencyLevel, blockfor, command, table, endpoints);
+        return new ReadCallback<TMessage, TResolved>(newResolver, consistencyLevel, blockfor, command, table, endpoints);
     }
 
     public boolean await(long interimTimeout)
@@ -186,7 +186,7 @@ public class ReadCallback<TMessage, TResolved> implements IAsyncCallback<TMessag
 
                 ReadCommand readCommand = (ReadCommand) command;
                 final RowDataResolver repairResolver = new RowDataResolver(readCommand.table, readCommand.key, readCommand.filter());
-                IAsyncCallback repairHandler = new AsyncRepairCallback(repairResolver, endpoints.size());
+                AsyncRepairCallback repairHandler = new AsyncRepairCallback(repairResolver, endpoints.size());
 
                 MessageOut<ReadCommand> message = ((ReadCommand) command).createMessage();
                 for (InetAddress endpoint : endpoints)

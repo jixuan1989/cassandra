@@ -389,7 +389,7 @@ public class SelectStatement implements CQLStatement
             return false;
 
         // However, collections always entails one
-        if (cfDef.hasCollections)
+        if (selectACollection())
             return true;
 
         // Otherwise, it is a range query if it has at least one the column alias
@@ -456,7 +456,7 @@ public class SelectStatement implements CQLStatement
         {
             // Collections require doing a slice query because a given collection is a
             // non-know set of columns, so we shouldn't get there
-            assert !cfDef.hasCollections;
+            assert !selectACollection();
 
             SortedSet<ByteBuffer> columns = new TreeSet<ByteBuffer>(cfDef.cfm.comparator);
 
@@ -486,6 +486,20 @@ public class SelectStatement implements CQLStatement
             }
             return columns;
         }
+    }
+
+    private boolean selectACollection()
+    {
+        if (!cfDef.hasCollections)
+            return false;
+
+        for (CFDefinition.Name name : selection.getColumnsList())
+        {
+            if (name.type instanceof CollectionType)
+                return true;
+        }
+
+        return false;
     }
 
     private static ByteBuffer buildBound(Bound bound,
@@ -969,9 +983,12 @@ public class SelectStatement implements CQLStatement
                 }
                 // We only support IN for the last name so far
                 // TODO: #3885 allows us to extend to other parts (cf. #4762)
-                else if (restriction.eqValues.size() > 1 && i != stmt.columnRestrictions.length - 1)
+                else if (restriction.eqValues.size() > 1)
                 {
-                    throw new InvalidRequestException(String.format("PRIMARY KEY part %s cannot be restricted by IN relation", cname));
+                    if (i != stmt.columnRestrictions.length - 1)
+                        throw new InvalidRequestException(String.format("PRIMARY KEY part %s cannot be restricted by IN relation", cname));
+                    else if (stmt.selectACollection())
+                        throw new InvalidRequestException(String.format("Cannot restrict PRIMARY KEY part %s by IN relation as a collection is selected by the query", cname));
                 }
 
                 previous = cname;
@@ -1043,12 +1060,14 @@ public class SelectStatement implements CQLStatement
             {
                 stmt.isKeyRange = true;
                 boolean hasEq = false;
-                SecondaryIndexManager idxManager = Table.open(keyspace()).getColumnFamilyStore(columnFamily()).indexManager;
                 Set<ByteBuffer> indexedNames = new HashSet<ByteBuffer>();
-                for (SecondaryIndex index : idxManager.getIndexes())
+                indexedNames.add(cfm.getKeyName());
+                for (ColumnDefinition cfdef : cfm.getColumn_metadata().values())
                 {
-                    for (ColumnDefinition cdef : index.getColumnDefs())
-                        indexedNames.add(cdef.name);
+                    if (cfdef.getIndexType() != null)
+                    {
+                        indexedNames.add(cfdef.name);
+                    }
                 }
 
                 // Note: we cannot use idxManager.indexes() methods because we don't have a complete column name at this point, we only

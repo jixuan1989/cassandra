@@ -47,7 +47,7 @@ import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.sstable.*;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.metrics.CompactionMetrics;
-import org.apache.cassandra.service.AntiEntropyService;
+import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.CloseableIterator;
 import org.apache.cassandra.utils.CounterId;
@@ -184,6 +184,9 @@ public class CompactionManager implements CompactionManagerMBean
     private void performAllSSTableOperation(final ColumnFamilyStore cfs, final AllSSTablesOperation operation) throws InterruptedException, ExecutionException
     {
         final Collection<SSTableReader> sstables = cfs.markAllCompacting();
+        if (sstables == null)
+            return;
+
         Callable<Object> runnable = new Callable<Object>()
         {
             public Object call() throws IOException
@@ -207,7 +210,7 @@ public class CompactionManager implements CompactionManagerMBean
         });
     }
 
-    public void performSSTableRewrite(ColumnFamilyStore cfStore) throws InterruptedException, ExecutionException
+    public void performSSTableRewrite(ColumnFamilyStore cfStore, final boolean excludeCurrentVersion) throws InterruptedException, ExecutionException
     {
         performAllSSTableOperation(cfStore, new AllSSTablesOperation()
         {
@@ -215,6 +218,9 @@ public class CompactionManager implements CompactionManagerMBean
             {
                 for (final SSTableReader sstable : sstables)
                 {
+                    if (excludeCurrentVersion && sstable.descriptor.version.equals(Descriptor.Version.CURRENT))
+                        continue;
+
                     // SSTables are marked by the caller
                     // NOTE: it is important that the task create one and only one sstable, even for Leveled compaction (see LeveledManifest.replace())
                     CompactionTask task = new CompactionTask(cfs, Collections.singletonList(sstable), NO_GC);
@@ -356,7 +362,7 @@ public class CompactionManager implements CompactionManagerMBean
     /**
      * Does not mutate data, so is not scheduled.
      */
-    public Future<Object> submitValidation(final ColumnFamilyStore cfStore, final AntiEntropyService.Validator validator)
+    public Future<Object> submitValidation(final ColumnFamilyStore cfStore, final ActiveRepairService.Validator validator)
     {
         Callable<Object> callable = new Callable<Object>()
         {
@@ -446,7 +452,7 @@ public class CompactionManager implements CompactionManagerMBean
                 continue;
             }
 
-            CompactionController controller = new CompactionController(cfs, Collections.singletonList(sstable), getDefaultGcBefore(cfs));
+            CompactionController controller = new CompactionController(cfs, Collections.singleton(sstable), getDefaultGcBefore(cfs));
             long startTime = System.currentTimeMillis();
 
             long totalkeysWritten = 0;
@@ -584,7 +590,7 @@ public class CompactionManager implements CompactionManagerMBean
      * Performs a readonly "compaction" of all sstables in order to validate complete rows,
      * but without writing the merge result
      */
-    private void doValidationCompaction(ColumnFamilyStore cfs, AntiEntropyService.Validator validator) throws IOException
+    private void doValidationCompaction(ColumnFamilyStore cfs, ActiveRepairService.Validator validator) throws IOException
     {
         // this isn't meant to be race-proof, because it's not -- it won't cause bugs for a CFS to be dropped
         // mid-validation, or to attempt to validate a droped CFS.  this is just a best effort to avoid useless work,

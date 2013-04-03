@@ -31,6 +31,7 @@ import java.util.concurrent.TimeUnit;
 import java.lang.management.ManagementFactory;
 import java.lang.management.RuntimeMXBean;
 
+import com.google.common.collect.Iterables;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -114,6 +115,9 @@ public class MigrationManager implements IEndpointStateChangeSubscriber
     {
         // Can't request migrations from nodes with versions younger than 1.1.7
         if (MessagingService.instance().getVersion(endpoint) < MessagingService.VERSION_117)
+            return;
+
+        if (Gossiper.instance.isFatClient(endpoint))
             return;
 
         if (Schema.instance.getVersion().equals(theirVersion))
@@ -382,7 +386,7 @@ public class MigrationManager implements IEndpointStateChangeSubscriber
         ColumnFamilyStore cfStore = defs.getColumnFamilyStore(DefsTable.OLD_SCHEMA_CF);
         QueryFilter filter = QueryFilter.getNamesFilter(dkey, DefsTable.OLD_SCHEMA_CF, LAST_MIGRATION_KEY);
         ColumnFamily cf = cfStore.getColumnFamily(filter);
-        if (cf == null || cf.getColumnNames().size() == 0)
+        if (cf == null || Iterables.isEmpty(cf.getColumnNames()))
             return null;
         else
             return UUIDGen.getUUID(cf.getColumn(LAST_MIGRATION_KEY).value());

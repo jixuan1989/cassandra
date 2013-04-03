@@ -192,9 +192,9 @@ public class NodeProbe
         ssProxy.scrub(tableName, columnFamilies);
     }
 
-    public void upgradeSSTables(String tableName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
+    public void upgradeSSTables(String tableName, boolean excludeCurrentVersion, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
     {
-        ssProxy.upgradeSSTables(tableName, columnFamilies);
+        ssProxy.upgradeSSTables(tableName, excludeCurrentVersion, columnFamilies);
     }
 
     public void forceTableCompaction(String tableName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
@@ -983,9 +983,9 @@ class RepairRunner implements NotificationListener
                 String message = String.format("[%s] %s", format.format(notification.getTimeStamp()), notification.getMessage());
                 out.println(message);
                 // repair status is int array with [0] = cmd number, [1] = status
-                if (status[1] == AntiEntropyService.Status.SESSION_FAILED.ordinal())
+                if (status[1] == ActiveRepairService.Status.SESSION_FAILED.ordinal())
                     success = false;
-                else if (status[1] == AntiEntropyService.Status.FINISHED.ordinal())
+                else if (status[1] == ActiveRepairService.Status.FINISHED.ordinal())
                     condition.signalAll();
             }
         }

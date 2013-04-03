@@ -178,8 +178,8 @@ public final class MessagingService implements MessagingServiceMBean
         put(Verb.STREAM_REQUEST, StreamRequest.serializer);
         put(Verb.RANGE_SLICE, RangeSliceCommand.serializer);
         put(Verb.BOOTSTRAP_TOKEN, BootStrapper.StringSerializer.instance);
-        put(Verb.TREE_REQUEST, AntiEntropyService.TreeRequest.serializer);
-        put(Verb.TREE_RESPONSE, AntiEntropyService.Validator.serializer);
+        put(Verb.TREE_REQUEST, ActiveRepairService.TreeRequest.serializer);
+        put(Verb.TREE_RESPONSE, ActiveRepairService.Validator.serializer);
         put(Verb.STREAMING_REPAIR_REQUEST, StreamingRepairTask.serializer);
         put(Verb.STREAMING_REPAIR_RESPONSE, UUIDSerializer.serializer);
         put(Verb.GOSSIP_DIGEST_ACK, GossipDigestAck.serializer);
@@ -355,7 +355,7 @@ public final class MessagingService implements MessagingServiceMBean
      * @param address the host that replied to the message
      * @param latency
      */
-    public void maybeAddLatency(IMessageCallback cb, InetAddress address, long latency)
+    public void maybeAddLatency(IAsyncCallback cb, InetAddress address, long latency)
     {
         if (cb.isLatencyForSnitch())
             addLatency(address, latency);
@@ -514,7 +514,7 @@ public final class MessagingService implements MessagingServiceMBean
         return verbHandlers.get(type);
     }
 
-    public int addCallback(IMessageCallback cb, MessageOut message, InetAddress to, long timeout)
+    public int addCallback(IAsyncCallback cb, MessageOut message, InetAddress to, long timeout)
     {
         int messageId = nextId();
         CallbackInfo previous;
@@ -537,9 +537,9 @@ public final class MessagingService implements MessagingServiceMBean
     }
 
     /*
-     * @see #sendRR(Message message, InetAddress to, IMessageCallback cb, long timeout)
+     * @see #sendRR(Message message, InetAddress to, IAsyncCallback cb, long timeout)
      */
-    public int sendRR(MessageOut message, InetAddress to, IMessageCallback cb)
+    public int sendRR(MessageOut message, InetAddress to, IAsyncCallback cb)
     {
         return sendRR(message, to, cb, message.getTimeout());
     }
@@ -559,7 +559,7 @@ public final class MessagingService implements MessagingServiceMBean
      * @param timeout the timeout used for expiration
      * @return an reference to message id used to match with the result
      */
-    public int sendRR(MessageOut message, InetAddress to, IMessageCallback cb, long timeout)
+    public int sendRR(MessageOut message, InetAddress to, IAsyncCallback cb, long timeout)
     {
         int id = addCallback(cb, message, to, timeout);
 
@@ -615,9 +615,9 @@ public final class MessagingService implements MessagingServiceMBean
         connection.enqueue(processedMessage, id);
     }
 
-    public <T> IAsyncResult<T> sendRR(MessageOut message, InetAddress to)
+    public <T> AsyncOneResponse<T> sendRR(MessageOut message, InetAddress to)
     {
-        IAsyncResult<T> iar = new AsyncResult<T>();
+        AsyncOneResponse<T> iar = new AsyncOneResponse<T>();
         sendRR(message, to, iar);
         return iar;
     }
@@ -713,7 +713,7 @@ public final class MessagingService implements MessagingServiceMBean
 
         if (message.verb == Verb.REQUEST_RESPONSE && PBSPredictor.instance().isLoggingEnabled())
         {
-            IMessageCallback cb = MessagingService.instance().getRegisteredCallback(id).callback;
+            IAsyncCallback cb = MessagingService.instance().getRegisteredCallback(id).callback;
 
             if (cb instanceof AbstractWriteResponseHandler)
             {

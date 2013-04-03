@@ -65,11 +65,8 @@ import org.apache.cassandra.io.sstable.SSTableLoader;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.locator.*;
 import org.apache.cassandra.metrics.StorageMetrics;
-import org.apache.cassandra.net.IAsyncResult;
-import org.apache.cassandra.net.MessageOut;
-import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.net.ResponseVerbHandler;
-import org.apache.cassandra.service.AntiEntropyService.TreeRequestVerbHandler;
+import org.apache.cassandra.net.*;
+import org.apache.cassandra.service.ActiveRepairService.TreeRequestVerbHandler;
 import org.apache.cassandra.streaming.*;
 import org.apache.cassandra.thrift.cassandraConstants;
 import org.apache.cassandra.thrift.EndpointDetails;
@@ -245,7 +242,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         MessagingService.instance().registerVerbHandlers(MessagingService.Verb.REQUEST_RESPONSE, new ResponseVerbHandler());
         MessagingService.instance().registerVerbHandlers(MessagingService.Verb.INTERNAL_RESPONSE, new ResponseVerbHandler());
         MessagingService.instance().registerVerbHandlers(MessagingService.Verb.TREE_REQUEST, new TreeRequestVerbHandler());
-        MessagingService.instance().registerVerbHandlers(MessagingService.Verb.TREE_RESPONSE, new AntiEntropyService.TreeResponseVerbHandler());
+        MessagingService.instance().registerVerbHandlers(MessagingService.Verb.TREE_RESPONSE, new ActiveRepairService.TreeResponseVerbHandler());
         MessagingService.instance().registerVerbHandlers(MessagingService.Verb.STREAMING_REPAIR_REQUEST, new StreamingRepairTask.StreamingRepairRequest());
         MessagingService.instance().registerVerbHandlers(MessagingService.Verb.STREAMING_REPAIR_RESPONSE, new StreamingRepairTask.StreamingRepairResponse());
         MessagingService.instance().registerVerbHandlers(MessagingService.Verb.GOSSIP_SHUTDOWN, new GossipShutdownVerbHandler());
@@ -375,10 +372,38 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
     public synchronized void initClient() throws IOException, ConfigurationException
     {
-        initClient(RING_DELAY);
+        // We don't wait, because we're going to actually try to work on
+        initClient(0);
+
+        try
+        {
+            // sleep a while to allow gossip to warm up (the other nodes need to know about this one before they can reply).
+            boolean isUp = false;
+            while (!isUp)
+            {
+                Thread.sleep(1000);
+                for (InetAddress address : Gossiper.instance.getLiveMembers())
+                {
+                    if (!Gossiper.instance.isFatClient(address))
+                    {
+                        isUp = true;
+                    }
+                }
+            }
+
+            // sleep until any schema migrations have finished
+            while (!MigrationManager.isReadyForBootstrap())
+            {
+                Thread.sleep(1000);
+            }
+        }
+        catch (InterruptedException e)
+        {
+            throw new AssertionError(e);
+        }
     }
 
-    public synchronized void initClient(int delay) throws IOException, ConfigurationException
+    public synchronized void initClient(int ringDelay) throws IOException, ConfigurationException
     {
         if (initialized)
         {
@@ -391,14 +416,14 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         logger.info("Starting up client gossip");
         setMode(Mode.CLIENT, false);
         Gossiper.instance.register(this);
-        Gossiper.instance.start((int)(System.currentTimeMillis() / 1000)); // needed for node-ring gathering.
+        Gossiper.instance.register(migrationManager);
+        Gossiper.instance.start((int) (System.currentTimeMillis() / 1000)); // needed for node-ring gathering.
         Gossiper.instance.addLocalApplicationState(ApplicationState.NET_VERSION, valueFactory.networkVersion());
-        MessagingService.instance().listen(FBUtilities.getLocalAddress());
 
-        // sleep a while to allow gossip to warm up (the other nodes need to know about this one before they can reply).
+        MessagingService.instance().listen(FBUtilities.getLocalAddress());
         try
         {
-            Thread.sleep(delay);
+           Thread.sleep(ringDelay);
         }
         catch (InterruptedException e)
         {
@@ -1785,7 +1810,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             logger.debug("Notifying " + remote.toString() + " of replication completion\n");
         while (failureDetector.isAlive(remote))
         {
-            IAsyncResult iar = MessagingService.instance().sendRR(msg, remote);
+            AsyncOneResponse iar = MessagingService.instance().sendRR(msg, remote);
             try
             {
                 iar.get(DatabaseDescriptor.getRpcTimeout(), TimeUnit.MILLISECONDS);
@@ -2099,10 +2124,10 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             cfStore.scrub();
     }
 
-    public void upgradeSSTables(String tableName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
+    public void upgradeSSTables(String tableName, boolean excludeCurrentVersion, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
     {
         for (ColumnFamilyStore cfStore : getValidColumnFamilies(true, true, tableName, columnFamilies))
-            cfStore.sstablesRewrite();
+            cfStore.sstablesRewrite(excludeCurrentVersion);
     }
 
     public void forceTableCompaction(String tableName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
@@ -2376,12 +2401,12 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             {
                 String message = String.format("Starting repair command #%d, repairing %d ranges for keyspace %s", cmd, ranges.size(), keyspace);
                 logger.info(message);
-                sendNotification("repair", message, new int[]{cmd, AntiEntropyService.Status.STARTED.ordinal()});
+                sendNotification("repair", message, new int[]{cmd, ActiveRepairService.Status.STARTED.ordinal()});
 
-                List<AntiEntropyService.RepairFuture> futures = new ArrayList<AntiEntropyService.RepairFuture>(ranges.size());
+                List<ActiveRepairService.RepairFuture> futures = new ArrayList<ActiveRepairService.RepairFuture>(ranges.size());
                 for (Range<Token> range : ranges)
                 {
-                    AntiEntropyService.RepairFuture future;
+                    ActiveRepairService.RepairFuture future;
                     try
                     {
                         future = forceTableRepair(range, keyspace, isSequential, isLocal, columnFamilies);
@@ -2389,7 +2414,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                     catch (IllegalArgumentException e)
                     {
                         logger.error("Repair session failed:", e);
-                        sendNotification("repair", message, new int[]{cmd, AntiEntropyService.Status.SESSION_FAILED.ordinal()});
+                        sendNotification("repair", message, new int[]{cmd, ActiveRepairService.Status.SESSION_FAILED.ordinal()});
                         continue;
                     }
                     if (future == null)
@@ -2404,37 +2429,37 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                     {
                         message = "Interrupted while waiting for the differencing of repair session " + future.session + " to be done. Repair may be imprecise.";
                         logger.error(message, e);
-                        sendNotification("repair", message, new int[]{cmd, AntiEntropyService.Status.SESSION_FAILED.ordinal()});
+                        sendNotification("repair", message, new int[]{cmd, ActiveRepairService.Status.SESSION_FAILED.ordinal()});
                     }
                 }
-                for (AntiEntropyService.RepairFuture future : futures)
+                for (ActiveRepairService.RepairFuture future : futures)
                 {
                     try
                     {
                         future.get();
                         message = String.format("Repair session %s for range %s finished", future.session.getName(), future.session.getRange().toString());
-                        sendNotification("repair", message, new int[]{cmd, AntiEntropyService.Status.SESSION_SUCCESS.ordinal()});
+                        sendNotification("repair", message, new int[]{cmd, ActiveRepairService.Status.SESSION_SUCCESS.ordinal()});
                     }
                     catch (ExecutionException e)
                     {
                         message = String.format("Repair session %s for range %s failed with error %s", future.session.getName(), future.session.getRange().toString(), e.getCause().getMessage());
                         logger.error(message, e);
-                        sendNotification("repair", message, new int[]{cmd, AntiEntropyService.Status.SESSION_FAILED.ordinal()});
+                        sendNotification("repair", message, new int[]{cmd, ActiveRepairService.Status.SESSION_FAILED.ordinal()});
                     }
                     catch (Exception e)
                     {
                         message = String.format("Repair session %s for range %s failed with error %s", future.session.getName(), future.session.getRange().toString(), e.getMessage());
                         logger.error(message, e);
-                        sendNotification("repair", message, new int[]{cmd, AntiEntropyService.Status.SESSION_FAILED.ordinal()});
+                        sendNotification("repair", message, new int[]{cmd, ActiveRepairService.Status.SESSION_FAILED.ordinal()});
                     }
                 }
-                sendNotification("repair", String.format("Repair command #%d finished", cmd), new int[]{cmd, AntiEntropyService.Status.FINISHED.ordinal()});
+                sendNotification("repair", String.format("Repair command #%d finished", cmd), new int[]{cmd, ActiveRepairService.Status.FINISHED.ordinal()});
             }
         }, null);
         return task;
     }
 
-    public AntiEntropyService.RepairFuture forceTableRepair(final Range<Token> range, final String tableName, boolean isSequential, boolean  isLocal, final String... columnFamilies) throws IOException
+    public ActiveRepairService.RepairFuture forceTableRepair(final Range<Token> range, final String tableName, boolean isSequential, boolean  isLocal, final String... columnFamilies) throws IOException
     {
         ArrayList<String> names = new ArrayList<String>();
         for (ColumnFamilyStore cfStore : getValidColumnFamilies(false, false, tableName, columnFamilies))
@@ -2448,11 +2473,11 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             return null;
         }
 
-        return AntiEntropyService.instance.submitRepairSession(range, tableName, isSequential, isLocal, names.toArray(new String[names.size()]));
+        return ActiveRepairService.instance.submitRepairSession(range, tableName, isSequential, isLocal, names.toArray(new String[names.size()]));
     }
 
     public void forceTerminateAllRepairSessions() {
-        AntiEntropyService.instance.terminateSessions();
+        ActiveRepairService.instance.terminateSessions();
     }
 
     /* End of MBean interface methods */

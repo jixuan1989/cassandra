@@ -110,10 +110,10 @@ public class IncomingStreamReader
             }
 
             assert remoteFile.estimatedKeys > 0;
-            DataInput dis = new DataInputStream(underliningStream);
+            DataInput in = new DataInputStream(underliningStream);
             try
             {
-                SSTableReader reader = streamIn(dis, localFile, remoteFile);
+                SSTableReader reader = streamIn(in, localFile, remoteFile);
                 session.finished(remoteFile, reader);
             }
             catch (IOException ex)
@@ -134,7 +134,7 @@ public class IncomingStreamReader
         ColumnFamilyStore cfs = Table.open(localFile.desc.ksname).getColumnFamilyStore(localFile.desc.cfname);
         DecoratedKey key;
         SSTableWriter writer = new SSTableWriter(localFile.getFilename(), remoteFile.estimatedKeys);
-        CompactionController controller = new CompactionController(cfs, Collections.<SSTableReader>emptyList(), Integer.MIN_VALUE);
+        CompactionController controller = new CompactionController(cfs, Collections.<SSTableReader>emptySet(), Integer.MIN_VALUE);
 
         try
         {
