@@ -67,6 +67,7 @@ public class CliClient
         BYTES         (BytesType.instance),
         INTEGER       (IntegerType.instance),
         LONG          (LongType.instance),
+        LONG2         (LongTypeDesc.instance),//@ZhongYu, to add a reverse column comparator
         INT           (Int32Type.instance),
         LEXICALUUID   (LexicalUUIDType.instance),
         TIMEUUID      (TimeUUIDType.instance),

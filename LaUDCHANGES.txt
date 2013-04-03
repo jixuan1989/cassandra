@@ -1,0 +1,7 @@
+2013.4.3
+修改了cli包下的CliClient，enum Function中增加了LONG2列比较器声明。LongTypeDesc.instance
+修改了cql/jdbc包下的TypesMap， map中新增org.apache.cassandra.db.marshal.LongTypeDesc 到JdbcLong.instance的映射
+修改了cql/CFPropDefs， 增加了bitint2到LongTypeDesc的声明
+修改了cql3/Constants，增加了BIGINT2的处理（hxd注：该方法很可能没有测试。。。）
+修改了cql3/CQL3Type， 增加了BIGINT2 声明
+新增db/marshal/LongTypeDesc类，逆向列比较器

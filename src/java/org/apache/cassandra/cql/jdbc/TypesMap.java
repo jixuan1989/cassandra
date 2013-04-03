@@ -39,6 +39,7 @@ public class TypesMap
         map.put("org.apache.cassandra.db.marshal.IntegerType", JdbcInteger.instance);
         map.put("org.apache.cassandra.db.marshal.LexicalUUIDType", JdbcLexicalUUID.instance);
         map.put("org.apache.cassandra.db.marshal.LongType", JdbcLong.instance);
+        map.put("org.apache.cassandra.db.marshal.LongTypeDesc", JdbcLong.instance);//@ZhongYu add column reverse  comparator 
         map.put("org.apache.cassandra.db.marshal.TimeUUIDType", JdbcTimeUUID.instance);
         map.put("org.apache.cassandra.db.marshal.UTF8Type", JdbcUTF8.instance);
         map.put("org.apache.cassandra.db.marshal.UUIDType", JdbcUUID.instance);
