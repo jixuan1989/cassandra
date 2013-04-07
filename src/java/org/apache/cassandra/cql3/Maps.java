@@ -19,7 +19,6 @@ package org.apache.cassandra.cql3;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -71,22 +70,21 @@ public abstract class Maps
                 Term k = entry.left.prepare(keySpec);
                 Term v = entry.right.prepare(valueSpec);
 
-                if (!(k instanceof Constants.Value && v instanceof Constants.Value))
-                {
-                    if (k instanceof Term.NonTerminal || v instanceof Term.NonTerminal)
-                        throw new InvalidRequestException(String.format("Invalid map literal for %s: bind variables are not supported inside collection literals", receiver));
-                    else
-                        throw new InvalidRequestException(String.format("Invalid map literal for %s: nested collections are not supported", receiver));
-                }
+                if (k instanceof Term.NonTerminal || v instanceof Term.NonTerminal)
+                    throw new InvalidRequestException(String.format("Invalid map literal for %s: bind variables are not supported inside collection literals", receiver));
 
                 // We don't support values > 64K because the serialization format encode the length as an unsigned short.
                 ByteBuffer keyBytes = ((Constants.Value)k).bytes;
+                if (keyBytes == null)
+                    throw new InvalidRequestException("null is not supported inside collections");
                 if (keyBytes.remaining() > FBUtilities.MAX_UNSIGNED_SHORT)
                     throw new InvalidRequestException(String.format("Map key is too long. Map keys are limited to %d bytes but %d bytes keys provided",
                                                                     FBUtilities.MAX_UNSIGNED_SHORT,
                                                                     keyBytes.remaining()));
 
                 ByteBuffer valueBytes = ((Constants.Value)v).bytes;
+                if (valueBytes == null)
+                    throw new InvalidRequestException("null is not supported inside collections");
                 if (valueBytes.remaining() > FBUtilities.MAX_UNSIGNED_SHORT)
                     throw new InvalidRequestException(String.format("Map value is too long. Map values are limited to %d bytes but %d bytes value provided",
                                                                     FBUtilities.MAX_UNSIGNED_SHORT,
@@ -231,14 +229,12 @@ public abstract class Maps
 
         public void execute(ByteBuffer rowKey, ColumnFamily cf, ColumnNameBuilder prefix, UpdateParameters params) throws InvalidRequestException
         {
-            Term.Terminal key = k.bind(params.variables);
-            Term.Terminal value = t.bind(params.variables);
+            ByteBuffer key = k.bindAndGet(params.variables);
+            ByteBuffer value = t.bindAndGet(params.variables);
             if (key == null)
                 throw new InvalidRequestException("Invalid null map key");
-            assert key instanceof Constants.Value;
-            assert value == null || value instanceof Constants.Value;
 
-            ByteBuffer cellName = prefix.add(columnName.key).add(((Constants.Value)key).bytes).build();
+            ByteBuffer cellName = prefix.add(columnName.key).add(key).build();
 
             if (value == null)
             {
@@ -246,14 +242,13 @@ public abstract class Maps
             }
             else
             {
-                ByteBuffer bytes = ((Constants.Value)value).bytes;
                 // We don't support value > 64K because the serialization format encode the length as an unsigned short.
-                if (bytes.remaining() > FBUtilities.MAX_UNSIGNED_SHORT)
+                if (value.remaining() > FBUtilities.MAX_UNSIGNED_SHORT)
                     throw new InvalidRequestException(String.format("Map value is too long. Map values are limited to %d bytes but %d bytes value provided",
                                                                     FBUtilities.MAX_UNSIGNED_SHORT,
-                                                                    bytes.remaining()));
+                                                                    value.remaining()));
 
-                cf.addColumn(params.makeColumn(cellName, bytes));
+                cf.addColumn(params.makeColumn(cellName, value));
             }
         }
     }

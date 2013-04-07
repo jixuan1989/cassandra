@@ -18,13 +18,10 @@
 package org.apache.cassandra.io.sstable;
 
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Iterator;
 
 import org.apache.cassandra.db.columniterator.OnDiskAtomIterator;
 import org.apache.cassandra.db.RowPosition;
-import org.apache.cassandra.dht.Range;
-import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.utils.Pair;
 
 /**
@@ -35,10 +32,11 @@ public class SSTableBoundedScanner extends SSTableScanner
     private final Iterator<Pair<Long, Long>> rangeIterator;
     private Pair<Long, Long> currentRange;
 
-    SSTableBoundedScanner(SSTableReader sstable, Range<Token> range)
+    SSTableBoundedScanner(SSTableReader sstable, Iterator<Pair<Long, Long>> rangeIterator)
     {
         super(sstable);
-        this.rangeIterator = sstable.getPositionsForRanges(Collections.singletonList(range)).iterator();
+        assert rangeIterator.hasNext(); // use EmptyCompactionScanner otherwise
+        this.rangeIterator = rangeIterator;
         currentRange = rangeIterator.next();
         dfile.seek(currentRange.left);
     }

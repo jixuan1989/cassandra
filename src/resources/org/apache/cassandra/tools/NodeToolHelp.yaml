@@ -49,6 +49,15 @@ commands:
   - name: compactionstats
     help: |
       Print statistics on compactions
+  - name: disablebinary
+    help: |
+      Disable native transport (binary protocol)
+  - name: enablebinary
+    help: |
+      Reenable native transport (binary protocol)
+  - name: statusbinary
+    help: |
+      Status of native transport (binary protocol)
   - name: disablehandoff
     help: |
       Disable the future hints storing on the current node
@@ -146,6 +155,9 @@ commands:
   - name: getcompactionthreshold <keyspace> <cfname>
     help: |
       Print min and max compaction thresholds for a given column family
+  - name: stop <compaction_type>
+    help: |
+      Supported types are COMPACTION, VALIDATION, CLEANUP, SCRUB, INDEX_BUILD
   - name: cfhistograms <keyspace> <cfname>
     help: |
       Print statistic histograms for a given column family

@@ -107,10 +107,12 @@ public class NodeCmd
         COMPACT,
         COMPACTIONSTATS,
         DECOMMISSION,
+        DISABLEBINARY,
         DISABLEGOSSIP,
         DISABLEHANDOFF,
         DISABLETHRIFT,
         DRAIN,
+        ENABLEBINARY,
         ENABLEGOSSIP,
         ENABLEHANDOFF,
         ENABLETHRIFT,
@@ -143,6 +145,7 @@ public class NodeCmd
         SETTRACEPROBABILITY,
         SNAPSHOT,
         STATUS,
+        STATUSBINARY,
         STATUSTHRIFT,
         STOP,
         TPSTATS,
@@ -910,6 +913,11 @@ public class NodeCmd
         }
     }
 
+    private void printIsNativeTransportRunning(PrintStream outs)
+    {
+        outs.println(probe.isNativeTransportRunning() ? "running" : "not running");
+    }
+
     private void printIsThriftServerRunning(PrintStream outs)
     {
         outs.println(probe.isThriftServerRunning() ? "running" : "not running");
@@ -1048,6 +1056,9 @@ public class NodeCmd
                 case TPSTATS         : nodeCmd.printThreadPoolStats(System.out); break;
                 case VERSION         : nodeCmd.printReleaseVersion(System.out); break;
                 case COMPACTIONSTATS : nodeCmd.printCompactionStats(System.out); break;
+                case DISABLEBINARY   : probe.stopNativeTransport(); break;
+                case ENABLEBINARY    : probe.startNativeTransport(); break;
+                case STATUSBINARY    : nodeCmd.printIsNativeTransportRunning(System.out); break;
                 case DISABLEGOSSIP   : probe.stopGossiping(); break;
                 case ENABLEGOSSIP    : probe.startGossiping(); break;
                 case DISABLEHANDOFF  : probe.disableHintedHandoff(); break;

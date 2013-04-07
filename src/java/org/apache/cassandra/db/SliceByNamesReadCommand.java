@@ -19,7 +19,6 @@ package org.apache.cassandra.db;
 
 import java.io.*;
 import java.nio.ByteBuffer;
-import java.util.*;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Schema;
@@ -50,7 +49,7 @@ public class SliceByNamesReadCommand extends ReadCommand
         return readCommand;
     }
 
-    public Row getRow(Table table) throws IOException
+    public Row getRow(Table table)
     {
         DecoratedKey dk = StorageService.getPartitioner().decorateKey(key);
         return table.getRow(new QueryFilter(dk, cfName, filter));
