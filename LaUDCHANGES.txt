@@ -5,3 +5,4 @@
 修改了cql3/Constants，增加了BIGINT2的处理（hxd注：该方法很可能没有测试。。。）
 修改了cql3/CQL3Type， 增加了BIGINT2 声明
 新增db/marshal/LongTypeDesc类，逆向列比较器
+修改了transport\DataType.java， 增加了加入了 BIGINT2  (17, LongTypeDesc.instance)

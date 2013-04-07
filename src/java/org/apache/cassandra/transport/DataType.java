@@ -49,6 +49,7 @@ public enum DataType implements OptionCodec.Codecable<DataType>
     VARINT   (14, IntegerType.instance),
     TIMEUUID (15, TimeUUIDType.instance),
     INET     (16, InetAddressType.instance),
+    BIGINT2  (17, LongTypeDesc.instance),//@ZhongYu reverse column comparator
     LIST     (32, null),
     MAP      (33, null),
     SET      (34, null);
