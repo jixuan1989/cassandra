@@ -110,10 +110,6 @@ public class CassandraServer implements Cassandra.Iface
         {
             ThriftConversion.rethrow(e);
         }
-        catch (IOException e)
-        {
-            throw new RuntimeException(e);
-        }
 
         for (Row row: rows)
         {
@@ -1103,10 +1099,6 @@ public class CassandraServer implements Cassandra.Iface
         {
             throw ThriftConversion.toThrift(e);
         }
-        catch (IOException e)
-        {
-            throw new RuntimeException(e);
-        }
         finally
         {
             Tracing.instance().stopSession();
@@ -1191,10 +1183,6 @@ public class CassandraServer implements Cassandra.Iface
         {
             throw ThriftConversion.toThrift(e);
         }
-        catch (IOException e)
-        {
-            throw new RuntimeException(e);
-        }
         finally
         {
             Tracing.instance().stopSession();
@@ -1269,10 +1257,6 @@ public class CassandraServer implements Cassandra.Iface
         catch (org.apache.cassandra.exceptions.UnavailableException e)
         {
             throw ThriftConversion.toThrift(e);
-        }
-        catch (IOException e)
-        {
-            throw new RuntimeException(e);
         }
         finally
         {
@@ -1552,7 +1536,7 @@ public class CassandraServer implements Cassandra.Iface
             CFMetaData cfm = CFMetaData.fromThrift(cf_def);
             CFMetaData.validateCompactionOptions(cfm.compactionStrategyClass, cfm.compactionStrategyOptions);
             cfm.addDefaultIndexNames();
-            MigrationManager.announceColumnFamilyUpdate(cfm);
+            MigrationManager.announceColumnFamilyUpdate(cfm, true);
             return Schema.instance.getVersion().toString();
         }
         catch (RequestValidationException e)
@@ -1614,10 +1598,8 @@ public class CassandraServer implements Cassandra.Iface
 
     public void set_keyspace(String keyspace) throws InvalidRequestException, TException
     {
-        validateLogin();
         try
         {
-            ThriftValidation.validateTable(keyspace);
             state().setKeyspace(keyspace);
         }
         catch (RequestValidationException e)
