@@ -1,0 +1,6 @@
+#忽略所有ant出来的文件
+build/*
+.ant-targets-build.xml
+src/gen-java/
+.classpath
+.project

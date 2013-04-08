@@ -64,6 +64,7 @@ public class CFPropDefs {
     {
         comparators.put("ascii", "AsciiType");
         comparators.put("bigint", "LongType");
+        comparators.put("bigint2", "LongTypeDesc"); //@ZhongYu map bigint2 to column reverse comparator. 
         comparators.put("blob", "BytesType");
         comparators.put("boolean", "BooleanType");
         comparators.put("counter", "CounterColumnType");

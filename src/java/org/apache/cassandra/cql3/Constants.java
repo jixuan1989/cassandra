@@ -193,6 +193,7 @@ public abstract class Constants
                     switch (nt)
                     {
                         case BIGINT:
+                        case BIGINT2://@ZhongYu, to add a reverse column comparator
                         case COUNTER:
                         case DECIMAL:
                         case DOUBLE:
