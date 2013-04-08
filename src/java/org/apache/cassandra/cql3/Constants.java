@@ -177,7 +177,7 @@ public abstract class Constants
                     switch (nt)
                     {
                         case BIGINT:
-                        case BIGINT2://XXX @ZhongYu 
+                        case BIGINT2://@ZhongYu 
                         case COUNTER:
                         case DECIMAL:
                         case DOUBLE:
