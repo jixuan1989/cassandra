@@ -44,6 +44,9 @@ public class WhereClause
     // set by extractKeysFromColumns
     private String keyAlias = null;
 
+    //added by Xu Hao
+    private boolean SearchWithoutKey = false;
+    
     /**
      * Create a new WhereClause with the first parsed relation.
      *
@@ -67,6 +70,24 @@ public class WhereClause
         clauseRelations.add(relation);
     }
 
+    //added by xuhao
+    public void setSearchWithoutKey(boolean bKey)
+    {
+    	SearchWithoutKey = bKey;
+    }
+    
+    //added by xuhao
+    public boolean getSearchWithoutKey()
+    {
+    	return this.SearchWithoutKey;
+    }
+    
+    //xuhao
+    public int numOFClauseRelations()
+    {
+    	return this.clauseRelations.size();
+    }
+    
     /**
      * The same as KEY = <key> to avoid using Relation object
      * @param key key to include into clause

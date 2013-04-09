@@ -24,6 +24,7 @@ import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import org.apache.cassandra.db.filter.QueryPath;
@@ -159,6 +160,17 @@ public class CounterMutation implements IMutation
         buff.append(", ").append(consistency.toString());
         return buff.append(")").toString();
     }
+
+	//xuhao
+	public Map<UUID, ColumnFamily> getModifications() {
+		return null;
+	}
+	
+	//xuhao
+	public void setKey(ByteBuffer key) {
+		// TODO Auto-generated method stub
+		
+	}
 }
 
 class CounterMutationSerializer implements IVersionedSerializer<CounterMutation>

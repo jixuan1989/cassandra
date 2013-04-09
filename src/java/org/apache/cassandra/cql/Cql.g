@@ -151,10 +151,12 @@ selectStatement returns [SelectStatement expr]
           SelectExpression expression = null;
           boolean isCountOp = false;
           ConsistencyLevel cLevel = ConsistencyLevel.ONE;
+          int aggregateType = 0;
       }
       K_SELECT
           ( s1=selectExpression                 { expression = s1; }
           | K_COUNT '(' s2=selectExpression ')' { expression = s2; isCountOp = true; }
+          | K_MAX '(' s3=selectExpression ')' {expression = s3; aggregateType = 1;}
           )
           K_FROM (keyspace=(IDENT | STRING_LITERAL | INTEGER) '.')? columnFamily=( IDENT | STRING_LITERAL | INTEGER )
           ( K_USING K_CONSISTENCY K_LEVEL { cLevel = ConsistencyLevel.valueOf($K_LEVEL.text.toUpperCase()); } )?
@@ -168,7 +170,9 @@ selectStatement returns [SelectStatement expr]
                                      $columnFamily.text,
                                      cLevel,
                                      $whereClause.clause,
-                                     numRecords);
+                                     numRecords, 
+                                     aggregateType
+                                     );
       }
     ;
 
@@ -179,27 +183,30 @@ selectExpression returns [SelectExpression expr]
           int count = 10000;
           boolean reversed = false;
           boolean hasFirstSet = false;
+          boolean withCount = false;
       }
       ( K_FIRST { hasFirstSet = true; } cols=INTEGER { count = Integer.parseInt($cols.text); } )?
       ( K_REVERSED { reversed = true; } )?
-      ( first=term { $expr = new SelectExpression(first, count, reversed, hasFirstSet); }
+      ( first=term { $expr = new SelectExpression(first, count, reversed, hasFirstSet, withCount); }
             (',' next=term { $expr.and(next); })*
-      | start=term RANGEOP finish=term { $expr = new SelectExpression(start, finish, count, reversed, false, hasFirstSet); }
-      | '\*' { $expr = new SelectExpression(new Term(), new Term(), count, reversed, true, hasFirstSet); }
+      | start=term RANGEOP finish=term { $expr = new SelectExpression(start, finish, count, reversed, false, hasFirstSet, withCount); }
+      | '\*' { $expr = new SelectExpression(new Term(), new Term(), count, reversed, true, hasFirstSet, withCount); }
       )
+      (K_WITHCOUNT { expr.setWithCount(true); })?
     ;
 
 // relation [[AND relation] ...]
 whereClause returns [WhereClause clause]
     @init {
         WhereClause inClause = new WhereClause();
+        boolean SearchWithoutKey = false;
     }
-    : first=relation { $clause = new WhereClause(first); } 
-          (K_AND next=relation { $clause.and(next); })*
+    : (first=relation) { $clause = new WhereClause(first);} 
+          (K_AND next=relation { $clause.and(next);})*
       | key_alias=term { inClause.setKeyAlias(key_alias.getText()); }
            K_IN '(' f1=term { inClause.andKeyEquals(f1); }
-                  (',' fN=term { inClause.andKeyEquals(fN); } )* ')'
         { inClause.setMultiKey(true); $clause = inClause; }
+                  (',' fN=term { inClause.andKeyEquals(fN); } )* ')'
     ;
 
 /**
@@ -317,12 +324,14 @@ updateStatement returns [UpdateStatement expr]
       K_UPDATE (keyspace=(IDENT | STRING_LITERAL | INTEGER) '.')? columnFamily=( IDENT | STRING_LITERAL | INTEGER )
           ( usingClause[attrs] )?
           K_SET termPairWithOperation[columns] (',' termPairWithOperation[columns])*
-          K_WHERE ( key_alias=term ('=' key=term { keyList = Collections.singletonList(key); }
+          (K_WHERE key_alias=term (('=' | '<' | '>' | '>=' | '<=') key=term { keyList = Collections.singletonList(key); }
+          	(K_AND term ('=' | '<' | '>' | '>=' | '<=') term)*)
                                     |
-                                    K_IN '(' keys=termList { keyList = $keys.items; } ')' ))
+                                    (K_IN '(' keys=termList { keyList = $keys.items; } ')' )
+          )
       {
           return new UpdateStatement($keyspace.text, $columnFamily.text, key_alias.getText(), columns, keyList, attrs);
-      }
+      } 
     ;
 
 /**
@@ -345,9 +354,11 @@ deleteStatement returns [DeleteStatement expr]
           ( cols=termList { columnsList = $cols.items; })?
           K_FROM (keyspace=(IDENT | STRING_LITERAL | INTEGER) '.')? columnFamily=( IDENT | STRING_LITERAL | INTEGER )
           ( usingClauseDelete[attrs] )?
-          ( K_WHERE key_alias=term ('=' key=term           { keyList = Collections.singletonList(key); }
-                                   | K_IN '(' keys=termList { keyList = $keys.items; } ')')
-                  )?
+          (K_WHERE key_alias=term (('=' | '<' | '>' | '>=' | '<=') key=term { keyList = Collections.singletonList(key); }
+          	(K_AND term ('=' | '<' | '>' | '>=' | '<=') term)*)
+                                    |
+                                    (K_IN '(' keys=termList { keyList = $keys.items; } ')' )
+          )
       {
           return new DeleteStatement(columnsList, $keyspace.text, $columnFamily.text, key_alias.getText(), keyList, attrs);
       }
@@ -549,6 +560,15 @@ K_TTL:         T T L;
 K_ALTER:       A L T E R;
 K_ADD:         A D D;
 K_TYPE:        T Y P E;
+
+K_MAX	:	M A X;
+K_MIN	:	M I N;
+K_SUN	:	S U M;
+//K_COLUMN:	C O L U M N;
+//K_VALUE	:	V A L U E;
+K_WITHCOUNT
+	:	W I T H C O U N T;
+
 
 // Case-insensitive alpha characters
 fragment A: ('a'|'A');

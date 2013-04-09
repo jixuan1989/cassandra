@@ -18,10 +18,14 @@
 package org.apache.cassandra.service;
 
 import java.io.DataOutputStream;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.Charset;
+import java.nio.charset.CharsetDecoder;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -46,6 +50,7 @@ import org.apache.cassandra.db.filter.ColumnSlice;
 import org.apache.cassandra.db.filter.IDiskAtomFilter;
 import org.apache.cassandra.db.filter.QueryPath;
 import org.apache.cassandra.db.filter.SliceQueryFilter;
+import org.apache.cassandra.db.marshal.LongType;
 import org.apache.cassandra.db.marshal.UUIDType;
 import org.apache.cassandra.dht.AbstractBounds;
 import org.apache.cassandra.dht.Bounds;
@@ -60,6 +65,10 @@ import org.apache.cassandra.locator.IEndpointSnitch;
 import org.apache.cassandra.locator.TokenMetadata;
 import org.apache.cassandra.metrics.ClientRequestMetrics;
 import org.apache.cassandra.net.*;
+import org.apache.cassandra.thrift.Deletion;
+import org.apache.cassandra.thrift.IndexExpression;
+import org.apache.cassandra.thrift.SlicePredicate;
+import org.apache.cassandra.thrift.ThriftClientState;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
@@ -1111,15 +1120,22 @@ public class StorageProxy implements StorageProxyMBean
         long startTime = System.nanoTime();
 
         Table table = Table.open(command.keyspace);
-        List<Row> rows;
+        List<Row> rows = null;
         // now scan until we have enough results
         try
         {
+        	//added by xuhao
+            final ByteBuffer columnBuffer = ByteBuffer.wrap("column".getBytes());
+            final ByteBuffer valueBuffer = ByteBuffer.wrap("value".getBytes());
+            boolean traversal = false;
             IDiskAtomFilter commandPredicate = command.predicate;
 
             int cql3RowCount = 0;
             rows = new ArrayList<Row>();
             List<AbstractBounds<RowPosition>> ranges = getRestrictedRanges(command.range);
+            
+        	Map<String, Integer> map = new HashMap<String, Integer>();
+            
             int i = 0;
             AbstractBounds<RowPosition> nextRange = null;
             List<InetAddress> nextEndpoints = null;
@@ -1175,6 +1191,7 @@ public class StorageProxy implements StorageProxyMBean
                     ++i;
                 }
 
+                /*
                 RangeSliceCommand nodeCmd = new RangeSliceCommand(command.keyspace,
                                                                   command.column_family,
                                                                   command.super_column,
@@ -1184,7 +1201,44 @@ public class StorageProxy implements StorageProxyMBean
                                                                   command.maxResults,
                                                                   command.countCQL3Rows,
                                                                   command.isPaging);
+                */
+                
+                RangeSliceCommand nodeCmdbackup = new RangeSliceCommand(command.keyspace,
+                        command.column_family,
+                        command.super_column,
+                        commandPredicate,
+                        range,
+                        command.row_filter,
+                        command.maxResults,
+                        command.countCQL3Rows,
+                        command.isPaging);
 
+                List<IndexExpression> row_filter_backup = new ArrayList<IndexExpression>();
+                for(int j = 0; j < nodeCmdbackup.row_filter.size(); j++)
+            	{
+            		if(nodeCmdbackup.row_filter.get(j).column_name.equals(columnBuffer)
+            				|| nodeCmdbackup.row_filter.get(j).column_name.equals(valueBuffer))
+            		{
+            			traversal = true;
+            		}
+            		else 
+            		{
+            			row_filter_backup.add(nodeCmdbackup.row_filter.get(j));
+            		}
+            	}
+                
+                RangeSliceCommand nodeCmd = new RangeSliceCommand(command.keyspace,
+                        command.column_family,
+                        command.super_column,
+                        commandPredicate,
+                        range,
+                        row_filter_backup,
+                        command.maxResults,
+                        command.countCQL3Rows,
+                        command.isPaging);
+
+                if(!traversal) nodeCmd = nodeCmdbackup;
+                
                 // collect replies and resolve according to consistency level
                 RangeSliceResponseResolver resolver = new RangeSliceResponseResolver(nodeCmd.keyspace);
                 ReadCallback<RangeSliceReply, Iterable<Row>> handler = new ReadCallback(resolver, consistency_level, nodeCmd, filteredEndpoints);
@@ -1209,8 +1263,170 @@ public class StorageProxy implements StorageProxyMBean
 
                 try
                 {
+                	//是不是有更好的地方可以判断？
+                	//added by xuhao
                     for (Row row : handler.get())
                     {
+                    	if(traversal)
+                    	{
+	                    	SortedSet<ByteBuffer> ColumnNameSet = row.cf.getColumnNames();
+	                    	Iterator<ByteBuffer> it = ColumnNameSet.iterator();
+	                    	int count = 0;
+	                    	while(it.hasNext())
+	                    	{
+	                    		ByteBuffer buffercolumn = (ByteBuffer)it.next();
+	                    		Long columnValue = (long) 0;
+	                    		try {
+	                    			columnValue = LongType.instance.compose(buffercolumn);
+								} catch (Exception e) {
+									continue;
+								}
+	                    		if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
+	                    		
+	                    		//ByteBuffer valueString = row.cf.getColumn(buffercolumn).value();
+	                    		/*
+	                    		Double valueValue = (double) 0;
+	                    		try {
+	                    			columnValue = LongType.instance.compose(buffercolumn);
+								} catch (Exception e) {
+									continue;
+								}
+	                    		*/
+	                    		
+	                    		ByteBuffer tempb = row.cf.getColumn(buffercolumn).value();
+	                    		ByteBuffer buffervalue = ByteBuffer.wrap("0".getBytes());
+	                    		if (tempb.hasArray())
+	                            {
+	                    			byte[] bytes = new byte[tempb.remaining()];
+
+	                                int j = 0;
+	                                for (int k = tempb.position(); k < tempb.limit(); k++)
+	                                {
+	                                    bytes[j++] = tempb.get(k);
+	                                }
+	                                buffervalue = ByteBuffer.wrap(bytes);
+	                            }
+	                            else
+	                            {
+	                                byte[] bytes = new byte[tempb.remaining()];
+
+	                                int j = 0;
+	                                for (int k = tempb.position(); k < tempb.limit(); k++)
+	                                {
+	                                    bytes[j++] = tempb.get(k);
+	                                }
+
+	                                buffervalue.put(bytes);
+	                            }
+
+	                    		String valueString = decode(buffervalue);
+
+		                    	for(int k = 0; k < nodeCmdbackup.row_filter.size(); k++)
+		                    	{
+		                    		if(nodeCmdbackup.row_filter.get(k).column_name.equals(columnBuffer))
+		                    		{
+		                    			//row.
+		                    			if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LT"))
+		                    			{
+		                    				if(columnValue >= 
+		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GT"))
+		                    			{
+		                    				if(columnValue <= 
+		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("EQ"))
+		                    			{
+		                    				if(columnValue != 
+		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LTE"))
+		                    			{
+		                    				if(columnValue > 
+		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GTE"))
+		                    			{
+		                    				if(columnValue < 
+		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    		}
+		                    		else if(nodeCmdbackup.row_filter.get(k).column_name.equals(valueBuffer))
+		                    		{
+		                    			//String valueString = decode(row.cf.getColumn(buffercolumn).value());
+		                    			
+		                    			if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LT"))
+		                    			{
+		                    				if(Double.parseDouble(valueString) >= 
+		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GT"))
+		                    			{
+		                    				if(Double.parseDouble(valueString) <= 
+		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("EQ"))
+		                    			{
+		                    				if(Double.parseDouble(valueString) != 
+		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LTE"))
+		                    			{
+		                    				if(Double.parseDouble(valueString) > 
+		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GTE"))
+		                    			{
+		                    				if(Double.parseDouble(valueString) < 
+		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    		}
+		                    		if(k == nodeCmdbackup.row_filter.size() - 1) count++;
+		                    	}	
+	                    	}     
+	                    	
+	                    	byte[] bytes = new byte[row.key.key.remaining()];
+
+                            int j = 0;
+                            for (int k = row.key.key.position(); k < row.key.key.limit(); k++)
+                            {
+                                bytes[j++] = row.key.key.get(k);
+                            }
+                            ByteBuffer keyvalue = ByteBuffer.wrap(bytes);
+	
+	                    	map.put(decode(keyvalue), count);
+                    	}
                         rows.add(row);
                         if (nodeCmd.countCQL3Rows)
                             cql3RowCount += row.getLiveCount(commandPredicate);
@@ -1229,8 +1445,1262 @@ public class StorageProxy implements StorageProxyMBean
                 {
                     throw new AssertionError(e); // no digests in range slices yet
                 }
+                catch (Exception e)
+                {
+                	
+                }
+
+                nodeCmd = nodeCmdbackup;
+                
+                // if we're done, great, otherwise, move to the next range
+                int count = nodeCmd.countCQL3Rows ? cql3RowCount : rows.size();
+                if (count >= nodeCmd.maxResults)
+                    break;
+
+                // if we are paging and already got some rows, reset the column filter predicate,
+                // so we start iterating the next row from the first column
+                if (!rows.isEmpty() && command.isPaging)
+                {
+                    // We only allow paging with a slice filter (doesn't make sense otherwise anyway)
+                    assert commandPredicate instanceof SliceQueryFilter;
+                    commandPredicate = ((SliceQueryFilter)commandPredicate).withUpdatedSlices(ColumnSlice.ALL_COLUMNS_ARRAY);
+                }
+                
+                FileWriter fileWriter = new FileWriter("c:\\Result.txt");
+                int counter = 1;
+                for (String s: map.keySet()) {
+                	fileWriter.write(counter + ", ");
+                	fileWriter.write(s + ", ");
+                	fileWriter.write(map.get(s) + "\r\n");
+                	counter++;
+                }
+                fileWriter.flush();
+                fileWriter.close();
+            }
+        }
+        catch(Exception e)
+        {
+        	
+        }
+        finally
+        {
+            rangeMetrics.addNano(System.nanoTime() - startTime);
+        }
+        return trim(command, rows);
+    }
+
+    public static List<Row> filterRowsForUpdate(List<Row> Rows, RangeSliceCommand command, ConsistencyLevel consistency_level, 
+    		List<IMutation> rowMutations, org.apache.cassandra.cql.UpdateStatement update, ThriftClientState clientstate)
+    	    	    throws IOException, UnavailableException, ReadTimeoutException
+    	    	    {
+    	    	        long startTime = System.nanoTime();
+    	    	        List<Row> rows = new ArrayList<Row>();
+    	    	        // now scan until we have enough results
+    	    	        try
+    	    	        {
+    	    	            //added by xuhao
+    	    	            final ByteBuffer columnBuffer = ByteBuffer.wrap("column".getBytes());
+    	    	            final ByteBuffer valueBuffer = ByteBuffer.wrap("value".getBytes());
+    	    	            boolean traversal = false;
+    	    	            IDiskAtomFilter commandPredicate = command.predicate;
+
+    	    	            int cql3RowCount = 0;
+    	    	            List<AbstractBounds<RowPosition>> ranges = getRestrictedRanges(command.range);
+
+    	                	ByteBuffer ValueToModify = ByteBuffer.wrap("".getBytes());
+    	                	for (IMutation imutation : rowMutations)
+    	                	{
+    	                		for(UUID iUuid : imutation.getColumnFamilyIds()) { 
+    		                    		ColumnFamily tempcf = null;
+    	                			    tempcf = imutation.getModifications().get(iUuid);
+    	                			    ValueToModify = tempcf.getColumn(tempcf.getColumnNames().first()).value();
+    	                			    imutation.getModifications().get(iUuid).clear();
+    	                			    break;
+    	                			} 
+    	                		break;
+    	                	}
+    	                	
+    	    	            for (AbstractBounds<RowPosition> range : ranges)
+    	    	            {
+    	    					RangeSliceCommand nodeCmdbackup = new RangeSliceCommand(command.keyspace,
+    	    	                                                                  command.column_family,
+    	    	                                                                  command.super_column,
+    	    	                                                                  commandPredicate,
+    	    	                                                                  range,
+    	    	                                                                  command.row_filter,
+    	    	                                                                  command.maxResults,
+    	    	                                                                  command.countCQL3Rows,
+    	    	                                                                  command.isPaging);
+
+    	    	            	List<IndexExpression> row_filter_backup = new ArrayList<IndexExpression>();
+    	    	                for(int i = 0; i < nodeCmdbackup.row_filter.size(); i++)
+    	    	            	{
+    	    	            		if(nodeCmdbackup.row_filter.get(i).column_name.equals(columnBuffer)
+    	    	            				|| nodeCmdbackup.row_filter.get(i).column_name.equals(valueBuffer))
+    	    	            		{
+    	    	            			traversal = true;
+    	    	            		}
+    	    	            		else 
+    	    	            		{
+    	    	            			row_filter_backup.add(nodeCmdbackup.row_filter.get(i));
+    	    	            		}
+    	    	            	}
+    	    	                
+    	    	                RangeSliceCommand nodeCmd = new RangeSliceCommand(command.keyspace,
+    	    										                        command.column_family,
+    	    										                        command.super_column,
+    	    										                        commandPredicate,
+    	    										                        range,
+    	    										                        row_filter_backup,
+    	    										                        command.maxResults,
+    	    										                        command.countCQL3Rows,
+    	    										                        command.isPaging);
+    	    	                
+    	    	                if(!traversal) nodeCmd = nodeCmdbackup;
+
+
+    	    	                try
+    	    	                {
+    	    	                	Map<String, Integer> map = new HashMap<String, Integer>();
+    	    	                	rowMutations.clear();
+ 
+    	    	                	//added by xuhao
+    	    	                    for (Row row : Rows)
+    	    	                    {
+    	    	                    	if(traversal)
+    	    	                    	{
+    	    		                    	SortedSet<ByteBuffer> ColumnNameSet = row.cf.getColumnNames();
+    	    		                    	Iterator<ByteBuffer> it = ColumnNameSet.iterator();
+    	    		                    	int count = 0;
+    	    		                    	
+    	    		                    	RowMutation mutationforkey = new RowMutation(command.keyspace, row.key.key);
+    	    		                    	while(it.hasNext())
+    	    		                    	{
+    	    		                    		ByteBuffer buffercolumn = (ByteBuffer)it.next();
+    	    		                    		Long columnValue = (long) 0;
+    	    		                    		try {
+    	    		                    			columnValue = LongType.instance.compose(buffercolumn);
+    	    									} catch (Exception e) {
+    	    										continue;
+    	    									}
+    	    		                    		
+    	    		                    		if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
+    	    		                    		//ByteBuffer ValueToModify = row.cf.getColumn(buffercolumn).value();
+    	    		                    		//String valueString = decode(row.cf.getColumn(buffercolumn).value());
+    	    		                    		ByteBuffer tempb = row.cf.getColumn(buffercolumn).value();
+    	    		                    		ByteBuffer buffervalue = ByteBuffer.wrap("0".getBytes());
+
+    	    		                    		if (tempb.hasArray())
+    	    		                            {
+    	    		                    			byte[] bytes = new byte[tempb.remaining()];
+
+    	    		                                int j = 0;
+    	    		                                for (int i = tempb.position(); i < tempb.limit(); i++)
+    	    		                                {
+    	    		                                    bytes[j++] = tempb.get(i);
+    	    		                                }
+    	    		                                buffervalue = ByteBuffer.wrap(bytes);
+    	    		                            }
+    	    		                            else
+    	    		                            {
+    	    		                                byte[] bytes = new byte[tempb.remaining()];
+
+    	    		                                int j = 0;
+    	    		                                for (int i = tempb.position(); i < tempb.limit(); i++)
+    	    		                                {
+    	    		                                    bytes[j++] = tempb.get(i);
+    	    		                                }
+
+    	    		                                buffervalue.put(bytes);
+    	    		                            }
+
+    	    		                    		String valueString = decode(buffervalue);
+    	    		                    		//valueString = valueString.substring(tempb.position() + tempb.arrayOffset());
+    	    		                    		
+    	    		                    		if(valueString.length() == 0) valueString = "0";
+    	    			                    	for(int i = 0; i < nodeCmdbackup.row_filter.size(); i++)
+    	    			                    	{
+    	    			                    		if(nodeCmdbackup.row_filter.get(i).column_name.equals(columnBuffer))
+    	    			                    		{
+    	    			                    			//row.
+    	    			                    			if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("LT"))
+    	    			                    			{
+    	    			                    				if(columnValue >= 
+    	    			                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    	    			                    				{
+    	    			                    					break;
+    	    			                    				}
+    	    			                    			}
+    	    			                    			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("GT"))
+    	    			                    			{
+    	    			                    				if(columnValue <= 
+    	    			                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    	    			                    				{
+    	    			                    					break;
+    	    			                    				}
+    	    			                    			}
+    	    			                    			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("EQ"))
+    	    			                    			{
+    	    			                    				if(columnValue != 
+    	    			                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    	    			                    				{
+    	    			                    					break;
+    	    			                    				}
+    	    			                    			}
+    	    			                    			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("LTE"))
+    	    			                    			{
+    	    			                    				if(columnValue > 
+    	    			                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    	    			                    				{
+    	    			                    					break;
+    	    			                    				}
+    	    			                    			}
+    	    			                    			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("GTE"))
+    	    			                    			{
+    	    			                    				if(columnValue < 
+    	    			                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    	    			                    				{
+    	    			                    					break;
+    	    			                    				}
+    	    			                    			}
+    	    			                    		}
+    	    			                    		else if(nodeCmdbackup.row_filter.get(i).column_name.equals(valueBuffer))
+    	    			                    		{	
+    	    			                    			if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("LT"))
+    	    			                    			{
+    	    			                    				if(Double.parseDouble(valueString) >= 
+    	    			                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    	    			                    				{
+    	    			                    					break;
+    	    			                    				}
+    	    			                    			}
+    	    			                    			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("GT"))
+    	    			                    			{
+    	    			                    				if(Double.parseDouble(valueString) <= 
+    	    			                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    	    			                    				{
+    	    			                    					break;
+    	    			                    				}
+    	    			                    			}
+    	    			                    			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("EQ"))
+    	    			                    			{
+    	    			                    				if(Double.parseDouble(valueString) != 
+    	    			                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    	    			                    				{
+    	    			                    					break;
+    	    			                    				}
+    	    			                    			}
+    	    			                    			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("LTE"))
+    	    			                    			{
+    	    			                    				if(Double.parseDouble(valueString) > 
+    	    			                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    	    			                    				{
+    	    			                    					break;
+    	    			                    				}
+    	    			                    			}
+    	    			                    			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("GTE"))
+    	    			                    			{
+    	    			                    				if(Double.parseDouble(valueString) < 
+    	    			                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    	    			                    				{
+    	    			                    					break;
+    	    			                    				}
+    	    			                    			}
+    	    			                    		}
+    	    			                    		if(i == nodeCmdbackup.row_filter.size() - 1) 
+    	    			                    		{
+    	    			                    			count++;
+
+    	    			                    			mutationforkey.add(new QueryPath(command.column_family, null, buffercolumn),
+    	    			                    					ValueToModify,
+    	    			                                        clientstate.getQueryState().getTimestamp(),
+    	    			                                        //getTimeToLive()
+    	    			                                        0);
+    	    			                    		}  		
+    	    			                    	}	
+    	    		                    	}     
+    	    		                    	rowMutations.add(mutationforkey);
+    	    	                    	}
+    	    	                    	try {	      		
+    										mutate(rowMutations, update.getConsistencyLevel());
+    									} catch (WriteTimeoutException e) {
+    										e.printStackTrace();
+    									} catch (OverloadedException e) {
+    										e.printStackTrace();
+    									}
+    	    	                        rows.add(row);
+    	    	                        if (nodeCmdbackup.countCQL3Rows)
+    	    	                            cql3RowCount += row.getLiveCount(commandPredicate);
+    	    	                        logger.trace("range slices read {}", row.key);     
+    	    	                    }
+    	    	                }
+    	    	                catch (Exception ex){}
+
+    	    	                // if we're done, great, otherwise, move to the next range
+    	    	                nodeCmd = nodeCmdbackup;
+    	    	                int count = nodeCmd.countCQL3Rows ? cql3RowCount : rows.size();
+    	    	                if (count >= nodeCmd.maxResults)
+    	    	                    break;
+
+    	    	                // if we are paging and already got some rows, reset the column filter predicate,
+    	    	                // so we start iterating the next row from the first column
+    	    	                if (!rows.isEmpty() && command.isPaging)
+    	    	                {
+    	    	                    // We only allow paging with a slice filter (doesn't make sense otherwise anyway)
+    	    	                    assert commandPredicate instanceof SliceQueryFilter;
+    	    	                    commandPredicate = ((SliceQueryFilter)commandPredicate).withUpdatedSlices(ColumnSlice.ALL_COLUMNS_ARRAY);
+    	    	                }
+    	    	            }
+    	    	        }
+    	    	        finally
+    	    	        {
+    	    	            rangeMetrics.addNano(System.nanoTime() - startTime);
+    	    	        }
+    	    	        return trim(command, rows);
+    	    	    }
+    
+    public static List<Row> filterRowsForDelete(List<Row> Rows, RangeSliceCommand command, ConsistencyLevel consistency_level, 
+    		List<IMutation> deleteMutations, org.apache.cassandra.cql.DeleteStatement delete, ThriftClientState clientstate)
+    	    	    throws IOException, UnavailableException, ReadTimeoutException
+    {
+        long startTime = System.nanoTime();
+        List<Row> rows = new ArrayList<Row>();
+        // now scan until we have enough results
+        try
+        {
+            //added by xuhao
+            final ByteBuffer columnBuffer = ByteBuffer.wrap("column".getBytes());
+            final ByteBuffer valueBuffer = ByteBuffer.wrap("value".getBytes());
+            boolean traversal = false;
+            IDiskAtomFilter commandPredicate = command.predicate;
+
+            int cql3RowCount = 0;
+            List<AbstractBounds<RowPosition>> ranges = getRestrictedRanges(command.range);
+        	
+        	List<IndexExpression> row_filter_backup = new ArrayList<IndexExpression>();
+            for(int i = 0; i < command.row_filter.size(); i++)
+        	{
+        		if(command.row_filter.get(i).column_name.equals(columnBuffer)
+        				|| command.row_filter.get(i).column_name.equals(valueBuffer))
+        		{
+        			traversal = true;
+        		}
+        		else 
+        		{
+        			row_filter_backup.add(command.row_filter.get(i));
+        		}
+        	}
+
+            try
+            {
+            	Map<String, Integer> map = new HashMap<String, Integer>();
+            	deleteMutations.clear();
+            
+            	//added by xuhao
+                for (Row row : Rows)
+                {
+                	if(traversal)
+                	{
+                		SortedSet<ByteBuffer> ColumnNameSet = row.cf.getColumnNames();
+                    	Iterator<ByteBuffer> it = ColumnNameSet.iterator();
+                    	int count = 0;
+                    	RowMutation mutationforkey = new RowMutation(command.keyspace, row.key.key);
+                    	SlicePredicate delPred = new SlicePredicate();
+                    	List<ByteBuffer> delCols = new ArrayList<ByteBuffer>();
+                    	while(it.hasNext())
+                    	{
+                    		ByteBuffer buffercolumn = (ByteBuffer)it.next();
+                    		Long columnValue = (long) 0;
+                    		try {
+                    			columnValue = LongType.instance.compose(buffercolumn);
+							} catch (Exception e) {
+								continue;
+							}
+                    		if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
+                    		//ByteBuffer ValueToModify = row.cf.getColumn(buffercolumn).value();
+                    		//String valueString = decode(row.cf.getColumn(buffercolumn).value());
+                    		ByteBuffer tempb = row.cf.getColumn(buffercolumn).value();
+                    		ByteBuffer buffervalue = ByteBuffer.wrap("0".getBytes());
+                    		
+                    		byte[] bytes = new byte[tempb.limit()];;
+                    		
+                    		if (tempb.hasArray())
+                            {
+                    			int j = 0;
+                                for (int i = tempb.position(); i < tempb.limit(); i++)
+                                {
+                                    bytes[j++] = tempb.get(i);
+                                }
+                            }
+                            else
+                            {
+                                int j = 0;
+                                for (int i = tempb.position(); i < tempb.limit(); i++)
+                                {
+                                    bytes[j++] = tempb.get(i);
+                                }
+                                buffervalue.put(bytes);
+                            }
+                    		buffervalue = ByteBuffer.wrap(bytes);
+                    		String valueString = decode(buffervalue);
+                    		//valueString = valueString.substring(tempb.position() + tempb.arrayOffset());
+                    		
+                    		if(valueString == null) continue;
+                    		else if(valueString.length() == 0) valueString = "0";
+	                    	for(int i = 0; i < command.row_filter.size(); i++)
+	                    	{
+	                    		if(command.row_filter.get(i).column_name.equals(columnBuffer))
+	                    		{
+	                    			//row.
+	                    			if(command.row_filter.get(i).getOp().toString().equals("LT"))
+	                    			{
+	                    				if(columnValue >= 
+	                    						Long.parseLong(new String(command.row_filter.get(i).getValue())))
+	                    				{
+	                    					break;
+	                    				}
+	                    			}
+	                    			else if(command.row_filter.get(i).getOp().toString().equals("GT"))
+	                    			{
+	                    				if(columnValue <= 
+	                    						Long.parseLong(new String(command.row_filter.get(i).getValue())))
+	                    				{
+	                    					break;
+	                    				}
+	                    			}
+	                    			else if(command.row_filter.get(i).getOp().toString().equals("EQ"))
+	                    			{
+	                    				if(columnValue != 
+	                    						Long.parseLong(new String(command.row_filter.get(i).getValue())))
+	                    				{
+	                    					break;
+	                    				}
+	                    			}
+	                    			else if(command.row_filter.get(i).getOp().toString().equals("LTE"))
+	                    			{
+	                    				if(columnValue > 
+	                    						Long.parseLong(new String(command.row_filter.get(i).getValue())))
+	                    				{
+	                    					break;
+	                    				}
+	                    			}
+	                    			else if(command.row_filter.get(i).getOp().toString().equals("GTE"))
+	                    			{
+	                    				if(columnValue < 
+	                    						Long.parseLong(new String(command.row_filter.get(i).getValue())))
+	                    				{
+	                    					break;
+	                    				}
+	                    			}
+	                    		}
+	                    		else if(command.row_filter.get(i).column_name.equals(valueBuffer))
+	                    		{	
+	                    			if(command.row_filter.get(i).getOp().toString().equals("LT"))
+	                    			{
+	                    				if(Double.parseDouble(valueString) >= 
+	                    						Double.parseDouble(new String(command.row_filter.get(i).getValue())))
+	                    				{
+	                    					break;
+	                    				}
+	                    			}
+	                    			else if(command.row_filter.get(i).getOp().toString().equals("GT"))
+	                    			{
+	                    				if(Double.parseDouble(valueString) <= 
+	                    						Double.parseDouble(new String(command.row_filter.get(i).getValue())))
+	                    				{
+	                    					break;
+	                    				}
+	                    			}
+	                    			else if(command.row_filter.get(i).getOp().toString().equals("EQ"))
+	                    			{
+	                    				if(Double.parseDouble(valueString) != 
+	                    						Double.parseDouble(new String(command.row_filter.get(i).getValue())))
+	                    				{
+	                    					break;
+	                    				}
+	                    			}
+	                    			else if(command.row_filter.get(i).getOp().toString().equals("LTE"))
+	                    			{
+	                    				if(Double.parseDouble(valueString) > 
+	                    						Double.parseDouble(new String(command.row_filter.get(i).getValue())))
+	                    				{
+	                    					break;
+	                    				}
+	                    			}
+	                    			else if(command.row_filter.get(i).getOp().toString().equals("GTE"))
+	                    			{
+	                    				if(Double.parseDouble(valueString) < 
+	                    						Double.parseDouble(new String(command.row_filter.get(i).getValue())))
+	                    				{
+	                    					break;
+	                    				}
+	                    			}
+	                    		}
+	                    		if(i == command.row_filter.size() - 1) 
+	                    		{
+	                    			count++;
+	                    			delCols.add(buffercolumn);
+	                    			break;
+	                    		}  		
+	                    	}	
+                    	}     
+                    	Deletion del;
+            			del = new Deletion();
+            			del.setTimestamp(clientstate.getQueryState().getTimestamp());
+            			delPred.column_names = delCols;
+            			del.setPredicate(delPred);
+            			mutationforkey.deleteColumnOrSuperColumn(command.column_family, del);
+            			if(delCols.size() > 0)
+            				deleteMutations.add(mutationforkey);	
+                	}
+                }
+                try {	
+					mutate(deleteMutations, delete.getConsistencyLevel());
+				} catch (WriteTimeoutException e) {
+					e.printStackTrace();
+				} catch (OverloadedException e) {
+					e.printStackTrace();
+				}
+            }
+            catch (Exception ex){}
+            if (!rows.isEmpty() && command.isPaging)
+            {
+                assert commandPredicate instanceof SliceQueryFilter;
+                commandPredicate = ((SliceQueryFilter)commandPredicate).withUpdatedSlices(ColumnSlice.ALL_COLUMNS_ARRAY);
+            }
+        }
+        finally
+        {
+            rangeMetrics.addNano(System.nanoTime() - startTime);
+        }
+        return trim(command, rows);
+    } 
+    
+    public static List<Row> getRangeSliceForUpdate(RangeSliceCommand command, ConsistencyLevel consistency_level, 
+    		List<IMutation> rowMutations, org.apache.cassandra.cql.UpdateStatement update, ThriftClientState clientstate)
+    	    throws IOException, UnavailableException, ReadTimeoutException
+    {
+    	Tracing.trace("Determining replicas to query");
+        logger.trace("Command/ConsistencyLevel is {}/{}", command.toString(), consistency_level);
+        long startTime = System.nanoTime();
+
+        Table table = Table.open(command.keyspace);
+        List<Row> rows = null;
+        // now scan until we have enough results
+        try
+        {
+        	//added by xuhao
+            final ByteBuffer columnBuffer = ByteBuffer.wrap("column".getBytes());
+            final ByteBuffer valueBuffer = ByteBuffer.wrap("value".getBytes());
+            boolean traversal = false;
+            IDiskAtomFilter commandPredicate = command.predicate;
+
+            int cql3RowCount = 0;
+            rows = new ArrayList<Row>();
+            List<AbstractBounds<RowPosition>> ranges = getRestrictedRanges(command.range);
+            
+        	Map<String, Integer> map = new HashMap<String, Integer>();
+            
+            int i = 0;
+            AbstractBounds<RowPosition> nextRange = null;
+            List<InetAddress> nextEndpoints = null;
+            List<InetAddress> nextFilteredEndpoints = null;
+            
+            ByteBuffer ValueToModify = ByteBuffer.wrap("".getBytes());
+        	for (IMutation imutation : rowMutations)
+        	{
+        		for(UUID iUuid : imutation.getColumnFamilyIds()) { 
+                		ColumnFamily tempcf = null;
+        			    tempcf = imutation.getModifications().get(iUuid);
+        			    ValueToModify = tempcf.getColumn(tempcf.getColumnNames().first()).value();
+        			    imutation.getModifications().get(iUuid).clear();
+        			    break;
+        			} 
+        		break;
+        	}
+            
+            while (i < ranges.size())
+            {
+                AbstractBounds<RowPosition> range = nextRange == null
+                                                  ? ranges.get(i)
+                                                  : nextRange;
+                List<InetAddress> liveEndpoints = nextEndpoints == null
+                                                ? getLiveSortedEndpoints(table, range.right)
+                                                : nextEndpoints;
+                List<InetAddress> filteredEndpoints = nextFilteredEndpoints == null
+                                                    ? consistency_level.filterForQuery(table, liveEndpoints)
+                                                    : nextFilteredEndpoints;
+                ++i;
+
+                // getRestrictedRange has broken the queried range into per-[vnode] token ranges, but this doesn't take
+                // the replication factor into account. If the intersection of live endpoints for 2 consecutive ranges
+                // still meets the CL requirements, then we can merge both ranges into the same RangeSliceCommand.
+                while (i < ranges.size())
+                {
+                    nextRange = ranges.get(i);
+                    nextEndpoints = getLiveSortedEndpoints(table, nextRange.right);
+                    nextFilteredEndpoints = consistency_level.filterForQuery(table, nextEndpoints);
+
+                    /*
+                     * If the current range right is the min token, we should stop merging because CFS.getRangeSlice
+                     * don't know how to deal with a wrapping range.
+                     * Note: it would be slightly more efficient to have CFS.getRangeSlice on the destination nodes unwraps
+                     * the range if necessary and deal with it. However, we can't start sending wrapped range without breaking
+                     * wire compatibility, so It's likely easier not to bother;
+                     */
+                    if (range.right.isMinimum())
+                        break;
+
+                    List<InetAddress> merged = intersection(liveEndpoints, nextEndpoints);
+
+                    // Check if there is enough endpoint for the merge to be possible.
+                    if (!consistency_level.isSufficientLiveNodes(table, merged))
+                        break;
+
+                    List<InetAddress> filteredMerged = consistency_level.filterForQuery(table, merged);
+
+                    // Estimate whether merging will be a win or not
+                    if (!DatabaseDescriptor.getEndpointSnitch().isWorthMergingForRangeQuery(filteredMerged, filteredEndpoints, nextFilteredEndpoints))
+                        break;
+
+                    // If we get there, merge this range and the next one
+                    range = range.withNewRight(nextRange.right);
+                    liveEndpoints = merged;
+                    filteredEndpoints = filteredMerged;
+                    ++i;
+                }
+
+				RangeSliceCommand nodeCmdbackup = new RangeSliceCommand(command.keyspace,
+                                                                  command.column_family,
+                                                                  command.super_column,
+                                                                  commandPredicate,
+                                                                  range,
+                                                                  command.row_filter,
+                                                                  command.maxResults,
+                                                                  command.countCQL3Rows,
+                                                                  command.isPaging);
+
+            	List<IndexExpression> row_filter_backup = new ArrayList<IndexExpression>();
+                for(int k = 0; k < nodeCmdbackup.row_filter.size(); k++)
+            	{
+            		if(nodeCmdbackup.row_filter.get(k).column_name.equals(columnBuffer)
+            				|| nodeCmdbackup.row_filter.get(k).column_name.equals(valueBuffer))
+            		{
+            			traversal = true;
+            		}
+            		else 
+            		{
+            			row_filter_backup.add(nodeCmdbackup.row_filter.get(k));
+            		}
+            	}
+                
+                RangeSliceCommand nodeCmd = new RangeSliceCommand(command.keyspace,
+									                        command.column_family,
+									                        command.super_column,
+									                        commandPredicate,
+									                        range,
+									                        row_filter_backup,
+									                        command.maxResults,
+									                        command.countCQL3Rows,
+									                        command.isPaging);
+                
+                if(!traversal) nodeCmd = nodeCmdbackup;
+
+                // collect replies and resolve according to consistency level
+                RangeSliceResponseResolver resolver = new RangeSliceResponseResolver(nodeCmd.keyspace);
+                ReadCallback<RangeSliceReply, Iterable<Row>> handler = new ReadCallback(resolver, consistency_level, nodeCmd, filteredEndpoints);
+                handler.assureSufficientLiveNodes();
+                resolver.setSources(handler.endpoints);
+                if (handler.endpoints.size() == 1
+                    && handler.endpoints.get(0).equals(FBUtilities.getBroadcastAddress())
+                    && OPTIMIZE_LOCAL_REQUESTS)
+                {
+                    logger.trace("reading data locally");
+                    StageManager.getStage(Stage.READ).execute(new LocalRangeSliceRunnable(nodeCmd, handler));
+                }
+                else
+                {
+                    MessageOut<RangeSliceCommand> message = nodeCmd.createMessage();
+                    for (InetAddress endpoint : handler.endpoints)
+                    {
+                        MessagingService.instance().sendRR(message, endpoint, handler);
+                        logger.trace("reading {} from {}", nodeCmd, endpoint);
+                    }
+                }
+
+                try
+                {
+                	rowMutations.clear();
+                	//added by xuhao
+                    for (Row row : handler.get())
+                    {
+                    	if(traversal)
+                    	{
+	                    	SortedSet<ByteBuffer> ColumnNameSet = row.cf.getColumnNames();
+	                    	Iterator<ByteBuffer> it = ColumnNameSet.iterator();
+	                    	int count = 0;
+	                    	
+	                    	RowMutation mutationforkey = new RowMutation(command.keyspace, row.key.key);
+	                    	/*
+	                    	for (IMutation imutation : rowMutations)
+	                    	{
+	                    		imutation.setKey(row.key.key);
+	                    		for(UUID iUuid : imutation.getColumnFamilyIds()) {  
+	                    			    tempcf = imutation.getModifications().get(iUuid);
+	                    			    ValueToModify = tempcf.getColumn(tempcf.getColumnNames().first()).value();
+	                    			    imutation.getModifications().get(iUuid).clear();
+	                    			} 
+	                    	}
+	                    	*/
+	                    	
+	                    	while(it.hasNext())
+	                    	{
+	                    		ByteBuffer buffercolumn = (ByteBuffer)it.next();
+	                    		Long columnValue = (long) 0;
+	                    		try {
+	                    			columnValue = LongType.instance.compose(buffercolumn);
+								} catch (Exception e) {
+									continue;
+								}
+	                    		if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
+	                    		//ByteBuffer ValueToModify = row.cf.getColumn(buffercolumn).value();
+	                    		//String valueString = decode(row.cf.getColumn(buffercolumn).value());
+	                    		ByteBuffer tempb = row.cf.getColumn(buffercolumn).value();
+	                    		ByteBuffer buffervalue = ByteBuffer.wrap("0".getBytes());
+	                    		
+	                    		
+	                    		if (tempb.hasArray())
+	                            {
+	                    			/*buffervalue = tempb.get(tempb.array(),
+		                    				tempb.position() + tempb.arrayOffset(), tempb.remaining());*/
+	                    			byte[] bytes = new byte[tempb.remaining()];
+
+	                                int j = 0;
+	                                for (int k = tempb.position(); k < tempb.limit();k++)
+	                                {
+	                                    bytes[j++] = tempb.get(k);
+	                                }
+	                                buffervalue = ByteBuffer.wrap(bytes);
+	                            }
+	                            else
+	                            {
+	                                byte[] bytes = new byte[tempb.remaining()];
+
+	                                int j = 0;
+	                                for (int k = tempb.position(); k < tempb.limit(); k++)
+	                                {
+	                                    bytes[j++] = tempb.get(k);
+	                                }
+
+	                                buffervalue.put(bytes);
+	                            }
+
+	                    		String valueString = decode(buffervalue);
+	                    		//valueString = valueString.substring(tempb.position() + tempb.arrayOffset());
+	                    		
+	                    		if(valueString.length() == 0) valueString = "0";
+		                    	for(int k = 0; k < nodeCmdbackup.row_filter.size(); k++)
+		                    	{
+		                    		if(nodeCmdbackup.row_filter.get(k).column_name.equals(columnBuffer))
+		                    		{
+		                    			//row.
+		                    			if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LT"))
+		                    			{
+		                    				if(columnValue >= 
+		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GT"))
+		                    			{
+		                    				if(columnValue <= 
+		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("EQ"))
+		                    			{
+		                    				if(columnValue != 
+		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LTE"))
+		                    			{
+		                    				if(columnValue > 
+		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GTE"))
+		                    			{
+		                    				if(columnValue < 
+		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    		}
+		                    		else if(nodeCmdbackup.row_filter.get(k).column_name.equals(valueBuffer))
+		                    		{	
+		                    			if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LT"))
+		                    			{
+		                    				if(Double.parseDouble(valueString) >= 
+		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GT"))
+		                    			{
+		                    				if(Double.parseDouble(valueString) <= 
+		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("EQ"))
+		                    			{
+		                    				if(Double.parseDouble(valueString) != 
+		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LTE"))
+		                    			{
+		                    				if(Double.parseDouble(valueString) > 
+		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GTE"))
+		                    			{
+		                    				if(Double.parseDouble(valueString) < 
+		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    		}
+		                    		if(k == nodeCmdbackup.row_filter.size() - 1) 
+		                    		{
+		                    			count++;
+		                    			
+		                    			//IColumn column = IColumn.
+		                    			/*
+		                    			org.apache.cassandra.db.Column tempColumn = new org.apache.cassandra.db.Column(buffercolumn, ValueToModify);
+		                    			ByteBuffer btBuffer = null;
+		                    			tempcf.addColumn(btBuffer, tempColumn);
+		                    			tempcf.getColumn(btBuffer).
+		                    			*/
+		                    			mutationforkey.add(new QueryPath(command.column_family, null, buffercolumn),
+		                    					ValueToModify,
+		                                        clientstate.getQueryState().getTimestamp(),
+		                                        //getTimeToLive()
+		                                        0);
+		                    		}  		
+		                    	}	
+	                    	}     
+
+	                    	rowMutations.add(mutationforkey);
+                    	}
+                    	try {	      		
+							mutate(rowMutations, update.getConsistencyLevel());
+						} catch (WriteTimeoutException e) {
+							e.printStackTrace();
+						} catch (OverloadedException e) {
+							e.printStackTrace();
+						}
+                        rows.add(row);
+                        if (nodeCmdbackup.countCQL3Rows)
+                            cql3RowCount += row.getLiveCount(commandPredicate);
+                        logger.trace("range slices read {}", row.key);     
+                    }
+                    FBUtilities.waitOnFutures(resolver.repairResults, DatabaseDescriptor.getWriteRpcTimeout());
+                }
+                catch (TimeoutException ex)
+                {
+                    logger.debug("Range slice timeout: {}", ex.toString());
+                    // We actually got all response at that point
+                    int blockFor = consistency_level.blockFor(table);
+                    throw new ReadTimeoutException(consistency_level, blockFor, blockFor, true);
+                }
+                catch (DigestMismatchException e)
+                {
+                    throw new AssertionError(e); // no digests in range slices yet
+                }
 
                 // if we're done, great, otherwise, move to the next range
+                
+                nodeCmd = nodeCmdbackup;
+                
+                int count = nodeCmd.countCQL3Rows ? cql3RowCount : rows.size();
+                if (count >= nodeCmd.maxResults)
+                    break;
+
+                // if we are paging and already got some rows, reset the column filter predicate,
+                // so we start iterating the next row from the first column
+                if (!rows.isEmpty() && command.isPaging)
+                {
+                    // We only allow paging with a slice filter (doesn't make sense otherwise anyway)
+                    assert commandPredicate instanceof SliceQueryFilter;
+                    commandPredicate = ((SliceQueryFilter)commandPredicate).withUpdatedSlices(ColumnSlice.ALL_COLUMNS_ARRAY);
+                }
+            }  
+    	}
+        catch(Exception e)
+        {
+        	
+        }
+        finally
+        {
+            rangeMetrics.addNano(System.nanoTime() - startTime);
+        }
+        return trim(command, rows);
+    }
+
+    public static List<Row> getRangeSliceForDelete(RangeSliceCommand command, ConsistencyLevel consistency_level, 
+    		List<IMutation> deleteMutations, org.apache.cassandra.cql.DeleteStatement delete, ThriftClientState clientstate)
+    		throws IOException, UnavailableException, ReadTimeoutException
+    {
+    	Tracing.trace("Determining replicas to query");
+        logger.trace("Command/ConsistencyLevel is {}/{}", command.toString(), consistency_level);
+        long startTime = System.nanoTime();
+
+        Table table = Table.open(command.keyspace);
+        List<Row> rows = null;
+        // now scan until we have enough results
+        try
+        {
+        	//added by xuhao
+            final ByteBuffer columnBuffer = ByteBuffer.wrap("column".getBytes());
+            final ByteBuffer valueBuffer = ByteBuffer.wrap("value".getBytes());
+            boolean traversal = false;
+            IDiskAtomFilter commandPredicate = command.predicate;
+
+            int cql3RowCount = 0;
+            rows = new ArrayList<Row>();
+            List<AbstractBounds<RowPosition>> ranges = getRestrictedRanges(command.range);
+            
+        	Map<String, Integer> map = new HashMap<String, Integer>();
+            
+            int i = 0;
+            AbstractBounds<RowPosition> nextRange = null;
+            List<InetAddress> nextEndpoints = null;
+            List<InetAddress> nextFilteredEndpoints = null;
+            
+            while (i < ranges.size())
+            {
+                AbstractBounds<RowPosition> range = nextRange == null
+                                                  ? ranges.get(i)
+                                                  : nextRange;
+                List<InetAddress> liveEndpoints = nextEndpoints == null
+                                                ? getLiveSortedEndpoints(table, range.right)
+                                                : nextEndpoints;
+                List<InetAddress> filteredEndpoints = nextFilteredEndpoints == null
+                                                    ? consistency_level.filterForQuery(table, liveEndpoints)
+                                                    : nextFilteredEndpoints;
+                ++i;
+
+                // getRestrictedRange has broken the queried range into per-[vnode] token ranges, but this doesn't take
+                // the replication factor into account. If the intersection of live endpoints for 2 consecutive ranges
+                // still meets the CL requirements, then we can merge both ranges into the same RangeSliceCommand.
+                while (i < ranges.size())
+                {
+                    nextRange = ranges.get(i);
+                    nextEndpoints = getLiveSortedEndpoints(table, nextRange.right);
+                    nextFilteredEndpoints = consistency_level.filterForQuery(table, nextEndpoints);
+
+                    /*
+                     * If the current range right is the min token, we should stop merging because CFS.getRangeSlice
+                     * don't know how to deal with a wrapping range.
+                     * Note: it would be slightly more efficient to have CFS.getRangeSlice on the destination nodes unwraps
+                     * the range if necessary and deal with it. However, we can't start sending wrapped range without breaking
+                     * wire compatibility, so It's likely easier not to bother;
+                     */
+                    if (range.right.isMinimum())
+                        break;
+
+                    List<InetAddress> merged = intersection(liveEndpoints, nextEndpoints);
+
+                    // Check if there is enough endpoint for the merge to be possible.
+                    if (!consistency_level.isSufficientLiveNodes(table, merged))
+                        break;
+
+                    List<InetAddress> filteredMerged = consistency_level.filterForQuery(table, merged);
+
+                    // Estimate whether merging will be a win or not
+                    if (!DatabaseDescriptor.getEndpointSnitch().isWorthMergingForRangeQuery(filteredMerged, filteredEndpoints, nextFilteredEndpoints))
+                        break;
+
+                    // If we get there, merge this range and the next one
+                    range = range.withNewRight(nextRange.right);
+                    liveEndpoints = merged;
+                    filteredEndpoints = filteredMerged;
+                    ++i;
+                }
+				RangeSliceCommand nodeCmdbackup = new RangeSliceCommand(command.keyspace,
+                                                                  command.column_family,
+                                                                  command.super_column,
+                                                                  commandPredicate,
+                                                                  range,
+                                                                  command.row_filter,
+                                                                  command.maxResults,
+                                                                  command.countCQL3Rows,
+                                                                  command.isPaging);
+
+            	List<IndexExpression> row_filter_backup = new ArrayList<IndexExpression>();
+                for(int k = 0; k < nodeCmdbackup.row_filter.size(); k++)
+            	{
+            		if(nodeCmdbackup.row_filter.get(k).column_name.equals(columnBuffer)
+            				|| nodeCmdbackup.row_filter.get(k).column_name.equals(valueBuffer))
+            		{
+            			traversal = true;
+            		}
+            		else 
+            		{
+            			row_filter_backup.add(nodeCmdbackup.row_filter.get(k));
+            		}
+            	}
+                
+                RangeSliceCommand nodeCmd = new RangeSliceCommand(command.keyspace,
+									                        command.column_family,
+									                        command.super_column,
+									                        commandPredicate,
+									                        range,
+									                        row_filter_backup,
+									                        command.maxResults,
+									                        command.countCQL3Rows,
+									                        command.isPaging);
+                
+                if(!traversal) nodeCmd = nodeCmdbackup;
+
+                // collect replies and resolve according to consistency level
+                RangeSliceResponseResolver resolver = new RangeSliceResponseResolver(nodeCmd.keyspace);
+                ReadCallback<RangeSliceReply, Iterable<Row>> handler = new ReadCallback(resolver, consistency_level, nodeCmd, filteredEndpoints);
+                handler.assureSufficientLiveNodes();
+                resolver.setSources(handler.endpoints);
+                if (handler.endpoints.size() == 1
+                    && handler.endpoints.get(0).equals(FBUtilities.getBroadcastAddress())
+                    && OPTIMIZE_LOCAL_REQUESTS)
+                {
+                    logger.trace("reading data locally");
+                    StageManager.getStage(Stage.READ).execute(new LocalRangeSliceRunnable(nodeCmd, handler));
+                }
+                else
+                {
+                    MessageOut<RangeSliceCommand> message = nodeCmd.createMessage();
+                    for (InetAddress endpoint : handler.endpoints)
+                    {
+                        MessagingService.instance().sendRR(message, endpoint, handler);
+                        logger.trace("reading {} from {}", nodeCmd, endpoint);
+                    }
+                }
+
+                try
+                {
+                	deleteMutations.clear();
+
+                	//added by xuhao
+                    for (Row row : handler.get())
+                    {
+                    	if(traversal)
+                    	{
+	                    	SortedSet<ByteBuffer> ColumnNameSet = row.cf.getColumnNames();
+	                    	Iterator<ByteBuffer> it = ColumnNameSet.iterator();
+	                    	int count = 0;
+	                    	RowMutation mutationforkey = new RowMutation(command.keyspace, row.key.key);
+	                    	SlicePredicate delPred = new SlicePredicate();
+	                    	List<ByteBuffer> delCols = new ArrayList<ByteBuffer>();
+
+	                    	while(it.hasNext())
+	                    	{
+	                    		
+	                    		ByteBuffer buffercolumn = (ByteBuffer)it.next();
+	                    		Long columnValue = (long) 0;
+	                    		try {
+	                    			columnValue = LongType.instance.compose(buffercolumn);
+								} catch (Exception e) {
+									continue;
+								}
+	                    		if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
+	                    		
+	                    		//ByteBuffer ValueToModify = row.cf.getColumn(buffercolumn).value();
+	                    		//String valueString = decode(row.cf.getColumn(buffercolumn).value());
+	                    		ByteBuffer tempb = row.cf.getColumn(buffercolumn).value();
+	                    		ByteBuffer buffervalue = ByteBuffer.wrap("0".getBytes());
+	                    		byte[] bytes = new byte[tempb.limit()];
+	                    		
+	                    		if (tempb.hasArray())
+	                            {
+	                    			int j = 0;
+	                                for (int k = tempb.position(); k < tempb.limit(); k++)
+	                                {
+	                                    bytes[j++] = tempb.get(k);
+	                                }
+	                            }
+	                            else
+	                            {
+	                                int j = 0;
+	                                for (int k = tempb.position(); k < tempb.limit(); k++)
+	                                {
+	                                    bytes[j++] = tempb.get(k);
+	                                }
+	                                buffervalue.put(bytes);
+	                            }
+	                    		buffervalue = ByteBuffer.wrap(bytes);
+	                    		String valueString = decode(buffervalue);
+	                    		//valueString = valueString.substring(tempb.position() + tempb.arrayOffset());
+	                    		
+	                    		if(valueString == null) continue;
+	                    		else if(valueString.length() == 0) valueString = "0";
+		                    	for(int k = 0; k < nodeCmdbackup.row_filter.size(); k++)
+		                    	{
+		                    		if(nodeCmdbackup.row_filter.get(k).column_name.equals(columnBuffer))
+		                    		{
+		                    			//row.
+		                    			if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LT"))
+		                    			{
+		                    				if(columnValue >= 
+		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GT"))
+		                    			{
+		                    				if(columnValue <= 
+		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("EQ"))
+		                    			{
+		                    				if(columnValue != 
+		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LTE"))
+		                    			{
+		                    				if(columnValue > 
+		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GTE"))
+		                    			{
+		                    				if(columnValue < 
+		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    		}
+		                    		else if(nodeCmdbackup.row_filter.get(k).column_name.equals(valueBuffer))
+		                    		{	
+		                    			if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LT"))
+		                    			{
+		                    				if(Double.parseDouble(valueString) >= 
+		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GT"))
+		                    			{
+		                    				if(Double.parseDouble(valueString) <= 
+		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("EQ"))
+		                    			{
+		                    				if(Double.parseDouble(valueString) != 
+		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LTE"))
+		                    			{
+		                    				if(Double.parseDouble(valueString) > 
+		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GTE"))
+		                    			{
+		                    				if(Double.parseDouble(valueString) < 
+		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+		                    				{
+		                    					break;
+		                    				}
+		                    			}
+		                    		}
+		                    		if(k == nodeCmdbackup.row_filter.size() - 1) 
+		                    		{
+		                    			count++;
+		                    			delCols.add(buffercolumn);
+		                    			break;
+		                    		}  		
+		                    	}	
+	                    	}     
+	                    	//map.put(decode(row.key.key), count);
+	                    	
+	                    	Deletion del;
+                			del = new Deletion();
+                			del.setTimestamp(clientstate.getQueryState().getTimestamp());
+                			delPred.column_names = delCols;
+                			del.setPredicate(delPred);
+                			mutationforkey.deleteColumnOrSuperColumn(command.column_family, del);
+                			if(delCols.size() > 0)
+                				deleteMutations.add(mutationforkey);     	
+                    	}
+                    	
+                        rows.add(row);
+                        if (nodeCmdbackup.countCQL3Rows)
+                            cql3RowCount += row.getLiveCount(commandPredicate);
+                        logger.trace("range slices read {}", row.key);     
+                    }
+                    FBUtilities.waitOnFutures(resolver.repairResults, DatabaseDescriptor.getWriteRpcTimeout());
+
+                    try {	
+						mutate(deleteMutations, delete.getConsistencyLevel());
+					} catch (WriteTimeoutException e) {
+						e.printStackTrace();
+					} catch (OverloadedException e) {
+						e.printStackTrace();
+					}
+                
+                }
+                catch (TimeoutException ex)
+                {
+                    logger.debug("Range slice timeout: {}", ex.toString());
+                    // We actually got all response at that point
+                    int blockFor = consistency_level.blockFor(table);
+                    throw new ReadTimeoutException(consistency_level, blockFor, blockFor, true);
+                }
+                catch (DigestMismatchException e)
+                {
+                    throw new AssertionError(e); // no digests in range slices yet
+                }
+
+                // if we're done, great, otherwise, move to the next range
+                
+                nodeCmd = nodeCmdbackup;
+                
                 int count = nodeCmd.countCQL3Rows ? cql3RowCount : rows.size();
                 if (count >= nodeCmd.maxResults)
                     break;
@@ -1251,7 +2721,286 @@ public class StorageProxy implements StorageProxyMBean
         }
         return trim(command, rows);
     }
+   
+    public static List<Row> filterRows(List<Row> Rows, RangeSliceCommand command, ConsistencyLevel consistency_level, int type)
+    	    throws IOException, UnavailableException, ReadTimeoutException, TimeoutException, DigestMismatchException
+    {
+    	List<Row> resultList = new ArrayList<Row>();
+        long startTime = System.nanoTime();
+        // now scan until we have enough results
+        try
+        {
+            //added by xuhao
+            final ByteBuffer columnBuffer = ByteBuffer.wrap("column".getBytes());
+            final ByteBuffer valueBuffer = ByteBuffer.wrap("value".getBytes());
+            boolean traversal = false;
+            IDiskAtomFilter commandPredicate = command.predicate;
+            int cql3RowCount = 0;
+            List<AbstractBounds<RowPosition>> ranges = getRestrictedRanges(command.range);
 
+        	Map<String, Integer> map = new HashMap<String, Integer>();
+            for (AbstractBounds<RowPosition> range : ranges)
+            {
+				RangeSliceCommand nodeCmdbackup = new RangeSliceCommand(command.keyspace,
+                                                                  command.column_family,
+                                                                  command.super_column,
+                                                                  commandPredicate,
+                                                                  range,
+                                                                  command.row_filter,
+                                                                  command.maxResults,
+                                                                  command.countCQL3Rows,
+                                                                  command.isPaging);
+
+            	List<IndexExpression> row_filter_backup = new ArrayList<IndexExpression>();
+                for(int i = 0; i < nodeCmdbackup.row_filter.size(); i++)
+            	{
+            		if(nodeCmdbackup.row_filter.get(i).column_name.equals(columnBuffer)
+            				|| nodeCmdbackup.row_filter.get(i).column_name.equals(valueBuffer))
+            		{
+            			traversal = true;
+            		}
+            		else 
+            		{
+            			row_filter_backup.add(nodeCmdbackup.row_filter.get(i));
+            		}
+            	}
+                
+                RangeSliceCommand nodeCmd = new RangeSliceCommand(command.keyspace,
+									                        command.column_family,
+									                        command.super_column,
+									                        commandPredicate,
+									                        range,
+									                        row_filter_backup,
+									                        command.maxResults,
+									                        command.countCQL3Rows,
+									                        command.isPaging);
+                
+                if(!traversal) nodeCmd = nodeCmdbackup;
+
+				//added by xuhao
+				for (Row row : Rows)
+				{
+					if(traversal)
+					{
+				    	SortedSet<ByteBuffer> ColumnNameSet = row.cf.getColumnNames();
+				    	Iterator<ByteBuffer> it = ColumnNameSet.iterator();
+				    	int count = 0;
+				    	while(it.hasNext())
+				    	{
+				    		ByteBuffer buffercolumn = (ByteBuffer)it.next();
+				    		Long columnValue = (long) 0;
+                    		try {
+                    			columnValue = LongType.instance.compose(buffercolumn);
+							} catch (Exception e) {
+								continue;
+							}
+				    		if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
+				    		ByteBuffer tempb = row.cf.getColumn(buffercolumn).value();
+                    		ByteBuffer buffervalue = ByteBuffer.wrap("0".getBytes());
+
+                    		if (tempb.hasArray())
+                            {
+                    			byte[] bytes = new byte[tempb.remaining()];
+
+                                int j = 0;
+                                for (int i = tempb.position(); i < tempb.limit(); i++)
+                                {
+                                    bytes[j++] = tempb.get(i);
+                                }
+                                buffervalue = ByteBuffer.wrap(bytes);
+                            }
+                            else
+                            {
+                                byte[] bytes = new byte[tempb.remaining()];
+
+                                int j = 0;
+                                for (int i = tempb.position(); i < tempb.limit(); i++)
+                                {
+                                    bytes[j++] = tempb.get(i);
+                                }
+
+                                buffervalue.put(bytes);
+                            }
+
+                    		String valueString = decode(buffervalue);
+				    		
+				        	for(int i = 0; i < nodeCmdbackup.row_filter.size(); i++)
+				        	{
+				        		if(nodeCmdbackup.row_filter.get(i).column_name.equals(columnBuffer))
+				        		{
+				        			//row.
+				        			if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("LT"))
+				        			{
+				        				if(columnValue >= 
+				        						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+				        				{
+				        					break;
+				        				}
+				        			}
+				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("GT"))
+				        			{
+				        				if(columnValue <= 
+				        						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+				        				{
+				        					break;
+				        				}
+				        			}
+				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("EQ"))
+				        			{
+				        				if(columnValue != 
+				        						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+				        				{
+				        					break;
+				        				}
+				        			}
+				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("LTE"))
+				        			{
+				        				if(columnValue > 
+				        						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+				        				{
+				        					break;
+				        				}
+				        			}
+				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("GTE"))
+				        			{
+				        				if(columnValue < 
+				        						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+				        				{
+				        					break;
+				        				}
+				        			}
+				        		}
+				        		else if(nodeCmdbackup.row_filter.get(i).column_name.equals(valueBuffer))
+				        		{
+				        			//String valueString = decode(row.cf.getColumn(buffercolumn).value());
+				        			
+				        			if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("LT"))
+				        			{
+				        				if(Double.parseDouble(valueString) >= 
+				        						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+				        				{
+				        					break;
+				        				}
+				        			}
+				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("GT"))
+				        			{
+				        				if(Double.parseDouble(valueString) <= 
+				        						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+				        				{
+				        					break;
+				        				}
+				        			}
+				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("EQ"))
+				        			{
+				        				if(Double.parseDouble(valueString) != 
+				        						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+				        				{
+				        					break;
+				        				}
+				        			}
+				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("LTE"))
+				        			{
+				        				if(Double.parseDouble(valueString) > 
+				        						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+				        				{
+				        					break;
+				        				}
+				        			}
+				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("GTE"))
+				        			{
+				        				if(Double.parseDouble(valueString) < 
+				        						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+				        				{
+				        					break;
+				        				}
+				        			}
+				        		}
+				        		if(i == nodeCmdbackup.row_filter.size() - 1) count++;
+				        	}	
+				    	}     
+				    	
+				    	byte[] bytes = new byte[row.key.key.remaining()];
+
+                        int j = 0;
+                        for (int i = row.key.key.position(); i < row.key.key.limit(); i++)
+                        {
+                            bytes[j++] = row.key.key.get(i);
+                        }
+                        ByteBuffer keyvalue = ByteBuffer.wrap(bytes);
+				    	
+				    	map.put(decode(row.key.key), count);
+					}
+				    resultList.add(row);
+				    if (nodeCmdbackup.countCQL3Rows)
+				        cql3RowCount += row.getLiveCount(commandPredicate);
+				    logger.trace("range slices read {}", row.key);     
+				}
+
+                // if we're done, great, otherwise, move to the next range
+                
+                nodeCmd = nodeCmdbackup;
+                
+                int count = nodeCmd.countCQL3Rows ? cql3RowCount : resultList.size();
+                if (count >= nodeCmd.maxResults)
+                    break;
+
+                // if we are paging and already got some rows, reset the column filter predicate,
+                // so we start iterating the next row from the first column
+                if (!resultList.isEmpty() && command.isPaging)
+                {
+                    // We only allow paging with a slice filter (doesn't make sense otherwise anyway)
+                    assert commandPredicate instanceof SliceQueryFilter;
+                    commandPredicate = ((SliceQueryFilter)commandPredicate).withUpdatedSlices(ColumnSlice.ALL_COLUMNS_ARRAY);
+                }
+            }
+            
+            FileWriter fileWriter=new FileWriter("c:\\Result.txt");
+            int counter = 1;
+            for (String s: map.keySet()) {
+            	fileWriter.write(counter + ", ");
+            	fileWriter.write(s + ", ");
+            	fileWriter.write(map.get(s) + "\r\n");
+            	counter++;
+            }
+            fileWriter.flush();
+            fileWriter.close();
+        }
+        catch (Exception e)
+        {
+        	
+        }
+        finally
+        {
+            rangeMetrics.addNano(System.nanoTime() - startTime);
+        }
+        if (command.countCQL3Rows)
+        	return resultList;
+        else
+        	return resultList.size() > command.maxResults ? 
+        			resultList.subList(0, command.maxResults) : resultList;
+    }
+
+    //added by xuhao
+    public static String decode(ByteBuffer bufferori)
+    {
+    	ByteBuffer buffer = ByteBuffer.wrap(bufferori.array());
+        Charset charset = null ;
+        CharsetDecoder decoder = null ;
+        CharBuffer charBuffer = null ;
+        try 
+        {
+        	charset = Charset.forName("UTF8");
+            decoder = charset.newDecoder();
+            charBuffer = decoder.decode(buffer);
+            return charBuffer.toString();
+        } 
+        catch(Exception ex)
+        {
+            ex.printStackTrace();
+            return null;
+        } 
+    }
+    
     private static List<Row> trim(RangeSliceCommand command, List<Row> rows)
     {
         // When countCQL3Rows, we let the caller trim the result.

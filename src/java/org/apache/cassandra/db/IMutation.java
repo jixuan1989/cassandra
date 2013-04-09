@@ -19,13 +19,16 @@ package org.apache.cassandra.db;
 
 import java.nio.ByteBuffer;
 import java.util.Collection;
+import java.util.Map;
 import java.util.UUID;
 
 public interface IMutation
 {
     public String getTable();
     public Collection<UUID> getColumnFamilyIds();
+    public Map<UUID, ColumnFamily> getModifications();
     public ByteBuffer key();
+    public void setKey(ByteBuffer key);
     public void apply();
     public String toString(boolean shallow);
     public void addAll(IMutation m);

@@ -90,12 +90,24 @@ public class Term
     {
         try
         {
-            if (!isBindMarker()) return validator.fromStringCQL2(text);
+        	//xuhao 
+            if (!isBindMarker()) 
+            {
+            	if(!text.equalsIgnoreCase("value") && !text.equalsIgnoreCase("column"))
+            	{
+            		return validator.fromStringCQL2(text);
+            	}
+            }
 
             // must be a marker term so check for a CqlBindValue stored in the term
             if (bindIndex == null)
                 throw new AssertionError("a marker Term was encountered with no index value");
 
+            //xuhao
+            if(text.equalsIgnoreCase("value"))
+            	return (ByteBuffer.wrap("value".getBytes()));
+            else if(text.equalsIgnoreCase("column"))
+            	return (ByteBuffer.wrap("column".getBytes()));
             return variables.get(bindIndex);
         }
         catch (MarshalException e)

@@ -21,10 +21,12 @@ import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Set;
 
+import org.antlr.grammar.v3.ANTLRv3Parser.finallyClause_return;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.ConsistencyLevel;
+import org.apache.cassandra.thrift.Cassandra.set_cql_version_args;
 
 /**
  * Encapsulates a completely parsed SELECT query, including the target
@@ -40,9 +42,10 @@ public class SelectStatement
     private final ConsistencyLevel cLevel;
     private final WhereClause clause;
     private final int numRecords;
+    private final int aggregateType;
 
     public SelectStatement(SelectExpression expression, boolean isCountOper, String keyspace, String columnFamily,
-            ConsistencyLevel cLevel, WhereClause clause, int numRecords)
+            ConsistencyLevel cLevel, WhereClause clause, int numRecords, int aggregateType)
     {
         this.expression = expression;
         this.isCountOper = isCountOper;
@@ -51,8 +54,33 @@ public class SelectStatement
         this.cLevel = cLevel;
         this.clause = (clause != null) ? clause : new WhereClause();
         this.numRecords = numRecords;
+        this.aggregateType = aggregateType;
     }
 
+    //xuhao
+    public int getAggregateType()
+    {
+    	return this.aggregateType;
+    }
+ 
+    //xuhao
+    public void setSearchWithoutKey(boolean bKey)
+    {
+    	this.clause.setSearchWithoutKey(bKey);
+    }
+    
+    //xuhao
+    public boolean getSearchWithoutKey()
+    {
+    	return this.clause.getSearchWithoutKey();
+    }
+    
+    //xuhao
+    public int numOfClauseRelations()
+    {
+    	return this.clause.numOFClauseRelations();
+    }
+    
     public boolean isKeyRange()
     {
         return clause.isKeyRange();

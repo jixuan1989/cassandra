@@ -47,7 +47,7 @@ public class RowMutation implements IMutation
     public static final String FORWARD_FROM = "FWD_FRM";
 
     private final String table;
-    private final ByteBuffer key;
+    private ByteBuffer key;
     // map of column family id to mutations for that column family.
     private final Map<UUID, ColumnFamily> modifications;
 
@@ -69,6 +69,18 @@ public class RowMutation implements IMutation
         this.modifications = modifications;
     }
 
+    //added by xuhao
+    public void setKey(ByteBuffer key)
+    {
+    	this.key = key;
+    }
+    
+    //added by xuhao
+    public Map<UUID, ColumnFamily> getModifications()
+    {
+    	return modifications;
+    }
+    
     public String getTable()
     {
         return table;
