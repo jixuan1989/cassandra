@@ -1121,6 +1121,7 @@ public class StorageProxy implements StorageProxyMBean
 
         Table table = Table.open(command.keyspace);
         List<Row> rows = null;
+        List<String> resultkeyList = new ArrayList<String>();
         // now scan until we have enough results
         try
         {
@@ -1267,11 +1268,20 @@ public class StorageProxy implements StorageProxyMBean
                 	//added by xuhao
                     for (Row row : handler.get())
                     {
+                    	int count = 0;
+    					byte[] bytes = new byte[row.key.key.remaining()];
+                        int j = 0;
+                        for (int k = row.key.key.position(); k < row.key.key.limit(); k++)
+                        {
+                            bytes[j++] = row.key.key.get(k);
+                        }
+                        ByteBuffer keyvalue = ByteBuffer.wrap(bytes);
+
                     	if(traversal)
                     	{
 	                    	SortedSet<ByteBuffer> ColumnNameSet = row.cf.getColumnNames();
 	                    	Iterator<ByteBuffer> it = ColumnNameSet.iterator();
-	                    	int count = 0;
+	                    	count = 0;
 	                    	while(it.hasNext())
 	                    	{
 	                    		ByteBuffer buffercolumn = (ByteBuffer)it.next();
@@ -1297,9 +1307,9 @@ public class StorageProxy implements StorageProxyMBean
 	                    		ByteBuffer buffervalue = ByteBuffer.wrap("0".getBytes());
 	                    		if (tempb.hasArray())
 	                            {
-	                    			byte[] bytes = new byte[tempb.remaining()];
+	                    			bytes = new byte[tempb.remaining()];
 
-	                                int j = 0;
+	                                j = 0;
 	                                for (int k = tempb.position(); k < tempb.limit(); k++)
 	                                {
 	                                    bytes[j++] = tempb.get(k);
@@ -1308,9 +1318,9 @@ public class StorageProxy implements StorageProxyMBean
 	                            }
 	                            else
 	                            {
-	                                byte[] bytes = new byte[tempb.remaining()];
+	                                bytes = new byte[tempb.remaining()];
 
-	                                int j = 0;
+	                                j = 0;
 	                                for (int k = tempb.position(); k < tempb.limit(); k++)
 	                                {
 	                                    bytes[j++] = tempb.get(k);
@@ -1416,18 +1426,30 @@ public class StorageProxy implements StorageProxyMBean
 		                    	}	
 	                    	}     
 	                    	
-	                    	byte[] bytes = new byte[row.key.key.remaining()];
-
-                            int j = 0;
-                            for (int k = row.key.key.position(); k < row.key.key.limit(); k++)
-                            {
-                                bytes[j++] = row.key.key.get(k);
-                            }
-                            ByteBuffer keyvalue = ByteBuffer.wrap(bytes);
-	
 	                    	map.put(decode(keyvalue), count);
                     	}
-                        rows.add(row);
+                    	
+                    	if(traversal)
+                    	{
+	                    	Column resultColumn = new Column(LongType.instance.decompose((long)count), ByteBuffer.wrap((count+"").getBytes()));
+	    					ColumnFamily resultCf = row.cf;
+	    					//Row resultRow = new Row(row.key.key, cf);
+	    					resultCf.clear();
+	    					//resultCf.addColumn(column)
+	    					row.cf.addColumn(resultColumn);
+	    					
+	    					if(!resultkeyList.contains(decode(keyvalue)))
+	    					{
+	    						resultkeyList.add(decode(keyvalue));
+	    						rows.add(row);
+	    					}
+                    	}
+                    	else
+                    	{
+                    		rows.add(row);
+                    	}
+    					
+    					
                         if (nodeCmd.countCQL3Rows)
                             cql3RowCount += row.getLiveCount(commandPredicate);
                         logger.trace("range slices read {}", row.key);
@@ -1466,6 +1488,7 @@ public class StorageProxy implements StorageProxyMBean
                     commandPredicate = ((SliceQueryFilter)commandPredicate).withUpdatedSlices(ColumnSlice.ALL_COLUMNS_ARRAY);
                 }
                 
+                /*
                 FileWriter fileWriter = new FileWriter("c:\\Result.txt");
                 int counter = 1;
                 for (String s: map.keySet()) {
@@ -1476,6 +1499,7 @@ public class StorageProxy implements StorageProxyMBean
                 }
                 fileWriter.flush();
                 fileWriter.close();
+                */
             }
         }
         catch(Exception e)
@@ -2726,6 +2750,7 @@ public class StorageProxy implements StorageProxyMBean
     	    throws IOException, UnavailableException, ReadTimeoutException, TimeoutException, DigestMismatchException
     {
     	List<Row> resultList = new ArrayList<Row>();
+    	List<String> resultkeyList = new ArrayList<String>();
         long startTime = System.nanoTime();
         // now scan until we have enough results
         try
@@ -2780,11 +2805,20 @@ public class StorageProxy implements StorageProxyMBean
 				//added by xuhao
 				for (Row row : Rows)
 				{
+					int count = 0;
+					byte[] bytes = new byte[row.key.key.remaining()];
+                    int j = 0;
+                    for (int i = row.key.key.position(); i < row.key.key.limit(); i++)
+                    {
+                        bytes[j++] = row.key.key.get(i);
+                    }
+                    ByteBuffer keyvalue = ByteBuffer.wrap(bytes);
+                    
 					if(traversal)
 					{
 				    	SortedSet<ByteBuffer> ColumnNameSet = row.cf.getColumnNames();
 				    	Iterator<ByteBuffer> it = ColumnNameSet.iterator();
-				    	int count = 0;
+				    	count = 0;
 				    	while(it.hasNext())
 				    	{
 				    		ByteBuffer buffercolumn = (ByteBuffer)it.next();
@@ -2800,9 +2834,9 @@ public class StorageProxy implements StorageProxyMBean
 
                     		if (tempb.hasArray())
                             {
-                    			byte[] bytes = new byte[tempb.remaining()];
+                    			bytes = new byte[tempb.remaining()];
 
-                                int j = 0;
+                                j = 0;
                                 for (int i = tempb.position(); i < tempb.limit(); i++)
                                 {
                                     bytes[j++] = tempb.get(i);
@@ -2811,9 +2845,9 @@ public class StorageProxy implements StorageProxyMBean
                             }
                             else
                             {
-                                byte[] bytes = new byte[tempb.remaining()];
+                                bytes = new byte[tempb.remaining()];
 
-                                int j = 0;
+                                j = 0;
                                 for (int i = tempb.position(); i < tempb.limit(); i++)
                                 {
                                     bytes[j++] = tempb.get(i);
@@ -2918,19 +2952,22 @@ public class StorageProxy implements StorageProxyMBean
 				        		if(i == nodeCmdbackup.row_filter.size() - 1) count++;
 				        	}	
 				    	}     
-				    	
-				    	byte[] bytes = new byte[row.key.key.remaining()];
-
-                        int j = 0;
-                        for (int i = row.key.key.position(); i < row.key.key.limit(); i++)
-                        {
-                            bytes[j++] = row.key.key.get(i);
-                        }
-                        ByteBuffer keyvalue = ByteBuffer.wrap(bytes);
-				    	
-				    	map.put(decode(row.key.key), count);
+	
+				    	map.put(decode(keyvalue), count);
 					}
-				    resultList.add(row);
+
+					if(!resultkeyList.contains(decode(keyvalue)))
+					{
+						Column resultColumn = new Column(LongType.instance.decompose((long)count), ByteBuffer.wrap((count+"").getBytes()));
+						ColumnFamily resultCf = row.cf;
+						//Row resultRow = new Row(row.key.key, cf);
+						resultCf.clear();
+						//resultCf.addColumn(column)
+						row.cf.addColumn(resultColumn);
+						resultkeyList.add(decode(keyvalue));
+						resultList.add(row);
+					}
+				    
 				    if (nodeCmdbackup.countCQL3Rows)
 				        cql3RowCount += row.getLiveCount(commandPredicate);
 				    logger.trace("range slices read {}", row.key);     
@@ -2954,6 +2991,7 @@ public class StorageProxy implements StorageProxyMBean
                 }
             }
             
+            /*
             FileWriter fileWriter=new FileWriter("c:\\Result.txt");
             int counter = 1;
             for (String s: map.keySet()) {
@@ -2964,6 +3002,7 @@ public class StorageProxy implements StorageProxyMBean
             }
             fileWriter.flush();
             fileWriter.close();
+            */
         }
         catch (Exception e)
         {
