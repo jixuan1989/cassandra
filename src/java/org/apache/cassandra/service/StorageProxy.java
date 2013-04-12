@@ -35,6 +35,7 @@ import javax.management.ObjectName;
 
 import com.google.common.base.Function;
 import com.google.common.collect.*;
+
 import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,6 +52,7 @@ import org.apache.cassandra.db.filter.IDiskAtomFilter;
 import org.apache.cassandra.db.filter.QueryPath;
 import org.apache.cassandra.db.filter.SliceQueryFilter;
 import org.apache.cassandra.db.marshal.LongType;
+import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.db.marshal.UUIDType;
 import org.apache.cassandra.dht.AbstractBounds;
 import org.apache.cassandra.dht.Bounds;
@@ -1191,19 +1193,6 @@ public class StorageProxy implements StorageProxyMBean
                     filteredEndpoints = filteredMerged;
                     ++i;
                 }
-
-                /*
-                RangeSliceCommand nodeCmd = new RangeSliceCommand(command.keyspace,
-                                                                  command.column_family,
-                                                                  command.super_column,
-                                                                  commandPredicate,
-                                                                  range,
-                                                                  command.row_filter,
-                                                                  command.maxResults,
-                                                                  command.countCQL3Rows,
-                                                                  command.isPaging);
-                */
-                
                 RangeSliceCommand nodeCmdbackup = new RangeSliceCommand(command.keyspace,
                         command.column_family,
                         command.super_column,
@@ -1269,14 +1258,16 @@ public class StorageProxy implements StorageProxyMBean
                     for (Row row : handler.get())
                     {
                     	int count = 0;
+                    	/*
     					byte[] bytes = new byte[row.key.key.remaining()];
                         int j = 0;
                         for (int k = row.key.key.position(); k < row.key.key.limit(); k++)
                         {
                             bytes[j++] = row.key.key.get(k);
-                        }
-                        ByteBuffer keyvalue = ByteBuffer.wrap(bytes);
-
+                        }*/
+                        //ByteBuffer keyvalue = ByteBuffer.wrap(bytes);
+                        String keyvalue = UTF8Type.instance.compose(row.key.key);
+                        
                     	if(traversal)
                     	{
 	                    	SortedSet<ByteBuffer> ColumnNameSet = row.cf.getColumnNames();
@@ -1286,147 +1277,106 @@ public class StorageProxy implements StorageProxyMBean
 	                    	{
 	                    		ByteBuffer buffercolumn = (ByteBuffer)it.next();
 	                    		Long columnValue = (long) 0;
+	                    		String valueString = "0";
 	                    		try {
 	                    			columnValue = LongType.instance.compose(buffercolumn);
+	                    			valueString = UTF8Type.instance.compose(row.cf.getColumn(buffercolumn).value());
+	                    			if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
+	                    			for(int k = 0; k < nodeCmdbackup.row_filter.size(); k++)
+			                    	{
+			                    		if(nodeCmdbackup.row_filter.get(k).column_name.equals(columnBuffer))
+			                    		{
+			                    			if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LT"))
+			                    			{
+			                    				if(columnValue >= 
+			                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+			                    				{
+			                    					break;
+			                    				}
+			                    			}
+			                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GT"))
+			                    			{
+			                    				if(columnValue <= 
+			                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+			                    				{
+			                    					break;
+			                    				}
+			                    			}
+			                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("EQ"))
+			                    			{
+			                    				if(columnValue != 
+			                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+			                    				{
+			                    					break;
+			                    				}
+			                    			}
+			                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LTE"))
+			                    			{
+			                    				if(columnValue > 
+			                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+			                    				{
+			                    					break;
+			                    				}
+			                    			}
+			                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GTE"))
+			                    			{
+			                    				if(columnValue < 
+			                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+			                    				{
+			                    					break;
+			                    				}
+			                    			}
+			                    		}
+			                    		else if(nodeCmdbackup.row_filter.get(k).column_name.equals(valueBuffer))
+			                    		{
+			                    			if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LT"))
+			                    			{
+			                    				if(Double.parseDouble(valueString) >= 
+			                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+			                    				{
+			                    					break;
+			                    				}
+			                    			}
+			                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GT"))
+			                    			{
+			                    				if(Double.parseDouble(valueString) <= 
+			                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+			                    				{
+			                    					break;
+			                    				}
+			                    			}
+			                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("EQ"))
+			                    			{
+			                    				if(Double.parseDouble(valueString) != 
+			                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+			                    				{
+			                    					break;
+			                    				}
+			                    			}
+			                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LTE"))
+			                    			{
+			                    				if(Double.parseDouble(valueString) > 
+			                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+			                    				{
+			                    					break;
+			                    				}
+			                    			}
+			                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GTE"))
+			                    			{
+			                    				if(Double.parseDouble(valueString) < 
+			                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
+			                    				{
+			                    					break;
+			                    				}
+			                    			}
+			                    		}
+			                    		if(k == nodeCmdbackup.row_filter.size() - 1) count++;
+			                    	}
 								} catch (Exception e) {
 									continue;
-								}
-	                    		if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
-	                    		
-	                    		//ByteBuffer valueString = row.cf.getColumn(buffercolumn).value();
-	                    		/*
-	                    		Double valueValue = (double) 0;
-	                    		try {
-	                    			columnValue = LongType.instance.compose(buffercolumn);
-								} catch (Exception e) {
-									continue;
-								}
-	                    		*/
-	                    		
-	                    		ByteBuffer tempb = row.cf.getColumn(buffercolumn).value();
-	                    		ByteBuffer buffervalue = ByteBuffer.wrap("0".getBytes());
-	                    		if (tempb.hasArray())
-	                            {
-	                    			bytes = new byte[tempb.remaining()];
-
-	                                j = 0;
-	                                for (int k = tempb.position(); k < tempb.limit(); k++)
-	                                {
-	                                    bytes[j++] = tempb.get(k);
-	                                }
-	                                buffervalue = ByteBuffer.wrap(bytes);
-	                            }
-	                            else
-	                            {
-	                                bytes = new byte[tempb.remaining()];
-
-	                                j = 0;
-	                                for (int k = tempb.position(); k < tempb.limit(); k++)
-	                                {
-	                                    bytes[j++] = tempb.get(k);
-	                                }
-
-	                                buffervalue.put(bytes);
-	                            }
-
-	                    		String valueString = decode(buffervalue);
-
-		                    	for(int k = 0; k < nodeCmdbackup.row_filter.size(); k++)
-		                    	{
-		                    		if(nodeCmdbackup.row_filter.get(k).column_name.equals(columnBuffer))
-		                    		{
-		                    			//row.
-		                    			if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LT"))
-		                    			{
-		                    				if(columnValue >= 
-		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
-		                    				{
-		                    					break;
-		                    				}
-		                    			}
-		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GT"))
-		                    			{
-		                    				if(columnValue <= 
-		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
-		                    				{
-		                    					break;
-		                    				}
-		                    			}
-		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("EQ"))
-		                    			{
-		                    				if(columnValue != 
-		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
-		                    				{
-		                    					break;
-		                    				}
-		                    			}
-		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LTE"))
-		                    			{
-		                    				if(columnValue > 
-		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
-		                    				{
-		                    					break;
-		                    				}
-		                    			}
-		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GTE"))
-		                    			{
-		                    				if(columnValue < 
-		                    						Long.parseLong(new String(nodeCmdbackup.row_filter.get(k).getValue())))
-		                    				{
-		                    					break;
-		                    				}
-		                    			}
-		                    		}
-		                    		else if(nodeCmdbackup.row_filter.get(k).column_name.equals(valueBuffer))
-		                    		{
-		                    			//String valueString = decode(row.cf.getColumn(buffercolumn).value());
-		                    			
-		                    			if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LT"))
-		                    			{
-		                    				if(Double.parseDouble(valueString) >= 
-		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
-		                    				{
-		                    					break;
-		                    				}
-		                    			}
-		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GT"))
-		                    			{
-		                    				if(Double.parseDouble(valueString) <= 
-		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
-		                    				{
-		                    					break;
-		                    				}
-		                    			}
-		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("EQ"))
-		                    			{
-		                    				if(Double.parseDouble(valueString) != 
-		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
-		                    				{
-		                    					break;
-		                    				}
-		                    			}
-		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("LTE"))
-		                    			{
-		                    				if(Double.parseDouble(valueString) > 
-		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
-		                    				{
-		                    					break;
-		                    				}
-		                    			}
-		                    			else if(nodeCmdbackup.row_filter.get(k).getOp().toString().equals("GTE"))
-		                    			{
-		                    				if(Double.parseDouble(valueString) < 
-		                    						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(k).getValue())))
-		                    				{
-		                    					break;
-		                    				}
-		                    			}
-		                    		}
-		                    		if(k == nodeCmdbackup.row_filter.size() - 1) count++;
-		                    	}	
-	                    	}     
-	                    	
-	                    	map.put(decode(keyvalue), count);
+								}	
+	                    	}     	
+	                    	map.put(keyvalue, count);
                     	}
                     	
                     	if(traversal)
@@ -1437,10 +1387,9 @@ public class StorageProxy implements StorageProxyMBean
 	    					resultCf.clear();
 	    					//resultCf.addColumn(column)
 	    					row.cf.addColumn(resultColumn);
-	    					
-	    					if(!resultkeyList.contains(decode(keyvalue)))
+	    					if(!resultkeyList.contains(keyvalue))
 	    					{
-	    						resultkeyList.add(decode(keyvalue));
+	    						resultkeyList.add(keyvalue);
 	    						rows.add(row);
 	    					}
                     	}
@@ -1448,8 +1397,7 @@ public class StorageProxy implements StorageProxyMBean
                     	{
                     		rows.add(row);
                     	}
-    					
-    					
+
                         if (nodeCmd.countCQL3Rows)
                             cql3RowCount += row.getLiveCount(commandPredicate);
                         logger.trace("range slices read {}", row.key);
@@ -1469,7 +1417,7 @@ public class StorageProxy implements StorageProxyMBean
                 }
                 catch (Exception e)
                 {
-                	
+                	logger.debug("Unexpected Exception", e.toString());
                 }
 
                 nodeCmd = nodeCmdbackup;
@@ -1504,7 +1452,7 @@ public class StorageProxy implements StorageProxyMBean
         }
         catch(Exception e)
         {
-        	
+        	logger.debug("Range slice timeout: {}", e.toString());
         }
         finally
         {
@@ -1602,43 +1550,14 @@ public class StorageProxy implements StorageProxyMBean
     	    		                    	{
     	    		                    		ByteBuffer buffercolumn = (ByteBuffer)it.next();
     	    		                    		Long columnValue = (long) 0;
+    	    		                    		String valueString = "0";
     	    		                    		try {
     	    		                    			columnValue = LongType.instance.compose(buffercolumn);
+    	    		                    			if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
+    	    		                        		valueString = UTF8Type.instance.compose(row.cf.getColumn(buffercolumn).value());
     	    									} catch (Exception e) {
     	    										continue;
     	    									}
-    	    		                    		
-    	    		                    		if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
-    	    		                    		//ByteBuffer ValueToModify = row.cf.getColumn(buffercolumn).value();
-    	    		                    		//String valueString = decode(row.cf.getColumn(buffercolumn).value());
-    	    		                    		ByteBuffer tempb = row.cf.getColumn(buffercolumn).value();
-    	    		                    		ByteBuffer buffervalue = ByteBuffer.wrap("0".getBytes());
-
-    	    		                    		if (tempb.hasArray())
-    	    		                            {
-    	    		                    			byte[] bytes = new byte[tempb.remaining()];
-
-    	    		                                int j = 0;
-    	    		                                for (int i = tempb.position(); i < tempb.limit(); i++)
-    	    		                                {
-    	    		                                    bytes[j++] = tempb.get(i);
-    	    		                                }
-    	    		                                buffervalue = ByteBuffer.wrap(bytes);
-    	    		                            }
-    	    		                            else
-    	    		                            {
-    	    		                                byte[] bytes = new byte[tempb.remaining()];
-
-    	    		                                int j = 0;
-    	    		                                for (int i = tempb.position(); i < tempb.limit(); i++)
-    	    		                                {
-    	    		                                    bytes[j++] = tempb.get(i);
-    	    		                                }
-
-    	    		                                buffervalue.put(bytes);
-    	    		                            }
-
-    	    		                    		String valueString = decode(buffervalue);
     	    		                    		//valueString = valueString.substring(tempb.position() + tempb.arrayOffset());
     	    		                    		
     	    		                    		if(valueString.length() == 0) valueString = "0";
@@ -1776,6 +1695,10 @@ public class StorageProxy implements StorageProxyMBean
     	    	                }
     	    	            }
     	    	        }
+    	    	        catch(Exception e)
+    	    	        {
+    	    	        	logger.debug("Unexpected Exception", e.toString());
+    	    	        }
     	    	        finally
     	    	        {
     	    	            rangeMetrics.addNano(System.nanoTime() - startTime);
@@ -1835,40 +1758,16 @@ public class StorageProxy implements StorageProxyMBean
                     	{
                     		ByteBuffer buffercolumn = (ByteBuffer)it.next();
                     		Long columnValue = (long) 0;
+                    		String valueString = "0";
                     		try {
                     			columnValue = LongType.instance.compose(buffercolumn);
+                    			if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
+                        		valueString = UTF8Type.instance.compose(row.cf.getColumn(buffercolumn).value());
 							} catch (Exception e) {
 								continue;
 							}
                     		if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
-                    		//ByteBuffer ValueToModify = row.cf.getColumn(buffercolumn).value();
-                    		//String valueString = decode(row.cf.getColumn(buffercolumn).value());
-                    		ByteBuffer tempb = row.cf.getColumn(buffercolumn).value();
-                    		ByteBuffer buffervalue = ByteBuffer.wrap("0".getBytes());
-                    		
-                    		byte[] bytes = new byte[tempb.limit()];;
-                    		
-                    		if (tempb.hasArray())
-                            {
-                    			int j = 0;
-                                for (int i = tempb.position(); i < tempb.limit(); i++)
-                                {
-                                    bytes[j++] = tempb.get(i);
-                                }
-                            }
-                            else
-                            {
-                                int j = 0;
-                                for (int i = tempb.position(); i < tempb.limit(); i++)
-                                {
-                                    bytes[j++] = tempb.get(i);
-                                }
-                                buffervalue.put(bytes);
-                            }
-                    		buffervalue = ByteBuffer.wrap(bytes);
-                    		String valueString = decode(buffervalue);
-                    		//valueString = valueString.substring(tempb.position() + tempb.arrayOffset());
-                    		
+
                     		if(valueString == null) continue;
                     		else if(valueString.length() == 0) valueString = "0";
 	                    	for(int i = 0; i < command.row_filter.size(); i++)
@@ -1986,7 +1885,9 @@ public class StorageProxy implements StorageProxyMBean
 					e.printStackTrace();
 				}
             }
-            catch (Exception ex){}
+            catch (Exception ex){
+            	logger.debug("Unexpected Exception", ex.toString());
+            }
             if (!rows.isEmpty() && command.isPaging)
             {
                 assert commandPredicate instanceof SliceQueryFilter;
@@ -2181,46 +2082,14 @@ public class StorageProxy implements StorageProxyMBean
 	                    	{
 	                    		ByteBuffer buffercolumn = (ByteBuffer)it.next();
 	                    		Long columnValue = (long) 0;
+	                    		String valueString = "0";
 	                    		try {
 	                    			columnValue = LongType.instance.compose(buffercolumn);
+	                    			if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
+	                        		valueString = UTF8Type.instance.compose(row.cf.getColumn(buffercolumn).value());
 								} catch (Exception e) {
 									continue;
 								}
-	                    		if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
-	                    		//ByteBuffer ValueToModify = row.cf.getColumn(buffercolumn).value();
-	                    		//String valueString = decode(row.cf.getColumn(buffercolumn).value());
-	                    		ByteBuffer tempb = row.cf.getColumn(buffercolumn).value();
-	                    		ByteBuffer buffervalue = ByteBuffer.wrap("0".getBytes());
-	                    		
-	                    		
-	                    		if (tempb.hasArray())
-	                            {
-	                    			/*buffervalue = tempb.get(tempb.array(),
-		                    				tempb.position() + tempb.arrayOffset(), tempb.remaining());*/
-	                    			byte[] bytes = new byte[tempb.remaining()];
-
-	                                int j = 0;
-	                                for (int k = tempb.position(); k < tempb.limit();k++)
-	                                {
-	                                    bytes[j++] = tempb.get(k);
-	                                }
-	                                buffervalue = ByteBuffer.wrap(bytes);
-	                            }
-	                            else
-	                            {
-	                                byte[] bytes = new byte[tempb.remaining()];
-
-	                                int j = 0;
-	                                for (int k = tempb.position(); k < tempb.limit(); k++)
-	                                {
-	                                    bytes[j++] = tempb.get(k);
-	                                }
-
-	                                buffervalue.put(bytes);
-	                            }
-
-	                    		String valueString = decode(buffervalue);
-	                    		//valueString = valueString.substring(tempb.position() + tempb.arrayOffset());
 	                    		
 	                    		if(valueString.length() == 0) valueString = "0";
 		                    	for(int k = 0; k < nodeCmdbackup.row_filter.size(); k++)
@@ -2359,6 +2228,9 @@ public class StorageProxy implements StorageProxyMBean
                 {
                     throw new AssertionError(e); // no digests in range slices yet
                 }
+                catch (Exception ex) {
+                	logger.debug("Unexpected Exception", ex.toString());
+				}
 
                 // if we're done, great, otherwise, move to the next range
                 
@@ -2380,7 +2252,7 @@ public class StorageProxy implements StorageProxyMBean
     	}
         catch(Exception e)
         {
-        	
+        	logger.debug("Unexpected Exception", e.toString());
         }
         finally
         {
@@ -2548,39 +2420,14 @@ public class StorageProxy implements StorageProxyMBean
 	                    		
 	                    		ByteBuffer buffercolumn = (ByteBuffer)it.next();
 	                    		Long columnValue = (long) 0;
+	                    		String valueString = "0";
 	                    		try {
 	                    			columnValue = LongType.instance.compose(buffercolumn);
+	                    			if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
+	                        		valueString = UTF8Type.instance.compose(row.cf.getColumn(buffercolumn).value());
 								} catch (Exception e) {
 									continue;
 								}
-	                    		if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
-	                    		
-	                    		//ByteBuffer ValueToModify = row.cf.getColumn(buffercolumn).value();
-	                    		//String valueString = decode(row.cf.getColumn(buffercolumn).value());
-	                    		ByteBuffer tempb = row.cf.getColumn(buffercolumn).value();
-	                    		ByteBuffer buffervalue = ByteBuffer.wrap("0".getBytes());
-	                    		byte[] bytes = new byte[tempb.limit()];
-	                    		
-	                    		if (tempb.hasArray())
-	                            {
-	                    			int j = 0;
-	                                for (int k = tempb.position(); k < tempb.limit(); k++)
-	                                {
-	                                    bytes[j++] = tempb.get(k);
-	                                }
-	                            }
-	                            else
-	                            {
-	                                int j = 0;
-	                                for (int k = tempb.position(); k < tempb.limit(); k++)
-	                                {
-	                                    bytes[j++] = tempb.get(k);
-	                                }
-	                                buffervalue.put(bytes);
-	                            }
-	                    		buffervalue = ByteBuffer.wrap(bytes);
-	                    		String valueString = decode(buffervalue);
-	                    		//valueString = valueString.substring(tempb.position() + tempb.arrayOffset());
 	                    		
 	                    		if(valueString == null) continue;
 	                    		else if(valueString.length() == 0) valueString = "0";
@@ -2739,6 +2586,10 @@ public class StorageProxy implements StorageProxyMBean
                 }
             }
         }
+        catch(Exception e)
+        {
+        	logger.debug("Unexpected Exception", e.toString());
+        }
         finally
         {
             rangeMetrics.addNano(System.nanoTime() - startTime);
@@ -2799,21 +2650,13 @@ public class StorageProxy implements StorageProxyMBean
 									                        command.maxResults,
 									                        command.countCQL3Rows,
 									                        command.isPaging);
-                
                 if(!traversal) nodeCmd = nodeCmdbackup;
 
 				//added by xuhao
 				for (Row row : Rows)
 				{
 					int count = 0;
-					byte[] bytes = new byte[row.key.key.remaining()];
-                    int j = 0;
-                    for (int i = row.key.key.position(); i < row.key.key.limit(); i++)
-                    {
-                        bytes[j++] = row.key.key.get(i);
-                    }
-                    ByteBuffer keyvalue = ByteBuffer.wrap(bytes);
-                    
+                    String keyvalue = UTF8Type.instance.compose(row.key.key);
 					if(traversal)
 					{
 				    	SortedSet<ByteBuffer> ColumnNameSet = row.cf.getColumnNames();
@@ -2823,140 +2666,109 @@ public class StorageProxy implements StorageProxyMBean
 				    	{
 				    		ByteBuffer buffercolumn = (ByteBuffer)it.next();
 				    		Long columnValue = (long) 0;
+				    		String valueString = "0";
                     		try {
                     			columnValue = LongType.instance.compose(buffercolumn);
-							} catch (Exception e) {
+                    			if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
+                        		valueString = UTF8Type.instance.compose(row.cf.getColumn(buffercolumn).value());
+                        		for(int i = 0; i < nodeCmdbackup.row_filter.size(); i++)
+    				        	{
+    				        		if(nodeCmdbackup.row_filter.get(i).column_name.equals(columnBuffer))
+    				        		{
+    				        			if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("LT"))
+    				        			{
+    				        				if(columnValue >= 
+    				        						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    				        				{
+    				        					break;
+    				        				}
+    				        			}
+    				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("GT"))
+    				        			{
+    				        				if(columnValue <= 
+    				        						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    				        				{
+    				        					break;
+    				        				}
+    				        			}
+    				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("EQ"))
+    				        			{
+    				        				if(columnValue != 
+    				        						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    				        				{
+    				        					break;
+    				        				}
+    				        			}
+    				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("LTE"))
+    				        			{
+    				        				if(columnValue > 
+    				        						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    				        				{
+    				        					break;
+    				        				}
+    				        			}
+    				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("GTE"))
+    				        			{
+    				        				if(columnValue < 
+    				        						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    				        				{
+    				        					break;
+    				        				}
+    				        			}
+    				        		}
+    				        		else if(nodeCmdbackup.row_filter.get(i).column_name.equals(valueBuffer))
+    				        		{
+    				        			if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("LT"))
+    				        			{
+    				        				if(Double.parseDouble(valueString) >= 
+    				        						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    				        				{
+    				        					break;
+    				        				}
+    				        			}
+    				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("GT"))
+    				        			{
+    				        				if(Double.parseDouble(valueString) <= 
+    				        						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    				        				{
+    				        					break;
+    				        				}
+    				        			}
+    				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("EQ"))
+    				        			{
+    				        				if(Double.parseDouble(valueString) != 
+    				        						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    				        				{
+    				        					break;
+    				        				}
+    				        			}
+    				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("LTE"))
+    				        			{
+    				        				if(Double.parseDouble(valueString) > 
+    				        						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    				        				{
+    				        					break;
+    				        				}
+    				        			}
+    				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("GTE"))
+    				        			{
+    				        				if(Double.parseDouble(valueString) < 
+    				        						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
+    				        				{
+    				        					break;
+    				        				}
+    				        			}
+    				        		}
+    				        		if(i == nodeCmdbackup.row_filter.size() - 1) count++;
+    				        	}
+                    		} catch (Exception e) {
 								continue;
-							}
-				    		if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
-				    		ByteBuffer tempb = row.cf.getColumn(buffercolumn).value();
-                    		ByteBuffer buffervalue = ByteBuffer.wrap("0".getBytes());
-
-                    		if (tempb.hasArray())
-                            {
-                    			bytes = new byte[tempb.remaining()];
-
-                                j = 0;
-                                for (int i = tempb.position(); i < tempb.limit(); i++)
-                                {
-                                    bytes[j++] = tempb.get(i);
-                                }
-                                buffervalue = ByteBuffer.wrap(bytes);
-                            }
-                            else
-                            {
-                                bytes = new byte[tempb.remaining()];
-
-                                j = 0;
-                                for (int i = tempb.position(); i < tempb.limit(); i++)
-                                {
-                                    bytes[j++] = tempb.get(i);
-                                }
-
-                                buffervalue.put(bytes);
-                            }
-
-                    		String valueString = decode(buffervalue);
-				    		
-				        	for(int i = 0; i < nodeCmdbackup.row_filter.size(); i++)
-				        	{
-				        		if(nodeCmdbackup.row_filter.get(i).column_name.equals(columnBuffer))
-				        		{
-				        			//row.
-				        			if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("LT"))
-				        			{
-				        				if(columnValue >= 
-				        						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
-				        				{
-				        					break;
-				        				}
-				        			}
-				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("GT"))
-				        			{
-				        				if(columnValue <= 
-				        						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
-				        				{
-				        					break;
-				        				}
-				        			}
-				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("EQ"))
-				        			{
-				        				if(columnValue != 
-				        						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
-				        				{
-				        					break;
-				        				}
-				        			}
-				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("LTE"))
-				        			{
-				        				if(columnValue > 
-				        						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
-				        				{
-				        					break;
-				        				}
-				        			}
-				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("GTE"))
-				        			{
-				        				if(columnValue < 
-				        						Long.parseLong(new String(nodeCmdbackup.row_filter.get(i).getValue())))
-				        				{
-				        					break;
-				        				}
-				        			}
-				        		}
-				        		else if(nodeCmdbackup.row_filter.get(i).column_name.equals(valueBuffer))
-				        		{
-				        			//String valueString = decode(row.cf.getColumn(buffercolumn).value());
-				        			
-				        			if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("LT"))
-				        			{
-				        				if(Double.parseDouble(valueString) >= 
-				        						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
-				        				{
-				        					break;
-				        				}
-				        			}
-				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("GT"))
-				        			{
-				        				if(Double.parseDouble(valueString) <= 
-				        						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
-				        				{
-				        					break;
-				        				}
-				        			}
-				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("EQ"))
-				        			{
-				        				if(Double.parseDouble(valueString) != 
-				        						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
-				        				{
-				        					break;
-				        				}
-				        			}
-				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("LTE"))
-				        			{
-				        				if(Double.parseDouble(valueString) > 
-				        						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
-				        				{
-				        					break;
-				        				}
-				        			}
-				        			else if(nodeCmdbackup.row_filter.get(i).getOp().toString().equals("GTE"))
-				        			{
-				        				if(Double.parseDouble(valueString) < 
-				        						Double.parseDouble(new String(nodeCmdbackup.row_filter.get(i).getValue())))
-				        				{
-				        					break;
-				        				}
-				        			}
-				        		}
-				        		if(i == nodeCmdbackup.row_filter.size() - 1) count++;
-				        	}	
+							}		
 				    	}     
-	
-				    	map.put(decode(keyvalue), count);
+				    	map.put(keyvalue, count);
 					}
 
-					if(!resultkeyList.contains(decode(keyvalue)))
+					if(!resultkeyList.contains(keyvalue))
 					{
 						Column resultColumn = new Column(LongType.instance.decompose((long)count), ByteBuffer.wrap((count+"").getBytes()));
 						ColumnFamily resultCf = row.cf;
@@ -2964,7 +2776,7 @@ public class StorageProxy implements StorageProxyMBean
 						resultCf.clear();
 						//resultCf.addColumn(column)
 						row.cf.addColumn(resultColumn);
-						resultkeyList.add(decode(keyvalue));
+						resultkeyList.add(keyvalue);
 						resultList.add(row);
 					}
 				    
@@ -3036,6 +2848,7 @@ public class StorageProxy implements StorageProxyMBean
         catch(Exception ex)
         {
             ex.printStackTrace();
+            logger.debug("decoding Exception", ex.toString());
             return null;
         } 
     }
