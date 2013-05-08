@@ -93,7 +93,8 @@ public class Term
         	//xuhao 
             if (!isBindMarker()) 
             {
-            	if(!text.equalsIgnoreCase("value") && !text.equalsIgnoreCase("column"))
+            	if(!text.equalsIgnoreCase("value") && !text.equalsIgnoreCase("column")
+            			&& !text.equalsIgnoreCase("clear"))
             	{
             		return validator.fromStringCQL2(text);
             	}
@@ -108,6 +109,8 @@ public class Term
             	return (ByteBuffer.wrap("value".getBytes()));
             else if(text.equalsIgnoreCase("column"))
             	return (ByteBuffer.wrap("column".getBytes()));
+            else if(text.equalsIgnoreCase("clear"))
+            	return (ByteBuffer.wrap("clear".getBytes()));
             return variables.get(bindIndex);
         }
         catch (MarshalException e)

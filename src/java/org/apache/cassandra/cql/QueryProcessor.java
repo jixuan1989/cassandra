@@ -396,6 +396,102 @@ public class QueryProcessor
 				return Rows;
     	    }
     
+    private static List<org.apache.cassandra.db.Row> getSliceForSpecializedClear(CFMetaData metadata, SelectStatement select, List<ByteBuffer> variables,
+    	    List<IMutation> rowMutations, UpdateStatement update, ThriftClientState clientstate, char invalidchar)
+    		throws InvalidRequestException, ReadTimeoutException, UnavailableException, IsBootstrappingException
+    	    {
+    	        QueryPath queryPath = new QueryPath(select.getColumnFamily());
+    	        List<ReadCommand> commands = new ArrayList<ReadCommand>();
+
+    	        // ...of a list of column names
+    	        if (!select.isColumnRange())
+    	        {
+    	            Collection<ByteBuffer> columnNames = getColumnNames(select, metadata, variables);
+    	            validateColumnNames(columnNames);
+
+    	            for (Term rawKey: select.getKeys())
+    	            {
+    	                ByteBuffer key = rawKey.getByteBuffer(metadata.getKeyValidator(),variables);
+
+    	                validateKey(key);
+    	                commands.add(new SliceByNamesReadCommand(metadata.ksName, key, queryPath, columnNames));
+    	            }
+    	        }
+    	        // ...a range (slice) of column names
+    	        else
+    	        {
+    	            AbstractType<?> comparator = select.getComparator(metadata.ksName);
+    	            ByteBuffer start = select.getColumnStart().getByteBuffer(comparator,variables);
+    	            ByteBuffer finish = select.getColumnFinish().getByteBuffer(comparator,variables);
+
+    	            for (Term rawKey : select.getKeys())
+    	            {
+    	                ByteBuffer key = rawKey.getByteBuffer(metadata.getKeyValidator(),variables);
+
+    	                validateKey(key);
+    	                validateSliceFilter(metadata, start, finish, select.isColumnsReversed());
+    	                commands.add(new SliceFromReadCommand(metadata.ksName,
+    	                                                      key,
+    	                                                      queryPath,
+    	                                                      start,
+    	                                                      finish,
+    	                                                      select.isColumnsReversed(),
+    	                                                      select.getColumnsLimit()));
+    	            }
+    	        }
+
+    	        List<Row> Rows = StorageProxy.read(commands, select.getConsistencyLevel());
+				 
+				 IPartitioner<?> p = StorageService.getPartitioner();
+				 AbstractType<?> keyType = Schema.instance.getCFMetaData(metadata.ksName, select.getColumnFamily()).getKeyValidator();
+				 ByteBuffer startKeyBytes = (select.getKeyStart() != null)
+				                            ? select.getKeyStart().getByteBuffer(keyType,variables)
+				                            : null;
+				 ByteBuffer finishKeyBytes = (select.getKeyFinish() != null)
+				                             ? select.getKeyFinish().getByteBuffer(keyType,variables)
+				                             : null;
+				 RowPosition startKey = RowPosition.forKey(startKeyBytes, p), finishKey = RowPosition.forKey(finishKeyBytes, p);
+				 if (startKey.compareTo(finishKey) > 0 && !finishKey.isMinimum(p))
+				 {
+				     if (p instanceof RandomPartitioner)
+				         throw new InvalidRequestException("Start key sorts after end key. This is not allowed; you probably should not specify end key at all, under RandomPartitioner");
+				     else
+				         throw new InvalidRequestException("Start key must sort before (or equal to) finish key in your partitioner!");
+				 }
+				 AbstractBounds<RowPosition> bounds = new Bounds<RowPosition>(startKey, finishKey);
+				 IDiskAtomFilter columnFilter = filterFromSelect(select, metadata, variables);
+				 validateFilter(metadata, columnFilter);
+				 List<Relation> columnRelations = select.getColumnRelations();
+				 List<IndexExpression> expressions = new ArrayList<IndexExpression>(columnRelations.size());
+				 for (Relation columnRelation : columnRelations)
+				 {
+				     // Left and right side of relational expression encoded according to comparator/validator.
+				     ByteBuffer entity = columnRelation.getEntity().getByteBuffer(metadata.comparator, variables);
+				     ByteBuffer value = columnRelation.getValue().getByteBuffer(select.getValueValidator(metadata.ksName, entity), variables);
+
+				     expressions.add(new IndexExpression(entity,
+				                                         IndexOperator.valueOf(columnRelation.operator().toString()),
+				                                         value));
+				 }
+				 int limit = select.isKeyRange() && select.getKeyStart() != null
+				           ? select.getNumRecords() + 1
+				           : select.getNumRecords();
+				 
+				 RangeSliceCommand command = new RangeSliceCommand(metadata.ksName,
+				         select.getColumnFamily(),
+				         null,
+				         columnFilter,
+				         bounds,
+				         expressions,
+				         limit);
+				 try {
+					Rows = StorageProxy.filterRowsForClear(Rows, command, update.getConsistencyLevel(), rowMutations, update, clientstate, invalidchar);
+				} catch (Exception e) {
+					System.out.println("asdf");
+				}
+				return Rows;
+    	    }
+    
     private static List<org.apache.cassandra.db.Row> getSliceForSpecializedDelete(CFMetaData metadata, SelectStatement select, List<ByteBuffer> variables,
     		List<IMutation> deleteMutations, DeleteStatement delete, ThriftClientState clientstate)
     		throws InvalidRequestException, ReadTimeoutException, UnavailableException, IsBootstrappingException
@@ -576,6 +672,93 @@ public class QueryProcessor
     	        return rows.subList(0, select.getNumRecords() < rows.size() ? select.getNumRecords() : rows.size());
     	    }
 
+
+    private static List<org.apache.cassandra.db.Row> multiRangeSliceForClear(CFMetaData metadata, SelectStatement select, List<ByteBuffer> variables,
+    		List<IMutation> rowMutations, UpdateStatement update, ThriftClientState clientstate, char invalidChar)
+    	    throws ReadTimeoutException, UnavailableException, InvalidRequestException
+    	    {
+    	        List<org.apache.cassandra.db.Row> rows;
+    	        IPartitioner<?> p = StorageService.getPartitioner();
+
+    	        AbstractType<?> keyType = Schema.instance.getCFMetaData(metadata.ksName, select.getColumnFamily()).getKeyValidator();
+
+    	        ByteBuffer startKeyBytes = (select.getKeyStart() != null)
+    	                                   ? select.getKeyStart().getByteBuffer(keyType,variables)
+    	                                   : null;
+
+    	        ByteBuffer finishKeyBytes = (select.getKeyFinish() != null)
+    	                                    ? select.getKeyFinish().getByteBuffer(keyType,variables)
+    	                                    : null;
+
+    	        RowPosition startKey = RowPosition.forKey(startKeyBytes, p), finishKey = RowPosition.forKey(finishKeyBytes, p);
+    	        if (startKey.compareTo(finishKey) > 0 && !finishKey.isMinimum(p))
+    	        {
+    	            if (p instanceof RandomPartitioner)
+    	                throw new InvalidRequestException("Start key sorts after end key. This is not allowed; you probably should not specify end key at all, under RandomPartitioner");
+    	            else
+    	                throw new InvalidRequestException("Start key must sort before (or equal to) finish key in your partitioner!");
+    	        }
+    	        AbstractBounds<RowPosition> bounds = new Bounds<RowPosition>(startKey, finishKey);
+
+    	        IDiskAtomFilter columnFilter = filterFromSelect(select, metadata, variables);
+    	        validateFilter(metadata, columnFilter);
+
+    	        List<Relation> columnRelations = select.getColumnRelations();
+    	        List<IndexExpression> expressions = new ArrayList<IndexExpression>(columnRelations.size());
+    	        for (Relation columnRelation : columnRelations)
+    	        {
+    	            // Left and right side of relational expression encoded according to comparator/validator.
+    	            ByteBuffer entity = columnRelation.getEntity().getByteBuffer(metadata.comparator, variables);
+    	            ByteBuffer value = columnRelation.getValue().getByteBuffer(select.getValueValidator(metadata.ksName, entity), variables);
+
+    	            expressions.add(new IndexExpression(entity,
+    	                                                IndexOperator.valueOf(columnRelation.operator().toString()),
+    	                                                value));
+    	        }
+
+    	        int limit = select.isKeyRange() && select.getKeyStart() != null
+    	                  ? select.getNumRecords() + 1
+    	                  : select.getNumRecords();
+
+    	        try
+    	        {
+    	            rows = StorageProxy.getRangeSliceForClear(new RangeSliceCommand(metadata.ksName,
+    	                                                                    select.getColumnFamily(),
+    	                                                                    null,
+    	                                                                    columnFilter,
+    	                                                                    bounds,
+    	                                                                    expressions,
+    	                                                                    limit),
+    	                                                                    select.getConsistencyLevel(), 
+    	                                                                    rowMutations, 
+    	                                                                    update,
+    	                                                                    clientstate, 
+    	                                                                    invalidChar);
+    	        }
+    	        catch (IOException e)
+    	        {
+    	            throw new RuntimeException(e);
+    	        }
+
+    	        // if start key was set and relation was "greater than"
+    	        if (select.getKeyStart() != null && !select.includeStartKey() && !rows.isEmpty())
+    	        {
+    	            if (rows.get(0).key.key.equals(startKeyBytes))
+    	                rows.remove(0);
+    	        }
+
+    	        // if finish key was set and relation was "less than"
+    	        if (select.getKeyFinish() != null && !select.includeFinishKey() && !rows.isEmpty())
+    	        {
+    	            int lastIndex = rows.size() - 1;
+    	            if (rows.get(lastIndex).key.key.equals(finishKeyBytes))
+    	                rows.remove(lastIndex);
+    	        }
+
+    	        return rows.subList(0, select.getNumRecords() < rows.size() ? select.getNumRecords() : rows.size());
+    	    }
+
+    
     private static List<org.apache.cassandra.db.Row> multiRangeSliceForDelete(CFMetaData metadata, SelectStatement select, List<ByteBuffer> variables,
     		List<IMutation> deleteMutations, DeleteStatement delete, ThriftClientState clientstate)
     	    throws ReadTimeoutException, UnavailableException, InvalidRequestException
@@ -1103,9 +1286,9 @@ public class QueryProcessor
                         Collections.reverse(cqlRow.columns);
                     cqlRows.add(cqlRow);
                     
-                    System.out.println(row.key.getToken());
+                    //System.out.println(row.key.getToken());
                     //System.out.println(decode(cqlRow.key));
-                    System.out.println(cqlRow.columns.size());
+                    //System.out.println(cqlRow.columns.size());
                     for(int i = 0; i < cqlRow.columns.size(); i++)
                     {
                     	//System.out.print(decode(cqlRow.columns.get(i).name) + " ");
@@ -1144,7 +1327,7 @@ public class QueryProcessor
             	
                 String temp = update.columnFamily.toString();
             	String queryStringForUpdate = "select * from " + temp
-            			+ " "+ oriQueryString.substring(oriQueryString.indexOf("where"));
+            			+ " "+ oriQueryString.substring(oriQueryString.toLowerCase().indexOf("where"), oriQueryString.toLowerCase().indexOf(";")) + " limit 1000000";
             	SelectStatement selectForUpdate = (SelectStatement) getStatement(queryStringForUpdate).statement;
 
                 final String oldKeyspaceForUpdate = clientState.getRawKeyspace();
@@ -1172,6 +1355,33 @@ public class QueryProcessor
                 }
                 */
                 List<org.apache.cassandra.db.Row> rowsForUpdate;
+                
+                //clean data?
+            	String tempString = oriQueryString.replace(" ", "");
+            	if(tempString.toLowerCase().indexOf("set")+3 == tempString.toLowerCase().indexOf("clear"))
+            	{
+            		//yes
+            		//xuhao 2013-5-7
+            		char delChar = tempString.charAt(tempString.toLowerCase().indexOf("clear") + 7);
+            		
+            		if(!update.withoutKey && selectForUpdate.numOfClauseRelations() == 1)
+                    	StorageProxy.mutate(rowMutations, update.getConsistencyLevel());
+                    else if(selectForUpdate.numOfClauseRelations() - 
+                    		selectForUpdate.getColumnRelations().size() == 1)
+                    {
+                    	//rows = getSliceForSpecializedUpdate(metadata, selectForUpdate, variables, rowMutations, update, clientState);
+                    	getSliceForSpecializedClear(metadata, selectForUpdate, variables, rowMutations, update, clientState, delChar);
+                    }
+            		//没有key和equip
+                    else {
+                    	metadata = validateColumnFamily(keyspace, selectForUpdate.getColumnFamily());
+    					rowsForUpdate = multiRangeSliceForClear(metadata, selectForUpdate, variables, rowMutations, update, clientState, delChar);
+    				}
+            		//getSliceForSpecializedClear(metadata, selectForUpdate, variables, rowMutations, update, clientState);
+            		
+            		result.type = CqlResultType.VOID;
+                    return result;
+            	}
                 
                 if(!update.withoutKey && selectForUpdate.numOfClauseRelations() == 1)
                 	StorageProxy.mutate(rowMutations, update.getConsistencyLevel());
