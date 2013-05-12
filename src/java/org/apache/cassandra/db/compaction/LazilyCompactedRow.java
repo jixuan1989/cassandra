@@ -71,7 +71,7 @@ public class LazilyCompactedRow extends AbstractCompactedRow implements Iterable
         super(rows.get(0).getKey());
         this.rows = rows;
         this.controller = controller;
-        indexer = controller.cfs.indexManager.updaterFor(key, false);
+        indexer = controller.cfs.indexManager.updaterFor(key);
 
         long maxDelTimestamp = Long.MIN_VALUE;
         for (OnDiskAtomIterator row : rows)
@@ -107,7 +107,7 @@ public class LazilyCompactedRow extends AbstractCompactedRow implements Iterable
 
     private void indexAndWrite(DataOutput out) throws IOException
     {
-        this.indexBuilder = new ColumnIndex.Builder(emptyColumnFamily, key.key, getEstimatedColumnCount(), out);
+        this.indexBuilder = new ColumnIndex.Builder(emptyColumnFamily, key.key, out);
         this.columnsIndex = indexBuilder.build(this);
     }
 
@@ -256,7 +256,7 @@ public class LazilyCompactedRow extends AbstractCompactedRow implements Iterable
                 container.addColumn(column);
                 if (indexer != SecondaryIndexManager.nullUpdater
                     && !column.isMarkedForDelete()
-                    && container.getColumn(column.name()) != column)
+                    && !container.getColumn(column.name()).equals(column))
                 {
                     indexer.remove(column);
                 }

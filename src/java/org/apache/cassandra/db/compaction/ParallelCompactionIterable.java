@@ -71,18 +71,16 @@ public class ParallelCompactionIterable extends AbstractCompactionIterable
         List<CloseableIterator<RowContainer>> sources = new ArrayList<CloseableIterator<RowContainer>>(scanners.size());
         for (ICompactionScanner scanner : scanners)
             sources.add(new Deserializer(scanner, maxInMemorySize));
-        return new Unwrapper(MergeIterator.get(sources, RowContainer.comparator, new Reducer()), controller);
+        return new Unwrapper(MergeIterator.get(sources, RowContainer.comparator, new Reducer()));
     }
 
     private static class Unwrapper extends AbstractIterator<AbstractCompactedRow> implements CloseableIterator<AbstractCompactedRow>
     {
         private final CloseableIterator<CompactedRowContainer> reducer;
-        private final CompactionController controller;
 
-        public Unwrapper(CloseableIterator<CompactedRowContainer> reducer, CompactionController controller)
+        public Unwrapper(CloseableIterator<CompactedRowContainer> reducer)
         {
             this.reducer = reducer;
-            this.controller = controller;
         }
 
         protected AbstractCompactedRow computeNext()
@@ -119,7 +117,6 @@ public class ParallelCompactionIterable extends AbstractCompactionIterable
     private class Reducer extends MergeIterator.Reducer<RowContainer, CompactedRowContainer>
     {
         private final List<RowContainer> rows = new ArrayList<RowContainer>();
-        private int row = 0;
 
         private final ThreadPoolExecutor executor = new DebuggableThreadPoolExecutor(FBUtilities.getAvailableProcessors(),
                                                                                      Integer.MAX_VALUE,
@@ -139,14 +136,10 @@ public class ParallelCompactionIterable extends AbstractCompactionIterable
             ParallelCompactionIterable.this.updateCounterFor(rows.size());
             CompactedRowContainer compacted = getCompactedRow(rows);
             rows.clear();
-            if ((row++ % 1000) == 0)
-            {
-                long n = 0;
-                for (ICompactionScanner scanner : scanners)
-                    n += scanner.getCurrentPosition();
-                bytesRead = n;
-                controller.mayThrottle(bytesRead);
-            }
+            long n = 0;
+            for (ICompactionScanner scanner : scanners)
+                n += scanner.getCurrentPosition();
+            bytesRead = n;
             return compacted;
         }
 
@@ -205,7 +198,7 @@ public class ParallelCompactionIterable extends AbstractCompactionIterable
                     data.add(FBUtilities.closeableIterator(row.cf.iterator()));
                 }
 
-                PrecompactedRow.merge(returnCF, data, controller.cfs.indexManager.updaterFor(rows.get(0).key, false));
+                PrecompactedRow.merge(returnCF, data, controller.cfs.indexManager.updaterFor(rows.get(0).key));
                 return PrecompactedRow.removeDeletedAndOldShards(rows.get(0).key, controller, returnCF);
             }
         }

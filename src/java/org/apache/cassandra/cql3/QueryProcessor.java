@@ -41,7 +41,7 @@ import org.apache.cassandra.utils.SemanticVersion;
 
 public class QueryProcessor
 {
-    public static final SemanticVersion CQL_VERSION = new SemanticVersion("3.0.1");
+    public static final SemanticVersion CQL_VERSION = new SemanticVersion("3.0.3");
 
     private static final Logger logger = LoggerFactory.getLogger(QueryProcessor.class);
 
@@ -205,7 +205,7 @@ public class QueryProcessor
         logger.trace("CQL QUERY: {}", queryString);
 
         ParsedStatement.Prepared prepared = getStatement(queryString, clientState);
-        ResultMessage.Prepared msg = storePreparedStatement(queryString, clientState.getKeyspace(), prepared, forThrift);
+        ResultMessage.Prepared msg = storePreparedStatement(queryString, clientState.getRawKeyspace(), prepared, forThrift);
 
         assert prepared.statement.getBoundsTerms() == prepared.boundNames.size();
         return msg;

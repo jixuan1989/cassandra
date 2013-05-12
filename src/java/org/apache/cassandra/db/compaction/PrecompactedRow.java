@@ -87,7 +87,7 @@ public class PrecompactedRow extends AbstractCompactedRow
         // See comment in preceding method
         ColumnFamily compacted = ColumnFamilyStore.removeDeleted(cf,
                                                                  shouldPurge ? controller.gcBefore : Integer.MIN_VALUE,
-                                                                 controller.cfs.indexManager.updaterFor(key, false));
+                                                                 controller.cfs.indexManager.updaterFor(key));
         if (shouldPurge && compacted != null && compacted.metadata().getDefaultValidator().isCommutative())
             CounterColumn.mergeAndRemoveOldShards(key, compacted, controller.gcBefore, controller.mergeShardBefore);
         return compacted;
@@ -121,7 +121,7 @@ public class PrecompactedRow extends AbstractCompactedRow
             }
         }
 
-        merge(returnCF, data, controller.cfs.indexManager.updaterFor(rows.get(0).getKey(), false));
+        merge(returnCF, data, controller.cfs.indexManager.updaterFor(rows.get(0).getKey()));
 
         return returnCF;
     }
@@ -141,7 +141,7 @@ public class PrecompactedRow extends AbstractCompactedRow
                 container.addColumn(column);
                 if (indexer != SecondaryIndexManager.nullUpdater
                     && !column.isMarkedForDelete()
-                    && container.getColumn(column.name()) != column)
+                    && !container.getColumn(column.name()).equals(column))
                 {
                     indexer.remove(column);
                 }
@@ -163,7 +163,7 @@ public class PrecompactedRow extends AbstractCompactedRow
     {
         assert compactedCf != null;
         DataOutputBuffer buffer = new DataOutputBuffer();
-        ColumnIndex.Builder builder = new ColumnIndex.Builder(compactedCf, key.key, compactedCf.getColumnCount(), buffer);
+        ColumnIndex.Builder builder = new ColumnIndex.Builder(compactedCf, key.key, buffer);
         columnIndex = builder.build(compactedCf);
 
         TypeSizes typeSizes = TypeSizes.NATIVE;

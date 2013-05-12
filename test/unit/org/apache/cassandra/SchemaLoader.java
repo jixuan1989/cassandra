@@ -220,6 +220,9 @@ public class SchemaLoader
                                                           null),
                                            standardCFMD(ks1, "StandardLeveled", withOldCfIds)
                                                                                .compactionStrategyClass(LeveledCompactionStrategy.class)
+                                                                               .compactionStrategyOptions(leveledOptions),
+                                           standardCFMD(ks1, "legacyleveled", withOldCfIds)
+                                                                               .compactionStrategyClass(LeveledCompactionStrategy.class)
                                                                                .compactionStrategyOptions(leveledOptions)));
 
         // Keyspace 2
@@ -323,7 +326,7 @@ public class SchemaLoader
                                 indexOptions,
                                 ByteBufferUtil.bytesToHex(cName),
                                 null));
-                    }});
+                }});
     }
 
     private static void useCompression(List<KSMetaData> schema)

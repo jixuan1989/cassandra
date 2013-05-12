@@ -145,9 +145,9 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         return getRangesForEndpoint(table, FBUtilities.getBroadcastAddress());
     }
 
-    public Collection<Range<Token>> getLocalPrimaryRanges()
+    public Collection<Range<Token>> getLocalPrimaryRanges(String keyspace)
     {
-        return getPrimaryRangesForEndpoint(FBUtilities.getBroadcastAddress());
+        return getPrimaryRangesForEndpoint(keyspace, FBUtilities.getBroadcastAddress());
     }
 
     @Deprecated
@@ -357,6 +357,12 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         return daemon.nativeServer.isRunning();
     }
 
+    private void shutdownClientServers()
+    {
+        stopRPCServer();
+        stopNativeTransport();
+    }
+
     public void stopClient()
     {
         Gossiper.instance.unregister(migrationManager);
@@ -504,7 +510,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                 if (mutationStage.isShutdown())
                     return; // drained already
 
-                stopRPCServer();
+                shutdownClientServers();
                 optionalTasks.shutdown();
                 Gossiper.instance.stop();
 
@@ -2336,13 +2342,13 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     }
     public int forceRepairAsync(final String keyspace, final boolean isSequential, final boolean isLocal, final boolean primaryRange, final String... columnFamilies)
     {
-        final Collection<Range<Token>> ranges = primaryRange ? getLocalPrimaryRanges() : getLocalRanges(keyspace);
+        final Collection<Range<Token>> ranges = primaryRange ? getLocalPrimaryRanges(keyspace) : getLocalRanges(keyspace);
         return forceRepairAsync(keyspace, isSequential, isLocal, ranges, columnFamilies);
     }
 
     public int forceRepairAsync(final String keyspace, final boolean isSequential, final boolean isLocal, final Collection<Range<Token>> ranges, final String... columnFamilies)
     {
-        if (Table.SYSTEM_KS.equals(keyspace) || Tracing.TRACE_KS.equals(keyspace))
+        if (Table.SYSTEM_KS.equals(keyspace) || Tracing.TRACE_KS.equals(keyspace) || ranges.isEmpty())
             return 0;
 
         final int cmd = nextRepairCommand.incrementAndGet();
@@ -2377,7 +2383,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
     public void forceTableRepairPrimaryRange(final String tableName, boolean isSequential, boolean  isLocal, final String... columnFamilies) throws IOException
     {
-        forceTableRepairRange(tableName, getLocalPrimaryRanges(), isSequential, isLocal, columnFamilies);
+        forceTableRepairRange(tableName, getLocalPrimaryRanges(tableName), isSequential, isLocal, columnFamilies);
     }
 
     public void forceTableRepairRange(String beginToken, String endToken, final String tableName, boolean isSequential, boolean  isLocal, final String... columnFamilies) throws IOException
@@ -2505,17 +2511,36 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     }
 
     /**
-     * Get the primary ranges for the specified endpoint.
+     * Get the "primary ranges" for the specified keyspace and endpoint.
+     * "Primary ranges" are the ranges that the node is responsible for storing replica primarily.
+     * The node that stores replica primarily is defined as the first node returned
+     * by {@link AbstractReplicationStrategy#calculateNaturalEndpoints}.
+     *
+     * @param keyspace
      * @param ep endpoint we are interested in.
-     * @return collection of ranges for the specified endpoint.
+     * @return primary ranges for the specified endpoint.
      */
-    public Collection<Range<Token>> getPrimaryRangesForEndpoint(InetAddress ep)
+    public Collection<Range<Token>> getPrimaryRangesForEndpoint(String keyspace, InetAddress ep)
     {
-        return tokenMetadata.getPrimaryRangesFor(tokenMetadata.getTokens(ep));
+        AbstractReplicationStrategy strategy = Table.open(keyspace).getReplicationStrategy();
+        Collection<Range<Token>> primaryRanges = new HashSet<Range<Token>>();
+        TokenMetadata metadata = tokenMetadata.cloneOnlyTokenMap();
+        for (Token token : metadata.sortedTokens())
+        {
+            List<InetAddress> endpoints = strategy.calculateNaturalEndpoints(token, metadata);
+            if (endpoints.size() > 0 && endpoints.get(0).equals(ep))
+                primaryRanges.add(new Range<Token>(metadata.getPredecessor(token), token));
+        }
+        return primaryRanges;
     }
 
     /**
-     * Get the primary range for the specified endpoint.
+     * Previously, primary range is the range that the node is responsible for and calculated
+     * only from the token assigned to the node.
+     * But this does not take replication strategy into account, and therefore returns insufficient
+     * range especially using NTS with replication only to certain DC(see CASSANDRA-5424).
+     *
+     * @deprecated
      * @param ep endpoint we are interested in.
      * @return range for the specified endpoint.
      */
@@ -2748,7 +2773,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         {
             public void run()
             {
-                stopRPCServer();
+                shutdownClientServers();
                 Gossiper.instance.stop();
                 MessagingService.instance().shutdown();
                 StageManager.shutdownNow();
@@ -3333,7 +3358,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             return;
         }
         setMode(Mode.DRAINING, "starting drain process", true);
-        stopRPCServer();
+        shutdownClientServers();
         optionalTasks.shutdown();
         Gossiper.instance.stop();
 
@@ -3635,7 +3660,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         return latch;
     }
 
-    class CountingDownStreamCallback implements IStreamCallback
+    static class CountingDownStreamCallback implements IStreamCallback
     {
         private final CountDownLatch latch;
         private final InetAddress targetAddr;
@@ -3834,8 +3859,11 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     public List<String> sampleKeyRange() // do not rename to getter - see CASSANDRA-4452 for details
     {
         List<DecoratedKey> keys = new ArrayList<DecoratedKey>();
-        for (Range<Token> range : getLocalPrimaryRanges())
-            keys.addAll(keySamples(ColumnFamilyStore.allUserDefined(), range));
+        for (Table keyspace : Table.nonSystem())
+        {
+            for (Range<Token> range : getPrimaryRangesForEndpoint(keyspace.name, FBUtilities.getBroadcastAddress()))
+                keys.addAll(keySamples(keyspace.getColumnFamilyStores(), range));
+        }
 
         List<String> sampledKeys = new ArrayList<String>(keys.size());
         for (DecoratedKey key : keys)

@@ -89,14 +89,14 @@ class IndexedSliceReader extends AbstractIterator<OnDiskAtom> implements OnDiskA
                 else
                 {
                     this.emptyColumnFamily = ColumnFamily.create(sstable.metadata);
-                    emptyColumnFamily.delete(indexEntry.deletionInfo());
+                    emptyColumnFamily.delete(indexEntry.deletionTime());
                     fetcher = new IndexedBlockFetcher(indexEntry.position);
                 }
             }
             else
             {
                 setToRowStart(sstable, indexEntry, input);
-                IndexHelper.skipSSTableBloomFilter(file, version);
+                IndexHelper.skipBloomFilter(file);
                 this.indexes = IndexHelper.deserializeIndex(file);
                 this.emptyColumnFamily = ColumnFamily.create(sstable.metadata);
                 emptyColumnFamily.delete(DeletionInfo.serializer().deserializeFromSSTable(file, version));
