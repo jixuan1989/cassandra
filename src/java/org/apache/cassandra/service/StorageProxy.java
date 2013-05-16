@@ -51,6 +51,7 @@ import org.apache.cassandra.db.filter.ColumnSlice;
 import org.apache.cassandra.db.filter.IDiskAtomFilter;
 import org.apache.cassandra.db.filter.QueryPath;
 import org.apache.cassandra.db.filter.SliceQueryFilter;
+import org.apache.cassandra.db.marshal.DoubleType;
 import org.apache.cassandra.db.marshal.LongType;
 import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.db.marshal.UUIDType;
@@ -103,6 +104,9 @@ public class StorageProxy implements StorageProxyMBean
     private static final ClientRequestMetrics readMetrics = new ClientRequestMetrics("Read");
     private static final ClientRequestMetrics rangeMetrics = new ClientRequestMetrics("RangeSlice");
     private static final ClientRequestMetrics writeMetrics = new ClientRequestMetrics("Write");
+    
+    //max pairs to modify at one time
+    private static final int MaxMutationCount = 300000;
 
     private StorageProxy() {}
 
@@ -1469,6 +1473,303 @@ public class StorageProxy implements StorageProxyMBean
         return trim(command, rows);
     }
 
+    //aggregate functions
+    public static List<Row> getRangeSliceForAggregate(RangeSliceCommand command, ConsistencyLevel consistency_level, int aggregationType)
+    throws UnavailableException, ReadTimeoutException
+    {
+        Tracing.trace("Determining replicas to query");
+        logger.trace("Command/ConsistencyLevel is {}/{}", command.toString(), consistency_level);
+        long startTime = System.nanoTime();
+
+        Table table = Table.open(command.keyspace);
+        List<Row> rows = null;
+        List<String> resultkeyList = new ArrayList<String>();
+        // now scan until we have enough results
+        try
+        {
+        	//added by xuhao
+            final ByteBuffer columnBuffer = ByteBuffer.wrap("column".getBytes());
+            final ByteBuffer valueBuffer = ByteBuffer.wrap("value".getBytes());
+            boolean traversal = false;
+            IDiskAtomFilter commandPredicate = command.predicate;
+
+            int cql3RowCount = 0;
+            rows = new ArrayList<Row>();
+            List<AbstractBounds<RowPosition>> ranges = getRestrictedRanges(command.range);
+            
+        	Map<String, Long> map = new HashMap<String, Long>();
+            
+            int i = 0;
+            AbstractBounds<RowPosition> nextRange = null;
+            List<InetAddress> nextEndpoints = null;
+            List<InetAddress> nextFilteredEndpoints = null;
+            while (i < ranges.size())
+            {
+                AbstractBounds<RowPosition> range = nextRange == null
+                                                  ? ranges.get(i)
+                                                  : nextRange;
+                List<InetAddress> liveEndpoints = nextEndpoints == null
+                                                ? getLiveSortedEndpoints(table, range.right)
+                                                : nextEndpoints; 
+                List<InetAddress> filteredEndpoints = nextFilteredEndpoints == null
+                                                    ? consistency_level.filterForQuery(table, liveEndpoints)
+                                                    : nextFilteredEndpoints;
+                ++i;
+
+                // getRestrictedRange has broken the queried range into per-[vnode] token ranges, but this doesn't take
+                // the replication factor into account. If the intersection of live endpoints for 2 consecutive ranges
+                // still meets the CL requirements, then we can merge both ranges into the same RangeSliceCommand.
+                while (i < ranges.size())
+                {
+                    nextRange = ranges.get(i);
+                    nextEndpoints = getLiveSortedEndpoints(table, nextRange.right);
+                    nextFilteredEndpoints = consistency_level.filterForQuery(table, nextEndpoints);
+
+                    /*
+                     * If the current range right is the min token, we should stop merging because CFS.getRangeSlice
+                     * don't know how to deal with a wrapping range.
+                     * Note: it would be slightly more efficient to have CFS.getRangeSlice on the destination nodes unwraps
+                     * the range if necessary and deal with it. However, we can't start sending wrapped range without breaking
+                     * wire compatibility, so It's likely easier not to bother;
+                     */
+                    if (range.right.isMinimum())
+                        break;
+
+                    List<InetAddress> merged = intersection(liveEndpoints, nextEndpoints);
+
+                    // Check if there is enough endpoint for the merge to be possible.
+                    if (!consistency_level.isSufficientLiveNodes(table, merged))
+                        break;
+
+                    List<InetAddress> filteredMerged = consistency_level.filterForQuery(table, merged);
+
+                    // Estimate whether merging will be a win or not
+                    if (!DatabaseDescriptor.getEndpointSnitch().isWorthMergingForRangeQuery(filteredMerged, filteredEndpoints, nextFilteredEndpoints))
+                        break;
+
+                    // If we get there, merge this range and the next one
+                    range = range.withNewRight(nextRange.right);
+                    liveEndpoints = merged;
+                    filteredEndpoints = filteredMerged;
+                    ++i;
+                }
+                RangeSliceCommand nodeCmdbackup = new RangeSliceCommand(command.keyspace,
+                        command.column_family,
+                        command.super_column,
+                        commandPredicate,
+                        range,
+                        command.row_filter,
+                        command.maxResults,
+                        command.countCQL3Rows,
+                        command.isPaging);
+
+                List<IndexExpression> row_filter_backup = new ArrayList<IndexExpression>();
+                for(int j = 0; j < nodeCmdbackup.row_filter.size(); j++)
+            	{
+            		if(nodeCmdbackup.row_filter.get(j).column_name.equals(columnBuffer)
+            				|| nodeCmdbackup.row_filter.get(j).column_name.equals(valueBuffer))
+            		{
+            			traversal = true;
+            		}
+            		else 
+            		{
+            			row_filter_backup.add(nodeCmdbackup.row_filter.get(j));
+            		}
+            	}
+                
+                RangeSliceCommand nodeCmd = new RangeSliceCommand(command.keyspace,
+                        command.column_family,
+                        command.super_column,
+                        commandPredicate,
+                        range,
+                        row_filter_backup,
+                        command.maxResults,
+                        command.countCQL3Rows,
+                        command.isPaging);
+
+                if(!traversal) nodeCmd = nodeCmdbackup;
+                
+                // collect replies and resolve according to consistency level
+                RangeSliceResponseResolver resolver = new RangeSliceResponseResolver(nodeCmd.keyspace);
+                ReadCallback<RangeSliceReply, Iterable<Row>> handler = new ReadCallback(resolver, consistency_level, nodeCmd, filteredEndpoints);
+                handler.assureSufficientLiveNodes();
+                resolver.setSources(filteredEndpoints);
+                if (filteredEndpoints.size() == 1
+                    && filteredEndpoints.get(0).equals(FBUtilities.getBroadcastAddress())
+                    && OPTIMIZE_LOCAL_REQUESTS)
+                {
+                    logger.trace("reading data locally");
+                    StageManager.getStage(Stage.READ).execute(new LocalRangeSliceRunnable(nodeCmd, handler));
+                }
+                else
+                {
+                    MessageOut<RangeSliceCommand> message = nodeCmd.createMessage();
+                    for (InetAddress endpoint : filteredEndpoints)
+                    {
+                        MessagingService.instance().sendRR(message, endpoint, handler);
+                        logger.trace("reading {} from {}", nodeCmd, endpoint);
+                    }
+                }
+
+                try
+                {
+                	Double maxDouble = Double.MIN_VALUE;//1
+                	Double minDouble = Double.MAX_VALUE;//2
+                	Double sumDouble = 0.0;//3
+                	long totalCount = (long) 0;//4
+                	Double averageDouble = 0.0;//5
+                	Double varianceDouble = 0.0;//6
+                	Double tercile25 = 0.0;//25% 7
+                	Double tercile75 = 0.0;//75% 8
+                	
+                	List<Double> allValuesList = new ArrayList<Double>();
+
+                	switch (aggregationType) {
+						case 1:
+						case 2:
+						case 3:
+						case 4:
+						case 5:
+						case 6:
+							Row resultRow = null;
+							for (Row row : handler.get())
+		                    {
+								if(resultRow == null) resultRow = row;
+								String keyvalue = UTF8Type.instance.compose(row.key.key);
+
+		                    	SortedSet<ByteBuffer> ColumnNameSet = row.cf.getColumnNames();
+		                    	Iterator<ByteBuffer> it = ColumnNameSet.iterator();
+		                    	while(it.hasNext())
+		                    	{
+		                    		ByteBuffer buffercolumn = (ByteBuffer)it.next();
+		                    		String valueString = "0";
+		                    		try {
+		                    			valueString = UTF8Type.instance.compose(row.cf.getColumn(buffercolumn).value());
+		                    			if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
+		                    			
+		                    			totalCount++;
+		                    			//max
+	                    				if(aggregationType == 1 && maxDouble < Double.parseDouble(valueString)){
+	                    					maxDouble = Double.parseDouble(valueString);
+	                    				}
+	                    				//min
+	                    				else if(aggregationType == 2 && minDouble > Double.parseDouble(valueString)){
+	                    					minDouble = Double.parseDouble(valueString);
+	                    				}
+	                    				//sum or average or variance
+	                    				else if(aggregationType == 3 || aggregationType == 5 || aggregationType == 6){
+	                    					sumDouble += Double.parseDouble(valueString);
+	                    					if(aggregationType == 6)
+	                    						allValuesList.add(Double.parseDouble(valueString));
+	                    				}
+	                    				//count
+	                    				else if(aggregationType == 4){
+	                    					
+	                    				}
+									} catch (Exception e) {
+										//value is not double
+										continue;
+									}	
+		                    	}     	
+
+		                    	
+		    					/*
+		                        if (nodeCmd.countCQL3Rows)
+		                            cql3RowCount += row.getLiveCount(commandPredicate);
+		                        logger.trace("range slices read {}", row.key);
+		                        */
+		                    }
+							if(aggregationType == 1){
+								Column resultColumn = new Column(DoubleType.instance.decompose(maxDouble), ByteBuffer.wrap((maxDouble+"").getBytes()));
+		    					ColumnFamily resultCf = resultRow.cf;
+		    					resultCf.clear();
+		    					resultRow.cf.addColumn(resultColumn);
+		    					rows.add(resultRow);
+	    					}
+							else if(aggregationType == 2){
+								Column resultColumn = new Column(DoubleType.instance.decompose(minDouble), ByteBuffer.wrap((minDouble+"").getBytes()));
+		    					ColumnFamily resultCf = resultRow.cf;
+		    					resultCf.clear();
+		    					resultRow.cf.addColumn(resultColumn);
+		    					rows.add(resultRow);
+	    					}
+							else if(aggregationType == 3){
+								Column resultColumn = new Column(DoubleType.instance.decompose(sumDouble), ByteBuffer.wrap((sumDouble+"").getBytes()));
+		    					ColumnFamily resultCf = resultRow.cf;
+		    					resultCf.clear();
+		    					resultRow.cf.addColumn(resultColumn);
+		    					rows.add(resultRow);
+	    					}
+							else if(aggregationType == 4){
+								Column resultColumn = new Column(LongType.instance.decompose(totalCount), ByteBuffer.wrap((totalCount+"").getBytes()));
+		    					ColumnFamily resultCf = resultRow.cf;
+		    					resultCf.clear();
+		    					resultRow.cf.addColumn(resultColumn);
+		    					rows.add(resultRow);
+	    					}
+							//average
+							else if(aggregationType == 5)
+							{
+								averageDouble = sumDouble / totalCount;
+								Column resultColumn = new Column(DoubleType.instance.decompose(averageDouble), ByteBuffer.wrap((averageDouble+"").getBytes()));
+		    					ColumnFamily resultCf = resultRow.cf;
+		    					resultCf.clear();
+		    					resultRow.cf.addColumn(resultColumn);
+		    					rows.add(resultRow);
+							}
+							//variance
+							else if(aggregationType == 6)
+							{}
+							
+							break;
+						default:
+							break;
+					} 
+                	
+                    
+                    FBUtilities.waitOnFutures(resolver.repairResults, DatabaseDescriptor.getWriteRpcTimeout());
+                    System.out.println("selecttime:" + (System.nanoTime() - startTime));
+                }
+                catch (TimeoutException ex){
+                    logger.debug("Range slice timeout: {}", ex.toString());
+                    // We actually got all response at that point
+                    int blockFor = consistency_level.blockFor(table);
+                    throw new ReadTimeoutException(consistency_level, blockFor, blockFor, true);
+                }
+                catch (DigestMismatchException e){
+                    throw new AssertionError(e); // no digests in range slices yet
+                }
+                catch (Exception e){
+                	logger.debug("Unexpected Exception", e.toString());
+                }
+
+                nodeCmd = nodeCmdbackup;
+                
+                // if we're done, great, otherwise, move to the next range
+                int count = nodeCmd.countCQL3Rows ? cql3RowCount : rows.size();
+                if (count >= nodeCmd.maxResults)
+                    break;
+
+                // if we are paging and already got some rows, reset the column filter predicate,
+                // so we start iterating the next row from the first column
+                if (!rows.isEmpty() && command.isPaging)
+                {
+                    // We only allow paging with a slice filter (doesn't make sense otherwise anyway)
+                    assert commandPredicate instanceof SliceQueryFilter;
+                    commandPredicate = ((SliceQueryFilter)commandPredicate).withUpdatedSlices(ColumnSlice.ALL_COLUMNS_ARRAY);
+                }
+            }
+        }
+        catch(Exception e){
+        	logger.debug("Range slice timeout: {}", e.toString());
+        }
+        finally{
+            rangeMetrics.addNano(System.nanoTime() - startTime);
+        }
+        return trim(command, rows);
+    }
+
+    
     public static List<Row> filterRowsForUpdate(List<Row> Rows, RangeSliceCommand command, ConsistencyLevel consistency_level, 
     		List<IMutation> rowMutations, org.apache.cassandra.cql.UpdateStatement update, ThriftClientState clientstate)
     	    	    throws IOException, UnavailableException, ReadTimeoutException
@@ -1736,7 +2037,7 @@ public class StorageProxy implements StorageProxyMBean
 	    	for (IMutation imutation : rowMutations)
 	    	{
 	    		for(UUID iUuid : imutation.getColumnFamilyIds()) { 
-	    				//valuetomodify 在下文中重新生成
+	    				//valuetomodify 
 	    				/*
 	            		ColumnFamily tempcf = null;
 	    			    tempcf = imutation.getModifications().get(iUuid);
@@ -1776,7 +2077,6 @@ public class StorageProxy implements StorageProxyMBean
 	        		}
 	        	}
 	        	*/
-	        	//这里一定是要遍历所有的列的
 	        	traversal = true;
 	            
 	            RangeSliceCommand nodeCmd = new RangeSliceCommand(command.keyspace,
@@ -1867,7 +2167,7 @@ public class StorageProxy implements StorageProxyMBean
 		                    				}
 		                    			}
 		                    		}
-		                    		//这个else去掉是因为如果需要clear还指定个jb的value啊..
+		                    		//
 		                    		/*
 		                    		else if(nodeCmdbackup.row_filter.get(i).column_name.equals(valueBuffer))
 		                    		{	
@@ -2329,6 +2629,7 @@ public class StorageProxy implements StorageProxyMBean
                 try
                 {
                 	rowMutations.clear();
+                	int mutation_count = 0;
                 	//added by xuhao
                     for (Row row : handler.get())
                     {
@@ -2470,11 +2771,29 @@ public class StorageProxy implements StorageProxyMBean
 		                                        clientstate.getQueryState().getTimestamp(),
 		                                        //getTimeToLive()
 		                                        0);
+		                    			
+		                    			
 		                    		}  		
 		                    	}	
 	                    	}     
 
 	                    	rowMutations.add(mutationforkey);
+	                    	mutation_count++;
+	                    	
+	                    	if(mutation_count >= MaxMutationCount)
+	                    	{
+	                    		try {	      
+	                        		//long startTime2 = System.currentTimeMillis(); 
+	        						mutate(rowMutations, update.getConsistencyLevel());
+	        						//System.out.println("traversal time: " + (startTime2 - milltime));
+	        						//System.out.println("mutatetime: " + (System.currentTimeMillis() - startTime2));
+	        					} catch (WriteTimeoutException e) {
+	        						e.printStackTrace();
+	        					} catch (OverloadedException e) {
+	        						e.printStackTrace();
+	        					}
+	                    		rowMutations.clear();
+	                    	}
                     	}
                     	/*
                     	try {	      
@@ -2491,16 +2810,7 @@ public class StorageProxy implements StorageProxyMBean
                         logger.trace("range slices read {}", row.key);     
                     }
                     FBUtilities.waitOnFutures(resolver.repairResults, DatabaseDescriptor.getWriteRpcTimeout());
-                    try {	      
-                		long startTime2 = System.currentTimeMillis(); 
-						mutate(rowMutations, update.getConsistencyLevel());
-						System.out.println("traversal time: " + (startTime2 - milltime));
-						System.out.println("mutatetime: " + (System.currentTimeMillis() - startTime2));
-					} catch (WriteTimeoutException e) {
-						e.printStackTrace();
-					} catch (OverloadedException e) {
-						e.printStackTrace();
-					}
+                    
                 }
                 catch (TimeoutException ex)
                 {
@@ -2546,7 +2856,7 @@ public class StorageProxy implements StorageProxyMBean
         return trim(command, rows);
     }
 
-    //清除value中的非法字符
+    //clear illegal chars in value
     public static List<Row> getRangeSliceForClear(RangeSliceCommand command, ConsistencyLevel consistency_level, 
     		List<IMutation> rowMutations, org.apache.cassandra.cql.UpdateStatement update, 
     		ThriftClientState clientstate, char invalidChar)
@@ -2934,7 +3244,6 @@ public class StorageProxy implements StorageProxyMBean
         return trim(command, rows);
     }
 
-    
     public static List<Row> getRangeSliceForDelete(RangeSliceCommand command, ConsistencyLevel consistency_level, 
     		List<IMutation> deleteMutations, org.apache.cassandra.cql.DeleteStatement delete, ThriftClientState clientstate)
     		throws IOException, UnavailableException, ReadTimeoutException
@@ -3495,6 +3804,226 @@ public class StorageProxy implements StorageProxyMBean
         }
         finally
         {
+            rangeMetrics.addNano(System.nanoTime() - startTime);
+        }
+        if (command.countCQL3Rows)
+        	return resultList;
+        else
+        	return resultList.size() > command.maxResults ? 
+        			resultList.subList(0, command.maxResults) : resultList;
+    }
+
+    public static List<Row> filterRowsForAggregate(List<Row> Rows, RangeSliceCommand command, ConsistencyLevel consistency_level, int aggregationType)
+    	    throws IOException, UnavailableException, ReadTimeoutException, TimeoutException, DigestMismatchException
+    {
+    	List<Row> resultList = new ArrayList<Row>();
+    	List<String> resultkeyList = new ArrayList<String>();
+        long startTime = System.nanoTime();
+        // now scan until we have enough results
+        try
+        {
+            //added by xuhao
+            final ByteBuffer columnBuffer = ByteBuffer.wrap("column".getBytes());
+            final ByteBuffer valueBuffer = ByteBuffer.wrap("value".getBytes());
+            boolean traversal = false;
+            IDiskAtomFilter commandPredicate = command.predicate;
+            int cql3RowCount = 0;
+            List<AbstractBounds<RowPosition>> ranges = getRestrictedRanges(command.range);
+
+        	Map<String, Integer> map = new HashMap<String, Integer>();
+            for (AbstractBounds<RowPosition> range : ranges)
+            {
+				RangeSliceCommand nodeCmdbackup = new RangeSliceCommand(command.keyspace,
+                                                                  command.column_family,
+                                                                  command.super_column,
+                                                                  commandPredicate,
+                                                                  range,
+                                                                  command.row_filter,
+                                                                  command.maxResults,
+                                                                  command.countCQL3Rows,
+                                                                  command.isPaging);
+
+            	List<IndexExpression> row_filter_backup = new ArrayList<IndexExpression>();
+                for(int i = 0; i < nodeCmdbackup.row_filter.size(); i++)
+            	{
+            		if(nodeCmdbackup.row_filter.get(i).column_name.equals(columnBuffer)
+            				|| nodeCmdbackup.row_filter.get(i).column_name.equals(valueBuffer))
+            		{
+            			traversal = true;
+            		}
+            		else 
+            		{
+            			row_filter_backup.add(nodeCmdbackup.row_filter.get(i));
+            		}
+            	}
+                
+                RangeSliceCommand nodeCmd = new RangeSliceCommand(command.keyspace,
+									                        command.column_family,
+									                        command.super_column,
+									                        commandPredicate,
+									                        range,
+									                        row_filter_backup,
+									                        command.maxResults,
+									                        command.countCQL3Rows,
+									                        command.isPaging);
+                if(!traversal) nodeCmd = nodeCmdbackup;
+
+				//added by xuhao
+                try
+                {
+                	Double maxDouble = Double.MIN_VALUE;//1
+                	Double minDouble = Double.MAX_VALUE;//2
+                	Double sumDouble = 0.0;//3
+                	long totalCount = (long) 0;//4
+                	Double averageDouble = 0.0;//5
+                	Double varianceDouble = 0.0;//6
+                	Double tercile25 = 0.0;//7
+                	Double tercile75 = 0.0;//8
+                	
+                	List<Double> allValuesList = new ArrayList<Double>();
+
+                	switch (aggregationType) {
+						case 1:
+						case 2:
+						case 3:
+						case 4:
+						case 5:
+						case 6:
+							Row resultRow = null;
+							for (Row row : Rows)
+		                    {
+								if(resultRow == null) resultRow = row;
+								String keyvalue = UTF8Type.instance.compose(row.key.key);
+
+		                    	SortedSet<ByteBuffer> ColumnNameSet = row.cf.getColumnNames();
+		                    	Iterator<ByteBuffer> it = ColumnNameSet.iterator();
+		                    	while(it.hasNext())
+		                    	{
+		                    		ByteBuffer buffercolumn = (ByteBuffer)it.next();
+		                    		String valueString = "0";
+		                    		try {
+		                    			valueString = UTF8Type.instance.compose(row.cf.getColumn(buffercolumn).value());
+		                    			if(row.cf.getColumn(buffercolumn).isMarkedForDelete()) continue;
+		                    			
+		                    			totalCount++;
+		                    			//max
+	                    				if(aggregationType == 1 && maxDouble < Double.parseDouble(valueString)){
+	                    					maxDouble = Double.parseDouble(valueString);
+	                    				}
+	                    				//min
+	                    				else if(aggregationType == 2 && minDouble > Double.parseDouble(valueString)){
+	                    					minDouble = Double.parseDouble(valueString);
+	                    				}
+	                    				//sum or average or variance
+	                    				else if(aggregationType == 3 || aggregationType == 5 || aggregationType == 6){
+	                    					sumDouble += Double.parseDouble(valueString);
+	                    					if(aggregationType == 6)
+	                    						allValuesList.add(Double.parseDouble(valueString));
+	                    				}
+	                    				//count
+	                    				else if(aggregationType == 4){
+	                    					
+	                    				}
+									} catch (Exception e) {
+										//value is not double
+										continue;
+									}	
+		                    	}     	
+
+		                    	
+		    					/*
+		                        if (nodeCmd.countCQL3Rows)
+		                            cql3RowCount += row.getLiveCount(commandPredicate);
+		                        logger.trace("range slices read {}", row.key);
+		                        */
+		                    }
+							if(aggregationType == 1){
+								Column resultColumn = new Column(DoubleType.instance.decompose(maxDouble), ByteBuffer.wrap((maxDouble+"").getBytes()));
+		    					ColumnFamily resultCf = resultRow.cf;
+		    					resultCf.clear();
+		    					resultRow.cf.addColumn(resultColumn);
+		    					resultList.add(resultRow);
+		    					
+	    					}
+							else if(aggregationType == 2){
+								Column resultColumn = new Column(DoubleType.instance.decompose(minDouble), ByteBuffer.wrap((minDouble+"").getBytes()));
+		    					ColumnFamily resultCf = resultRow.cf;
+		    					resultCf.clear();
+		    					resultRow.cf.addColumn(resultColumn);
+		    					resultList.add(resultRow);
+	    					}
+							else if(aggregationType == 3){
+								Column resultColumn = new Column(DoubleType.instance.decompose(sumDouble), ByteBuffer.wrap((sumDouble+"").getBytes()));
+		    					ColumnFamily resultCf = resultRow.cf;
+		    					resultCf.clear();
+		    					resultRow.cf.addColumn(resultColumn);
+		    					resultList.add(resultRow);
+	    					}
+							else if(aggregationType == 4){
+								Column resultColumn = new Column(LongType.instance.decompose(totalCount), ByteBuffer.wrap((totalCount+"").getBytes()));
+		    					ColumnFamily resultCf = resultRow.cf;
+		    					resultCf.clear();
+		    					resultRow.cf.addColumn(resultColumn);
+		    					resultList.add(resultRow);
+	    					}
+							//average
+							else if(aggregationType == 5)
+							{
+								averageDouble = sumDouble / totalCount;
+								Column resultColumn = new Column(DoubleType.instance.decompose(averageDouble), ByteBuffer.wrap((averageDouble+"").getBytes()));
+		    					ColumnFamily resultCf = resultRow.cf;
+		    					resultCf.clear();
+		    					resultRow.cf.addColumn(resultColumn);
+		    					resultList.add(resultRow);
+							}
+							//variance
+							else if(aggregationType == 6)
+							{}
+							return resultList;
+							//break;
+						default:
+							break;
+					} 
+                	
+                    
+                    //FBUtilities.waitOnFutures(resolver.repairResults, DatabaseDescriptor.getWriteRpcTimeout());
+                    //System.out.println("selecttime:" + (System.nanoTime() - startTime));
+                }
+                /*
+                catch (TimeoutException ex){
+                    logger.debug("Range slice timeout: {}", ex.toString());
+                    // We actually got all response at that point
+                    //int blockFor = consistency_level.blockFor(table);
+                    //throw new ReadTimeoutException(consistency_level, blockFor, blockFor, true);
+                }
+                catch (DigestMismatchException e){
+                    throw new AssertionError(e); // no digests in range slices yet
+                }
+                */
+                catch (Exception e){
+                	logger.debug("Unexpected Exception", e.toString());
+                }
+
+                // if we're done, great, otherwise, move to the next range
+                nodeCmd = nodeCmdbackup;
+                
+                int count = nodeCmd.countCQL3Rows ? cql3RowCount : resultList.size();
+                if (count >= nodeCmd.maxResults)
+                    break;
+
+                // if we are paging and already got some rows, reset the column filter predicate,
+                // so we start iterating the next row from the first column
+                if (!resultList.isEmpty() && command.isPaging)
+                {
+                    // We only allow paging with a slice filter (doesn't make sense otherwise anyway)
+                    assert commandPredicate instanceof SliceQueryFilter;
+                    commandPredicate = ((SliceQueryFilter)commandPredicate).withUpdatedSlices(ColumnSlice.ALL_COLUMNS_ARRAY);
+                }
+            }
+        }
+        catch (Exception e){	
+        }
+        finally{
             rangeMetrics.addNano(System.nanoTime() - startTime);
         }
         if (command.countCQL3Rows)

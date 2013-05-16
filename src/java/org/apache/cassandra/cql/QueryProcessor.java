@@ -40,6 +40,8 @@ import org.apache.cassandra.db.filter.*;
 import org.apache.cassandra.db.index.SecondaryIndexManager;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.AsciiType;
+import org.apache.cassandra.db.marshal.DoubleType;
+import org.apache.cassandra.db.marshal.LongType;
 import org.apache.cassandra.db.marshal.MarshalException;
 import org.apache.cassandra.db.marshal.TypeParser;
 import org.apache.cassandra.dht.*;
@@ -218,6 +220,103 @@ public class QueryProcessor
 		return Rows;
     }
     
+
+    private static List<org.apache.cassandra.db.Row> getSliceForSpecializedAggregate(CFMetaData metadata, SelectStatement select, List<ByteBuffer> variables, int aggregationType)
+    	    throws InvalidRequestException, ReadTimeoutException, UnavailableException, IsBootstrappingException
+    {
+        QueryPath queryPath = new QueryPath(select.getColumnFamily());
+        List<ReadCommand> commands = new ArrayList<ReadCommand>();
+
+        // ...of a list of column names
+        if (!select.isColumnRange())
+        {
+            Collection<ByteBuffer> columnNames = getColumnNames(select, metadata, variables);
+            validateColumnNames(columnNames);
+
+            for (Term rawKey: select.getKeys())
+            {
+                ByteBuffer key = rawKey.getByteBuffer(metadata.getKeyValidator(),variables);
+
+                validateKey(key);
+                commands.add(new SliceByNamesReadCommand(metadata.ksName, key, queryPath, columnNames));
+            }
+        }
+        // ...a range (slice) of column names
+        else
+        {
+            AbstractType<?> comparator = select.getComparator(metadata.ksName);
+            ByteBuffer start = select.getColumnStart().getByteBuffer(comparator,variables);
+            ByteBuffer finish = select.getColumnFinish().getByteBuffer(comparator,variables);
+
+            for (Term rawKey : select.getKeys())
+            {
+                ByteBuffer key = rawKey.getByteBuffer(metadata.getKeyValidator(),variables);
+
+                validateKey(key);
+                validateSliceFilter(metadata, start, finish, select.isColumnsReversed());
+                commands.add(new SliceFromReadCommand(metadata.ksName,
+                                                      key,
+                                                      queryPath,
+                                                      start,
+                                                      finish,
+                                                      select.isColumnsReversed(),
+                                                      select.getColumnsLimit()));
+            }
+        }
+
+        List<Row> Rows = StorageProxy.read(commands, select.getConsistencyLevel());
+		 
+		 IPartitioner<?> p = StorageService.getPartitioner();
+		 AbstractType<?> keyType = Schema.instance.getCFMetaData(metadata.ksName, select.getColumnFamily()).getKeyValidator();
+		 ByteBuffer startKeyBytes = (select.getKeyStart() != null)
+		                            ? select.getKeyStart().getByteBuffer(keyType,variables)
+		                            : null;
+		 ByteBuffer finishKeyBytes = (select.getKeyFinish() != null)
+		                             ? select.getKeyFinish().getByteBuffer(keyType,variables)
+		                             : null;
+		 RowPosition startKey = RowPosition.forKey(startKeyBytes, p), finishKey = RowPosition.forKey(finishKeyBytes, p);
+		 if (startKey.compareTo(finishKey) > 0 && !finishKey.isMinimum(p))
+		 {
+		     if (p instanceof RandomPartitioner)
+		         throw new InvalidRequestException("Start key sorts after end key. This is not allowed; you probably should not specify end key at all, under RandomPartitioner");
+		     else
+		         throw new InvalidRequestException("Start key must sort before (or equal to) finish key in your partitioner!");
+		 }
+		 AbstractBounds<RowPosition> bounds = new Bounds<RowPosition>(startKey, finishKey);
+		 IDiskAtomFilter columnFilter = filterFromSelect(select, metadata, variables);
+		 validateFilter(metadata, columnFilter);
+		 List<Relation> columnRelations = select.getColumnRelations();
+		 List<IndexExpression> expressions = new ArrayList<IndexExpression>(columnRelations.size());
+		 for (Relation columnRelation : columnRelations)
+		 {
+		     // Left and right side of relational expression encoded according to comparator/validator.
+		     ByteBuffer entity = columnRelation.getEntity().getByteBuffer(metadata.comparator, variables);
+		     ByteBuffer value = columnRelation.getValue().getByteBuffer(select.getValueValidator(metadata.ksName, entity), variables);
+
+		     expressions.add(new IndexExpression(entity,
+		                                         IndexOperator.valueOf(columnRelation.operator().toString()),
+		                                         value));
+		 }
+		 int limit = select.isKeyRange() && select.getKeyStart() != null
+		           ? select.getNumRecords() + 1
+		           : select.getNumRecords();
+		 
+		 RangeSliceCommand command = new RangeSliceCommand(metadata.ksName,
+		         select.getColumnFamily(),
+		         null,
+		         columnFilter,
+		         bounds,
+		         expressions,
+		         limit);
+		 try {
+			Rows = StorageProxy.filterRowsForAggregate(Rows, command, select.getConsistencyLevel(), aggregationType);
+		} catch (Exception e) {
+			System.out.println("asdf");
+		}
+		return Rows;
+    }
+    
+    
     private static SortedSet<ByteBuffer> getColumnNames(SelectStatement select, CFMetaData metadata, List<ByteBuffer> variables)
     throws InvalidRequestException
     {
@@ -300,6 +399,74 @@ public class QueryProcessor
         return rows.subList(0, select.getNumRecords() < rows.size() ? select.getNumRecords() : rows.size());
     }
 
+    private static List<org.apache.cassandra.db.Row> multiRangeSliceForAggretate(CFMetaData metadata, SelectStatement select, List<ByteBuffer> variables, int aggregationType)
+    	    throws ReadTimeoutException, UnavailableException, InvalidRequestException
+    	    {
+    	        IPartitioner<?> p = StorageService.getPartitioner();
+    	        List<org.apache.cassandra.db.Row> rows = null;
+    	        AbstractType<?> keyType = Schema.instance.getCFMetaData(metadata.ksName, select.getColumnFamily()).getKeyValidator();
+
+    	        ByteBuffer startKeyBytes = (select.getKeyStart() != null)
+    	                                   ? select.getKeyStart().getByteBuffer(keyType,variables)
+    	                                   : null;
+
+    	        ByteBuffer finishKeyBytes = (select.getKeyFinish() != null)
+    	                                    ? select.getKeyFinish().getByteBuffer(keyType,variables)
+    	                                    : null;
+
+    	        RowPosition startKey = RowPosition.forKey(startKeyBytes, p), finishKey = RowPosition.forKey(finishKeyBytes, p);
+    	        if (startKey.compareTo(finishKey) > 0 && !finishKey.isMinimum(p))
+    	        {
+    	            if (p instanceof RandomPartitioner)
+    	                throw new InvalidRequestException("Start key sorts after end key. This is not allowed; you probably should not specify end key at all, under RandomPartitioner");
+    	            else
+    	                throw new InvalidRequestException("Start key must sort before (or equal to) finish key in your partitioner!");
+    	        }
+    	        AbstractBounds<RowPosition> bounds = new Bounds<RowPosition>(startKey, finishKey);
+
+    	        IDiskAtomFilter columnFilter = filterFromSelect(select, metadata, variables);
+    	        validateFilter(metadata, columnFilter);
+
+    	        List<Relation> columnRelations = select.getColumnRelations();
+    	        List<IndexExpression> expressions = new ArrayList<IndexExpression>(columnRelations.size());
+    	        for (Relation columnRelation : columnRelations)
+    	        {
+    	            // Left and right side of relational expression encoded according to comparator/validator.
+    	            ByteBuffer entity = columnRelation.getEntity().getByteBuffer(metadata.comparator, variables);
+    	            ByteBuffer value = columnRelation.getValue().getByteBuffer(select.getValueValidator(metadata.ksName, entity), variables);
+
+    	            expressions.add(new IndexExpression(entity,
+    	                                                IndexOperator.valueOf(columnRelation.operator().toString()),
+    	                                                value));
+    	        }
+
+    	        int limit = select.isKeyRange() && select.getKeyStart() != null
+    	                  ? select.getNumRecords() + 1
+    	                  : select.getNumRecords();
+
+    			rows = StorageProxy.getRangeSliceForAggregate(new RangeSliceCommand(metadata.ksName, select.getColumnFamily(),
+    			                                                  null, columnFilter, bounds, expressions, limit),
+    			                                                  select.getConsistencyLevel(), aggregationType);
+    			
+    	        // if start key was set and relation was "greater than"
+    	        if (select.getKeyStart() != null && !select.includeStartKey() && !rows.isEmpty())
+    	        {
+    	            if (rows.get(0).key.key.equals(startKeyBytes))
+    	                rows.remove(0);
+    	        }
+
+    	        // if finish key was set and relation was "less than"
+    	        if (select.getKeyFinish() != null && !select.includeFinishKey() && !rows.isEmpty())
+    	        {
+    	            int lastIndex = rows.size() - 1;
+    	            if (rows.get(lastIndex).key.key.equals(finishKeyBytes))
+    	                rows.remove(lastIndex);
+    	        }
+
+    	        return rows.subList(0, select.getNumRecords() < rows.size() ? select.getNumRecords() : rows.size());
+    	    }
+
+    
     private static List<org.apache.cassandra.db.Row> getSliceForSpecializedUpdate(CFMetaData metadata, SelectStatement select, List<ByteBuffer> variables,
     	    List<IMutation> rowMutations, UpdateStatement update, ThriftClientState clientstate)
     		throws InvalidRequestException, ReadTimeoutException, UnavailableException, IsBootstrappingException
@@ -1068,131 +1235,68 @@ public class QueryProcessor
                 		|| ((oriQueryString.indexOf("column") != -1) && (oriQueryString.indexOf("\'column\'")) == -1)) ? 
                 				true : false;
                 
-                // By-key
-                if (!select.isKeyRange() && (select.getKeys().size() > 0) && !traversal)
-                {
-                    rows = getSlice(metadata, select, variables);
-                }
-                else if(select.numOfClauseRelations() > select.getColumnRelations().size() && traversal)
-                {
-                	rows = getSliceForSpecializedSelect(metadata, select, variables);
-                }
-                else
-                {
-                    rows = multiRangeSlice(metadata, select, variables);
-                }
 
                 result.type = CqlResultType.ROWS;
-                if(select.getAggregateType() == 1)
+                
+                //1, max; 2, min; 3, sum; 4, count; 5, average; 6, variance; 7, tercile25; 8, tercile75;
+                //max
+                if(select.getAggregateType() == 1 || select.getAggregateType() == 2 || select.getAggregateType() == 3
+                		|| select.getAggregateType() == 4 || select.getAggregateType() == 5 || select.getAggregateType() == 6)
                 {
-                	int maxid = 0;
-                	double maxValue = Double.MIN_VALUE;
-                	int iterator = -1;	
+                	if(select.numOfClauseRelations() > select.getColumnRelations().size())
+	                {
+	                	rows = getSliceForSpecializedAggregate(metadata, select, variables, select.getAggregateType());
+	                }
+	                //without key and traversal
+	                else
+	                {
+	                    rows = multiRangeSliceForAggretate(metadata, select, variables, select.getAggregateType());
+	                }
                 	
-                	result.schema = new CqlMetadata(new HashMap<ByteBuffer, String>(),
-                            new HashMap<ByteBuffer, String>(),
-                            TypeParser.getShortName(metadata.comparator),
-                            TypeParser.getShortName(metadata.getDefaultValidator()));
-					List<CqlRow> cqlRows = new ArrayList<CqlRow>(rows.size());
-					for (org.apache.cassandra.db.Row row : rows)
-					{
-						iterator++;
-						List<Column> thriftColumns = new ArrayList<Column>();
-						if (select.isColumnRange())
-						//if (true)
-						{
-						    if (select.isFullWildcard())
-							//if (true)
-						    {
-						        // prepend key
-						        thriftColumns.add(new Column(metadata.getKeyName()).setValue(row.key.key).setTimestamp(-1));
-						        result.schema.name_types.put(metadata.getKeyName(), TypeParser.getShortName(AsciiType.instance));
-						        result.schema.value_types.put(metadata.getKeyName(), TypeParser.getShortName(metadata.getKeyValidator()));
-						    }
-						
-						    // preserve comparator order
-						    if (row.cf != null)
-						    {
-						        for (IColumn c : row.cf.getSortedColumns())
-						        {
-						            if (c.isMarkedForDelete())
-						                continue;
-						
-						            ColumnDefinition cd = metadata.getColumnDefinitionFromColumnName(c.name());
-						            if (cd != null)
-						                result.schema.value_types.put(c.name(), TypeParser.getShortName(cd.getValidator()));
-						
-						            thriftColumns.add(thriftify(c));
-						        }
-						    }
-						}
-						else
-						{
-						    String keyString = getKeyString(metadata);
-						
-						    // order columns in the order they were asked for
-						    for (Term term : select.getColumnNames())
-						    {
-						        if (term.getText().equalsIgnoreCase(keyString))
-						        {
-						            // preserve case of key as it was requested
-						            ByteBuffer requestedKey = ByteBufferUtil.bytes(term.getText());
-						            thriftColumns.add(new Column(requestedKey).setValue(row.key.key).setTimestamp(-1));
-						            result.schema.name_types.put(requestedKey, TypeParser.getShortName(AsciiType.instance));
-						            result.schema.value_types.put(requestedKey, TypeParser.getShortName(metadata.getKeyValidator()));
-						            continue;
-						        }
-						
-						        if (row.cf == null)
-						            continue;
-						
-						        ByteBuffer name;
-						        try
-						        {
-						            name = term.getByteBuffer(metadata.comparator, variables);
-						        }
-						        catch (InvalidRequestException e)
-						        {
-						            throw new AssertionError(e);
-						        }
-						
-						        ColumnDefinition cd = metadata.getColumnDefinitionFromColumnName(name);
-						        if (cd != null)
-						            result.schema.value_types.put(name, TypeParser.getShortName(cd.getValidator()));
-						        IColumn c = row.cf.getColumn(name);
-						        if (c == null || c.isMarkedForDelete())
-						            thriftColumns.add(new Column().setName(name));
-						        else
-						            thriftColumns.add(thriftify(c));
-						    }
-						}
-					
-						// Create a new row, add the columns to it, and then add it to the list of rows
-						CqlRow cqlRow = new CqlRow();
-						cqlRow.key = row.key.key;
-						cqlRow.columns = thriftColumns;
-						if (select.isColumnsReversed())
-						    Collections.reverse(cqlRow.columns);
-						cqlRows.add(cqlRow);
-
-						for(int i = 0; i < cqlRow.columns.size(); i++)
-						{
-							//System.out.print(decode(cqlRow.columns.get(i).name) + " ");
-							//System.out.println(decode(cqlRow.columns.get(i).value));
-						}
-					}
-					
-					result.rows = cqlRows;
-					return result;
+                	ByteBuffer countBytes = ByteBufferUtil.bytes("");
+                	if(select.getAggregateType() == 1) countBytes = ByteBufferUtil.bytes("Max");
+                	if(select.getAggregateType() == 2) countBytes = ByteBufferUtil.bytes("Min");
+                	if(select.getAggregateType() == 3) countBytes = ByteBufferUtil.bytes("Sum");
+                	if(select.getAggregateType() == 4) countBytes = ByteBufferUtil.bytes("Count Lines");
+                	if(select.getAggregateType() == 5) countBytes = ByteBufferUtil.bytes("Average");
+                	
+                    result.schema = new CqlMetadata(Collections.<ByteBuffer, String>emptyMap(),
+                                                    Collections.<ByteBuffer, String>emptyMap(),
+                                                    "AsciiType",
+                                                    "AsciiType");
+                    ByteBuffer valueBuffer = rows.get(0).cf.getSortedColumns().iterator().next().value();
+                    //String valueString = decode(valueBuffer);
+                    List<Column> columns = Collections.singletonList(new Column(countBytes).setValue(valueBuffer));
+                    result.rows = Collections.singletonList(new CqlRow(countBytes, columns));
+                    return result;
                 }
                 
+                // not aggregate functions
+                else{
+                	//By-key
+	                if (!select.isKeyRange() && (select.getKeys().size() > 0) && !traversal)
+	                {
+	                    rows = getSlice(metadata, select, variables);
+	                }
+	                //with key
+	                else if(select.numOfClauseRelations() > select.getColumnRelations().size() && traversal)
+	                {
+	                	rows = getSliceForSpecializedSelect(metadata, select, variables);
+	                }
+	                //without key and traversal
+	                else
+	                {
+	                    rows = multiRangeSlice(metadata, select, variables);
+	                }
+                }
+
                 // count resultset is a single column named "count"
                 result.type = CqlResultType.ROWS;
                 if (select.isCountOperation())
                 {
                     validateCountOperation(select);
 
-                    ByteBuffer countBytes = ByteBufferUtil.bytes("count b");
+                    ByteBuffer countBytes = ByteBufferUtil.bytes("count");
                     result.schema = new CqlMetadata(Collections.<ByteBuffer, String>emptyMap(),
                                                     Collections.<ByteBuffer, String>emptyMap(),
                                                     "AsciiType",
@@ -1372,7 +1476,7 @@ public class QueryProcessor
                     	//rows = getSliceForSpecializedUpdate(metadata, selectForUpdate, variables, rowMutations, update, clientState);
                     	getSliceForSpecializedClear(metadata, selectForUpdate, variables, rowMutations, update, clientState, delChar);
                     }
-            		//没有key和equip
+            		//no key no equip
                     else {
                     	metadata = validateColumnFamily(keyspace, selectForUpdate.getColumnFamily());
     					rowsForUpdate = multiRangeSliceForClear(metadata, selectForUpdate, variables, rowMutations, update, clientState, delChar);
@@ -1687,7 +1791,7 @@ public class QueryProcessor
     }
 
     public static CqlPreparedResult prepare(String queryString, ThriftClientState clientState)
-    throws InvalidRequestException, SyntaxException
+    throws InvalidRequestException, SyntaxException 
     {
         logger.trace("CQL QUERY: {}", queryString);
 
