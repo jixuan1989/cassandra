@@ -1622,7 +1622,7 @@ public class StorageProxy implements StorageProxyMBean
                 	Double tercile25 = 0.0;//25% 7
                 	Double tercile75 = 0.0;//75% 8
                 	
-                	List<Double> allValuesList = new ArrayList<Double>();
+                	Double SquaredSum = 0.0;
 
                 	switch (aggregationType) {
 						case 1:
@@ -1658,9 +1658,10 @@ public class StorageProxy implements StorageProxyMBean
 	                    				}
 	                    				//sum or average or variance
 	                    				else if(aggregationType == 3 || aggregationType == 5 || aggregationType == 6){
-	                    					sumDouble += Double.parseDouble(valueString);
+	                    					Double tempDouble = Double.parseDouble(valueString);
+	                    					sumDouble += tempDouble;
 	                    					if(aggregationType == 6)
-	                    						allValuesList.add(Double.parseDouble(valueString));
+	                    						SquaredSum += tempDouble * tempDouble;
 	                    				}
 	                    				//count
 	                    				else if(aggregationType == 4){
@@ -1719,8 +1720,16 @@ public class StorageProxy implements StorageProxyMBean
 							}
 							//variance
 							else if(aggregationType == 6)
-							{}
-							
+							{
+								averageDouble = sumDouble / totalCount;
+								Double SquaredSumAvg = SquaredSum / totalCount;
+								Double resultDouble = SquaredSumAvg - averageDouble * averageDouble;
+								Column resultColumn = new Column(DoubleType.instance.decompose(resultDouble), ByteBuffer.wrap((resultDouble+"").getBytes()));
+		    					ColumnFamily resultCf = resultRow.cf;
+		    					resultCf.clear();
+		    					resultRow.cf.addColumn(resultColumn);
+		    					rows.add(resultRow);
+							}
 							break;
 						default:
 							break;
@@ -3880,7 +3889,7 @@ public class StorageProxy implements StorageProxyMBean
                 	Double tercile25 = 0.0;//7
                 	Double tercile75 = 0.0;//8
                 	
-                	List<Double> allValuesList = new ArrayList<Double>();
+                	Double SquaredSum = 0.0;
 
                 	switch (aggregationType) {
 						case 1:
@@ -3916,9 +3925,10 @@ public class StorageProxy implements StorageProxyMBean
 	                    				}
 	                    				//sum or average or variance
 	                    				else if(aggregationType == 3 || aggregationType == 5 || aggregationType == 6){
-	                    					sumDouble += Double.parseDouble(valueString);
+	                    					Double tempDouble = Double.parseDouble(valueString);
+	                    					sumDouble += tempDouble;
 	                    					if(aggregationType == 6)
-	                    						allValuesList.add(Double.parseDouble(valueString));
+	                    						SquaredSum += tempDouble * tempDouble;
 	                    				}
 	                    				//count
 	                    				else if(aggregationType == 4){
@@ -3978,7 +3988,16 @@ public class StorageProxy implements StorageProxyMBean
 							}
 							//variance
 							else if(aggregationType == 6)
-							{}
+							{
+								averageDouble = sumDouble / totalCount;
+								Double SquaredSumAvg = SquaredSum / totalCount;
+								Double resultDouble = SquaredSumAvg - averageDouble * averageDouble;
+								Column resultColumn = new Column(DoubleType.instance.decompose(resultDouble), ByteBuffer.wrap((resultDouble+"").getBytes()));
+		    					ColumnFamily resultCf = resultRow.cf;
+		    					resultCf.clear();
+		    					resultRow.cf.addColumn(resultColumn);
+		    					resultList.add(resultRow);
+	    					}
 							return resultList;
 							//break;
 						default:

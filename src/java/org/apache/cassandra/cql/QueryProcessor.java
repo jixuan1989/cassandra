@@ -1259,6 +1259,7 @@ public class QueryProcessor
                 	if(select.getAggregateType() == 3) countBytes = ByteBufferUtil.bytes("Sum");
                 	if(select.getAggregateType() == 4) countBytes = ByteBufferUtil.bytes("Count Lines");
                 	if(select.getAggregateType() == 5) countBytes = ByteBufferUtil.bytes("Average");
+                	if(select.getAggregateType() == 6) countBytes = ByteBufferUtil.bytes("Variance");
                 	
                     result.schema = new CqlMetadata(Collections.<ByteBuffer, String>emptyMap(),
                                                     Collections.<ByteBuffer, String>emptyMap(),
