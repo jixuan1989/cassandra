@@ -30,7 +30,11 @@ import org.apache.cassandra.locator.IEndpointSnitch;
 import org.apache.cassandra.metrics.ConnectionMetrics;
 import org.apache.cassandra.security.SSLFactory;
 import org.apache.cassandra.utils.FBUtilities;
-
+/**
+ * 包含两个OutboundTcpConnection。 一个是cmd，一个是ack。记录了要连接的ip。该类负责这两个connection的重新连接，关闭等事情。
+ * @author hxd
+ *
+ */
 public class OutboundTcpConnectionPool
 {
     private final IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
@@ -64,13 +68,18 @@ public class OutboundTcpConnectionPool
                ? ackCon
                : cmdCon;
     }
-
+/**
+ * 关闭ackcon和cmdcon，仅清空message并添加close_sentinel而不stop他们。
+ */
     void reset()
     {
         for (OutboundTcpConnection conn : new OutboundTcpConnection[] { cmdCon, ackCon })
             conn.closeSocket(false);
     }
-
+    /**
+     * 对于ackCom和cmdCon，如果version大于他们的targetVersion，就添加close_sentinel消息给他们，
+     * @param version
+     */
     public void resetToNewerVersion(int version)
     {
         for (OutboundTcpConnection conn : new OutboundTcpConnection[] { cmdCon, ackCon })
@@ -110,7 +119,11 @@ public class OutboundTcpConnectionPool
     {
         metrics.timeouts.mark();
     }
-
+/**
+ * 如果有封装要求的话 就封装成SSL连接（暂时没看），否则得到一个socket，用listen address得到一个与endPoint的连接，端口是7000
+ * @return
+ * @throws IOException
+ */
     public Socket newSocket() throws IOException
     {
         // zero means 'bind on any available port.'
@@ -129,14 +142,20 @@ public class OutboundTcpConnectionPool
             return socket;
         }
     }
-
+/**
+ * 如果id跟本地的broadcast地址相同 则返回listen地址，否则若resetedEndpoint不为空返回之，否则返回id。。。
+ * @return
+ */
     InetAddress endPoint()
     {
         if (id.equals(FBUtilities.getBroadcastAddress()))
             return FBUtilities.getLocalAddress();
         return resetedEndpoint == null ? id : resetedEndpoint;
     }
-
+/**
+ * 根据配置文件决定是否要封装
+ * @return
+ */
     boolean isEncryptedChannel()
     {
         switch (DatabaseDescriptor.getServerEncryptionOptions().internode_encryption)

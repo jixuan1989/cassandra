@@ -29,7 +29,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.concurrent.DebuggableScheduledThreadPoolExecutor;
-
+/**
+ * 拥有一个线程池，到期循环看各个值是否过期，过期则remove出去
+ *
+ * @param <K>
+ * @param <V>
+ */
 public class ExpiringMap<K, V>
 {
     private static final Logger logger = LoggerFactory.getLogger(ExpiringMap.class);

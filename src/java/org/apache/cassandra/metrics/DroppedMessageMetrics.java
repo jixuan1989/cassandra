@@ -27,6 +27,7 @@ import org.apache.cassandra.net.MessagingService;
 
 /**
  * Metrics for dropped messages by verb.
+ * metrics是一种jmx的封装，用来进行监控的
  */
 public class DroppedMessageMetrics
 {

@@ -166,6 +166,7 @@ public final class MessagingService implements MessagingServiceMBean
      * handled the deserialization itself.  Now that we do that in ITC, to avoid the extra copy to an
      * intermediary byte[] (See CASSANDRA-3716), we need to wire that up to the CallbackInfo object
      * (see below).
+     * request_response是什么消息？
      */
     public static final EnumMap<Verb, IVersionedSerializer<?>> verbSerializers = new EnumMap<Verb, IVersionedSerializer<?>>(Verb.class)
     {{
@@ -195,7 +196,7 @@ public final class MessagingService implements MessagingServiceMBean
     }};
 
     /**
-     * A Map of what kind of serializer to wire up to a REQUEST_RESPONSE callback, based on outbound Verb.
+     * A Map of what kind of serializer to wire up to a REQUEST_RESPONSE callback, based on outbound Verb.表示输入还是输出？
      */
     public static final EnumMap<Verb, IVersionedSerializer<?>> callbackDeserializers = new EnumMap<Verb, IVersionedSerializer<?>>(Verb.class)
     {{
@@ -219,6 +220,7 @@ public final class MessagingService implements MessagingServiceMBean
     /**
      * a placeholder class that means "deserialize using the callback." We can't implement this without
      * special-case code in InboundTcpConnection because there is no way to pass the message id to IVersionedSerializer.
+     * 序列化反序列化都直接抛出不支持异常。。。
      */
     static class CallbackDeterminedSerializer implements IVersionedSerializer<Object>
     {
@@ -263,7 +265,7 @@ public final class MessagingService implements MessagingServiceMBean
     private static final Logger logger = LoggerFactory.getLogger(MessagingService.class);
     private static final int LOG_DROPPED_INTERVAL_IN_MS = 5000;
 
-    private final List<SocketThread> socketThreads = Lists.newArrayList();
+    private final List<SocketThread> socketThreads = Lists.newArrayList();//多个server socket。。
     private final SimpleCondition listenGate;
 
     /**
@@ -282,7 +284,7 @@ public final class MessagingService implements MessagingServiceMBean
     // total dropped message counts for server lifetime
     private final Map<Verb, DroppedMessageMetrics> droppedMessages = new EnumMap<Verb, DroppedMessageMetrics>(Verb.class);
     // dropped count when last requested for the Recent api.  high concurrency isn't necessary here.
-    private final Map<Verb, Integer> lastDroppedInternal = new EnumMap<Verb, Integer>(Verb.class);
+    private final Map<Verb, Integer> lastDroppedInternal = new EnumMap<Verb, Integer>(Verb.class);//存储的大致是上次某个verb被drop时的次数。 用最新的次数-这个次数，若是>0 则说明一定时间内这个verb被drop过，然后将值赋值为最新次数，以便下次使用。（这个“一段时间” 很可能就是这个判断、修改线程的时间间隔）
 
     private final List<ILatencySubscriber> subscribers = new ArrayList<ILatencySubscriber>();
 
@@ -300,7 +302,7 @@ public final class MessagingService implements MessagingServiceMBean
 
     private MessagingService()
     {
-        for (Verb verb : DROPPABLE_VERBS)
+        for (Verb verb : DROPPABLE_VERBS)//所有可drop的verb的计数器清零。
         {
             droppedMessages.put(verb, new DroppedMessageMetrics(verb));
             lastDroppedInternal.put(verb, 0);
@@ -308,7 +310,7 @@ public final class MessagingService implements MessagingServiceMBean
 
         listenGate = new SimpleCondition();
         verbHandlers = new EnumMap<Verb, IVerbHandler>(Verb.class);
-        Runnable logDropped = new Runnable()
+        Runnable logDropped = new Runnable()//见lastDroppedInternal的注释
         {
             public void run()
             {
@@ -843,7 +845,10 @@ public final class MessagingService implements MessagingServiceMBean
         assert DROPPABLE_VERBS.contains(verb) : "Verb " + verb + " should not legally be dropped";
         droppedMessages.get(verb).dropped.mark();
     }
-
+    /**
+     * 对每个可drop的verb， 用其被drop的最新的次数-这个次数，若是>0 则说明一定时间内这个verb被drop过，然后将值赋值为最新次数，以便下次使用。（这个“一段时间” 很可能就是这个判断、修改线程的时间间隔）
+     * 如果发现最近时间内被drop过，
+     */
     private void logDroppedMessages()
     {
         boolean logTpstats = false;
@@ -862,7 +867,7 @@ public final class MessagingService implements MessagingServiceMBean
         }
 
         if (logTpstats)
-            StatusLogger.log();
+            StatusLogger.log();//暂时不知道干嘛的。
     }
 
     private static class SocketThread extends Thread

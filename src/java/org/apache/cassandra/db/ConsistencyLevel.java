@@ -84,7 +84,11 @@ public enum ConsistencyLevel
     {
         return (((NetworkTopologyStrategy) table.getReplicationStrategy()).getReplicationFactor(dc) / 2) + 1;
     }
-
+/**
+ * 根据一致性级别返回需要的副本数量
+ * @param table
+ * @return
+ */
     public int blockFor(Table table)
     {
         switch (this)
@@ -148,7 +152,13 @@ public enum ConsistencyLevel
     {
         return filterForQuery(table, liveEndpoints, ReadRepairDecision.NONE);
     }
-
+/**
+ * readRepair为NONE时，过滤endpoints为min（liveEndpoints，一致性要求的个数）
+ * @param table
+ * @param liveEndpoints
+ * @param readRepair
+ * @return
+ */
     public List<InetAddress> filterForQuery(Table table, List<InetAddress> liveEndpoints, ReadRepairDecision readRepair)
     {
         /*

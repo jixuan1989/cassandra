@@ -33,7 +33,8 @@ import static org.apache.cassandra.Util.range;
 
 public class RangeTest
 {
-    @Test
+    @SuppressWarnings({ "rawtypes", "unchecked" })
+	@Test
     public void testContains()
     {
         Range left = new Range(new BigIntegerToken("0"), new BigIntegerToken("100"));

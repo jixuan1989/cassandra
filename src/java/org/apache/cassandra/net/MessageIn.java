@@ -51,19 +51,26 @@ public class MessageIn<T>
     {
         return new MessageIn<T>(from, payload, parameters, verb, version);
     }
-
+    /**
+     * 从流中反序列化出信息并封装成MessageIn
+     * @param in 输入流
+     * @param version 反序列化payload以及创建messageIn时使用
+     * @param id   对于有callback需要调用的verb，可根据该id获得其callback函数
+     * @return
+     * @throws IOException
+     */
     public static <T2> MessageIn<T2> read(DataInput in, int version, String id) throws IOException
     {
-        InetAddress from = CompactEndpointSerializationHelper.deserialize(in);
+        InetAddress from = CompactEndpointSerializationHelper.deserialize(in);//从in流中首先序列化出ip地址（ip地址位数+ip地址内容）
 
-        MessagingService.Verb verb = MessagingService.Verb.values()[in.readInt()];
-        int parameterCount = in.readInt();
+        MessagingService.Verb verb = MessagingService.Verb.values()[in.readInt()];//读出动作的编号（enum自带编号）
+        int parameterCount = in.readInt();//读出参数个数
         Map<String, byte[]> parameters;
         if (parameterCount == 0)
         {
             parameters = Collections.emptyMap();
         }
-        else
+        else//依次读出参数名（readUTF）-参数值（大小+byte[])
         {
             ImmutableMap.Builder<String, byte[]> builder = ImmutableMap.builder();
             for (int i = 0; i < parameterCount; i++)
@@ -76,11 +83,11 @@ public class MessageIn<T>
             parameters = builder.build();
         }
 
-        int payloadSize = in.readInt();
+        int payloadSize = in.readInt();//读出payload长度
         IVersionedSerializer<T2> serializer = (IVersionedSerializer<T2>) MessagingService.verbSerializers.get(verb);
-        if (serializer instanceof MessagingService.CallbackDeterminedSerializer)
+        if (serializer instanceof MessagingService.CallbackDeterminedSerializer)//判断动作所属的序列化器是不是CallbackDeterminedSerializer（两种动作是这样子的，MessageService.verbSerializers中进行了定义）
         {
-            CallbackInfo callback = MessagingService.instance().getRegisteredCallback(id);
+            CallbackInfo callback = MessagingService.instance().getRegisteredCallback(id);//从expiringMap中得到该回调函数
             if (callback == null)
             {
                 // reply for expired callback.  we'll have to skip it.
@@ -91,7 +98,7 @@ public class MessageIn<T>
         }
         if (payloadSize == 0 || serializer == null)
             return create(from, null, parameters, verb, version);
-        T2 payload = serializer.deserialize(in, version);
+        T2 payload = serializer.deserialize(in, version);//从流中反序列化出真正的payload
         return MessageIn.create(from, payload, parameters, verb, version);
     }
 

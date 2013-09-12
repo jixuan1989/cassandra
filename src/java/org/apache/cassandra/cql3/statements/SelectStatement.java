@@ -901,12 +901,12 @@ public class SelectStatement implements CQLStatement
         }
 
         public ParsedStatement.Prepared prepare() throws InvalidRequestException
-        {
+        {	//得到cf的完整定义
             CFMetaData cfm = ThriftValidation.validateColumnFamily(keyspace(), columnFamily());
 
             if (parameters.limit <= 0)
                 throw new InvalidRequestException("LIMIT must be strictly positive");
-
+            //针对cql的简化定义
             CFDefinition cfDef = cfm.getCfDef();
 
             ColumnSpecification[] names = new ColumnSpecification[getBoundsTerms()];
@@ -1255,7 +1255,7 @@ public class SelectStatement implements CQLStatement
 
         // for bounds
         private final Term[] bounds;
-        private final boolean[] boundInclusive;
+        private final boolean[] boundInclusive;//表示是否有等号（大于等于 小于等于）
 
         final boolean onToken;
 

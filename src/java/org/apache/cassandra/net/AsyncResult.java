@@ -39,7 +39,9 @@ class AsyncResult<T> implements IAsyncResult<T>
         condition = lock.newCondition();
         startTime = System.currentTimeMillis();
     }
-
+/**
+ * 似乎就做了看在规定时间内能否拿到锁（也就是看规定的时间内有没有调用过result（）函数）
+ */
     public T get(long timeout, TimeUnit tu) throws TimeoutException
     {
         lock.lock();
@@ -71,7 +73,10 @@ class AsyncResult<T> implements IAsyncResult<T>
         }
         return result;
     }
-
+/**
+ * 若从没调用过result（） 则获取response的from和result属性，并设置为done，然后通知get方法中的wait()函数。
+ *  否则直接返回。
+ */
     public void result(MessageIn<T> response)
     {
         try

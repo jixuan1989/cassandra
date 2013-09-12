@@ -64,7 +64,11 @@ public class QueryProcessor
     {
         return thriftPreparedStatements.get(id);
     }
-
+/**
+ * 判断key不为空，长度没越界
+ * @param key
+ * @throws InvalidRequestException
+ */
     public static void validateKey(ByteBuffer key) throws InvalidRequestException
     {
         if (key == null || key.remaining() == 0)
@@ -79,7 +83,11 @@ public class QueryProcessor
                                               " is longer than maximum of " + FBUtilities.MAX_UNSIGNED_SHORT);
         }
     }
-
+/**
+ * 判断列名是否大于最大长度 或者长度为0...
+ * @param columns
+ * @throws InvalidRequestException
+ */
     public static void validateColumnNames(Iterable<ByteBuffer> columns)
     throws InvalidRequestException
     {

@@ -21,7 +21,11 @@ import java.io.*;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
-
+/**
+ * 将endpoint序列化到输入或者输出流中。 endpoint指的是ip地址InetAddress。支持ipv4和ipv6
+ * @author hxd添加注释
+ *
+ */
 public class CompactEndpointSerializationHelper
 {
     public static void serialize(InetAddress endpoint, DataOutput dos) throws IOException

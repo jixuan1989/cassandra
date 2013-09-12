@@ -21,7 +21,9 @@ package org.apache.cassandra.dht;
  * Interface representing a position on the ring.
  * Both Token and DecoratedKey represent a position in the ring, a token being
  * less precise than a DecoratedKey (a token is really a range of keys).
- */
+ * token没有decoratedKey精确？ 一个token是一个范围的keys.其实 Token集成的是RingPosition。而DecoratedKey继承的是RowPosition（RowPosition又集成了RingPosition）,
+ * 而且DecoratedKey的组成其实是一个token和一个key，因此必然更准确。。
+ *///
 public interface RingPosition<T> extends Comparable<T>
 {
     public Token getToken();

@@ -63,7 +63,7 @@ public class CassandraDaemon
      */
     public static void initLog4j()
     {
-        if (System.getProperty("log4j.defaultInitOverride","false").equalsIgnoreCase("true"))
+        if (System.getProperty("log4j.defaultInitOverride","true").equalsIgnoreCase("true"))
         {
             String config = System.getProperty("log4j.configuration", "log4j-server.properties");
             URL configLocation = null;
@@ -419,6 +419,7 @@ public class CassandraDaemon
 
             if (System.getProperty("cassandra-foreground") == null)
             {
+            	System.out.println("Will close console outstream..............................");
                 System.out.close();
                 System.err.close();
             }

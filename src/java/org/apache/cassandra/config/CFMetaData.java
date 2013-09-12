@@ -331,6 +331,8 @@ public final class CFMetaData
     {
         try
         {
+        	//hxd: 增加一个输出 打印出创建的系统表
+        	logger.info(cql);
             CreateColumnFamilyStatement statement = (CreateColumnFamilyStatement) QueryProcessor.parseStatement(cql).prepare().statement;
             CFMetaData cfmd = newSystemMetadata(keyspace, statement.columnFamily(), id, "", statement.comparator, null);
             statement.applyPropertiesTo(cfmd);

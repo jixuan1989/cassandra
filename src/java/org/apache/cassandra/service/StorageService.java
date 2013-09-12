@@ -2631,10 +2631,16 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     {
         return getLiveNaturalEndpoints(table, getPartitioner().decorateKey(key));
     }
-
+/**
+ * 根据备份策略确定table选择哪些节点，LocalStrategy则直接选择本机.
+ * 对选择的节点判断其是否Failure，如果没有，则加入返回列表
+ * @param table
+ * @param pos
+ * @return
+ */
     public List<InetAddress> getLiveNaturalEndpoints(Table table, RingPosition pos)
     {
-        List<InetAddress> endpoints = table.getReplicationStrategy().getNaturalEndpoints(pos);
+        List<InetAddress> endpoints = table.getReplicationStrategy().getNaturalEndpoints(pos);//根据备份策略确定table选择哪些节点，LocalStrategy则直接选择本机
         List<InetAddress> liveEps = new ArrayList<InetAddress>(endpoints.size());
 
         for (InetAddress endpoint : endpoints)

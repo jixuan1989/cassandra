@@ -80,7 +80,10 @@ public class TraceState
     {
         trace(MessageFormatter.arrayFormat(format, args).getMessage());
     }
-
+/**
+ * 保存 source thread source_elapsed activity(即message) 信息到system_traces.events中
+ * @param message
+ */
     public void trace(final String message)
     {
         final int elapsed = elapsed();

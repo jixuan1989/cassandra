@@ -307,7 +307,9 @@ public abstract class Constants
         {
             super(column, t);
         }
-
+        /**
+         * 将该类中保存的列名，列值加入cf中。
+         */
         public void execute(ByteBuffer rowKey, ColumnFamily cf, ColumnNameBuilder prefix, UpdateParameters params) throws InvalidRequestException
         {
             ByteBuffer cname = columnName == null ? prefix.build() : prefix.add(columnName.key).build();

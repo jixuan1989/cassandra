@@ -29,6 +29,7 @@ import org.apache.cassandra.net.OutboundTcpConnectionPool;
 
 /**
  * Metrics for {@link OutboundTcpConnectionPool}.
+ * 
  */
 public class ConnectionMetrics
 {

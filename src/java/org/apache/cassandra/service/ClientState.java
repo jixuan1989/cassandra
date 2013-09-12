@@ -104,7 +104,11 @@ public class ClientState
             throw new InvalidRequestException("no keyspace has been specified");
         return keyspace;
     }
-
+/**
+ * 指定client中的ks，如果已经login过了 就会验证这个ks是否存在。而有些第三方client库可能不调用login，这时候就不验证，只简单地记录ks值到client中。
+ * @param ks
+ * @throws InvalidRequestException
+ */
     public void setKeyspace(String ks) throws InvalidRequestException
     {
         // Skip keyspace validation for non-authenticated users. Apparently, some client libraries

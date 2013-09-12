@@ -91,7 +91,13 @@ public class Table
     {
         return open(table, Schema.instance, false);
     }
-
+/**
+ * 
+ * @param table
+ * @param schema
+ * @param loadSSTables
+ * @return
+ */
     private static Table open(String table, Schema schema, boolean loadSSTables)
     {
         Table tableInstance = schema.getTableInstance(table);

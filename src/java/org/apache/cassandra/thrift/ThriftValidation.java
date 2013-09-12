@@ -98,7 +98,13 @@ public class ThriftValidation
         }
         return metadata;
     }
-
+    /**
+     * 判断下tableName是否存在，得到CFMetaData。To be used when the operation should be authorized whether this is a counter CF or not
+     * @param tablename
+     * @param cfName
+     * @return
+     * @throws org.apache.cassandra.exceptions.InvalidRequestException
+     */
     // To be used when the operation should be authorized whether this is a counter CF or not
     public static CFMetaData validateColumnFamily(String tablename, String cfName) throws org.apache.cassandra.exceptions.InvalidRequestException
     {

@@ -900,7 +900,12 @@ public class QueryProcessor
 	        select.setSearchWithoutKey(true);
         }
     }
-
+/**
+ * 验证key不为空，不超长。
+ * @param key
+ * @return
+ * @throws InvalidRequestException
+ */
     public static boolean validateKey(ByteBuffer key) throws InvalidRequestException
     {
     	if (key == null || key.remaining() == 0)

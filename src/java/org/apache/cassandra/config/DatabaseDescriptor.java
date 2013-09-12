@@ -474,7 +474,7 @@ public class DatabaseDescriptor
             {
                 // install the definition
                 for (CFMetaData cfm : ksmd.cfMetaData().values())
-                    Schema.instance.load(cfm);
+                    Schema.instance.load(cfm);//将该cf定义放到Schema的cfIdMap结构中。
                 Schema.instance.setTableDefinition(ksmd);
             }
 

@@ -891,13 +891,13 @@ public class StorageProxy implements StorageProxyMBean
                 assert !command.isDigestQuery();
                 logger.trace("Command/ConsistencyLevel is {}/{}", command, consistency_level);
 
-                List<InetAddress> endpoints = getLiveSortedEndpoints(table, command.key);
-                CFMetaData cfm = Schema.instance.getCFMetaData(command.getKeyspace(), command.getColumnFamilyName());
-                endpoints = consistency_level.filterForQuery(table, endpoints, cfm.newReadRepairDecision());
+                List<InetAddress> endpoints = getLiveSortedEndpoints(table, command.key);//查找所有活着的节点（要根据keyspace的replicationStrategy找，比如LocalStrategy的话，就直接返回本机），然后进行排序
+                CFMetaData cfm = Schema.instance.getCFMetaData(command.getKeyspace(), command.getColumnFamilyName());//从本机获取cfm定义
+                endpoints = consistency_level.filterForQuery(table, endpoints, cfm.newReadRepairDecision());//
 
                 RowDigestResolver resolver = new RowDigestResolver(command.table, command.key);
                 ReadCallback<ReadResponse, Row> handler = new ReadCallback(resolver, consistency_level, command, endpoints);
-                handler.assureSufficientLiveNodes();
+                handler.assureSufficientLiveNodes();//再次确保endpoints达到了一致性级别
                 assert !endpoints.isEmpty();
                 readCallbacks[i] = handler;
 
