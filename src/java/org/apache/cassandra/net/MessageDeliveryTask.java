@@ -19,7 +19,13 @@ package org.apache.cassandra.net;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+/**
+ * 该类是verb的执行线程类。从MessageService中获取某个verb的handler，然后调用其doVerb函数<br>
+ * 如果verb可以抛弃并已经超时，那么给对应的drop计数器+1.
+ * 否则调用对应的handler处理该verb。
+ * @author hxd
+ *
+ */
 public class MessageDeliveryTask implements Runnable
 {
     private static final Logger logger = LoggerFactory.getLogger(MessageDeliveryTask.class);
@@ -27,7 +33,13 @@ public class MessageDeliveryTask implements Runnable
     private final MessageIn message;
     private final long constructionTime;
     private final String id;
-
+    /**
+     * 该类是verb的执行线程类。
+     * 如果verb可以抛弃并已经超时，那么给对应的drop计数器+1.
+     * 否则调用对应的handler处理该verb。
+     * @author hxd
+     *
+     */
     public MessageDeliveryTask(MessageIn message, String id, long timestamp)
     {
         assert message != null;
@@ -36,11 +48,12 @@ public class MessageDeliveryTask implements Runnable
         constructionTime = timestamp;
     }
 
-    public void run()
+    @SuppressWarnings({ "unchecked"})
+	public void run()
     {
         MessagingService.Verb verb = message.verb;
         if (MessagingService.DROPPABLE_VERBS.contains(verb)
-            && System.currentTimeMillis() > constructionTime + message.getTimeout())
+            && System.currentTimeMillis() > constructionTime + message.getTimeout())//如果可扔弃并且已经超时 就在drop计数器+1
         {
             MessagingService.instance().incrementDroppedMessages(verb);
             return;

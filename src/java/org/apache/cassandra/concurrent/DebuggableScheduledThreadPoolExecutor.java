@@ -32,7 +32,10 @@ public class DebuggableScheduledThreadPoolExecutor extends ScheduledThreadPoolEx
     {
         super(corePoolSize, new NamedThreadFactory(threadPoolName, priority));
     }
-
+    /**
+     * 创建一个coreSize=1的无界线程池
+     * @param threadPoolName
+     */
     public DebuggableScheduledThreadPoolExecutor(String threadPoolName)
     {
         this(1, threadPoolName, Thread.NORM_PRIORITY);

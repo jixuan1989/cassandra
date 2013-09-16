@@ -27,7 +27,7 @@ import com.google.common.collect.Multimap;
 import com.google.common.collect.Multimaps;
 
 /**
- *
+ *能同时通过key或者value快速定位的map（用了一个Multimap当做reverseMap来快速查找value）
  * A variant of BiMap which does not enforce uniqueness of values. This means the inverse
  * is a Multimap.
  *

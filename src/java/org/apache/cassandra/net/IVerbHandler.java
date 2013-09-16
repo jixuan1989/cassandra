@@ -18,6 +18,7 @@
 package org.apache.cassandra.net;
 
 /**
+ * verb的处理类
  * IVerbHandler provides the method that all verb handlers need to implement.
  * The concrete implementation of this interface would provide the functionality
  * for a given verb.
@@ -26,6 +27,7 @@ package org.apache.cassandra.net;
 public interface IVerbHandler<T>
 {
     /**
+     * 注意调用者不用改持有任何锁，因为这个方法的实现可能是同步的。
      * This method delivers a message to the implementing class (if the implementing
      * class was registered by a call to MessagingService.registerVerbHandlers).
      * Note that the caller should not be holding any locks when calling this method

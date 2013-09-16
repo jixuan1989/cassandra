@@ -23,6 +23,7 @@ import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.service.StorageProxy;
 
 /**
+ * 封装callback信息，包含要发出的消息，目标地址，序列化类。以及IMessageCallback
  * Encapsulates the callback information.
  * The ability to set the message is useful in cases for when a hint needs 
  * to be written due to a timeout in the response from a replica.

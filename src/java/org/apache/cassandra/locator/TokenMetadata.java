@@ -45,10 +45,10 @@ public class TokenMetadata
 {
     private static final Logger logger = LoggerFactory.getLogger(TokenMetadata.class);
 
-    /* Maintains token to endpoint map of every node in the cluster. */
+    /**按照目前的写法，这里其实总是一个SortBiMultiValMap对象。 Maintains token to endpoint map of every node in the cluster. */
     private final BiMultiValMap<Token, InetAddress> tokenToEndpointMap;
 
-    /* Maintains endpoint to host ID map of every node in the cluster */
+    /** Maintains endpoint to host ID map of every node in the cluster */
     private final BiMap<InetAddress, UUID> endpointToHostIdMap;
 
     // Prior to CASSANDRA-603, we just had <tt>Map<Range, InetAddress> pendingRanges<tt>,
@@ -87,14 +87,16 @@ public class TokenMetadata
     // tokens which are migrating to new endpoints
     private final Map<Token, InetAddress> relocatingTokens = new HashMap<Token, InetAddress>();
 
-    /* Use this lock for manipulating the token map */
+    /** Use this lock for manipulating the token map */
     private final ReadWriteLock lock = new ReentrantReadWriteLock(true);
     private volatile ArrayList<Token> sortedTokens;
 
     private final Topology topology;
-    /* list of subscribers that are notified when the tokenToEndpointMap changed */
+    /** list of subscribers that are notified when the tokenToEndpointMap changed */
     private final CopyOnWriteArrayList<AbstractReplicationStrategy> subscribers = new CopyOnWriteArrayList<AbstractReplicationStrategy>();
-
+    /**
+     * 网络ip比较器
+     */
     private static final Comparator<InetAddress> inetaddressCmp = new Comparator<InetAddress>()
     {
         public int compare(InetAddress o1, InetAddress o2)
@@ -117,7 +119,10 @@ public class TokenMetadata
         endpointToHostIdMap = endpointsMap;
         sortedTokens = sortTokens();
     }
-
+    /**
+     * 返回tokenToEndpointMap的keySet（tokenToEndpointMap往往本身是有序的）
+     * @return
+     */
     private ArrayList<Token> sortTokens()
     {
         return new ArrayList<Token>(tokenToEndpointMap.keySet());

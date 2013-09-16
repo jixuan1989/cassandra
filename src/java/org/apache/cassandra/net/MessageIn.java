@@ -29,10 +29,18 @@ import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.FileUtils;
-
+/**
+ * 传入的消息。
+ * @author hxd
+ *
+ * @param <T>
+ */
 public class MessageIn<T>
 {
     public final InetAddress from;
+    /**
+     * 具体消息
+     */
     public final T payload;
     public final Map<String, byte[]> parameters;
     public final MessagingService.Verb verb;

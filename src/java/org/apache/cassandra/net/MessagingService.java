@@ -215,6 +215,9 @@ public final class MessagingService implements MessagingServiceMBean
     }};
 
     /* This records all the results mapped by message Id */
+    /**
+     * //拥有一个线程池，到期循环看各个值是否过期，过期则remove出去，同时会调用messagingService的timerepoter，增加超时记录，并可能hint给storageProxy。 线程间隔，minRpcTimeout/2
+     */
     private final ExpiringMap<String, CallbackInfo> callbacks;
 
     /**
@@ -316,28 +319,28 @@ public final class MessagingService implements MessagingServiceMBean
             {
                 logDroppedMessages();
             }
-        };
+        };//开始时，放入scheduledTasks中一个任务，走一遍logDroppedMessages()函数，每运行完毕后5秒再运行。
         StorageService.scheduledTasks.scheduleWithFixedDelay(logDropped, LOG_DROPPED_INTERVAL_IN_MS, LOG_DROPPED_INTERVAL_IN_MS, TimeUnit.MILLISECONDS);
-
+        //超时报告器除了会增加超时i记录的次数外，如果发现这个消息应该被hint，就调用storageProxy的submitHint提交hint。
         Function<Pair<String, ExpiringMap.CacheableObject<CallbackInfo>>, ?> timeoutReporter = new Function<Pair<String, ExpiringMap.CacheableObject<CallbackInfo>>, Object>()
         {
             public Object apply(Pair<String, ExpiringMap.CacheableObject<CallbackInfo>> pair)
             {
                 CallbackInfo expiredCallbackInfo = pair.right.value;
-                maybeAddLatency(expiredCallbackInfo.callback, expiredCallbackInfo.target, pair.right.timeout);
-                ConnectionMetrics.totalTimeouts.mark();
-                getConnectionPool(expiredCallbackInfo.target).incrementTimeout();
+                maybeAddLatency(expiredCallbackInfo.callback, expiredCallbackInfo.target, pair.right.timeout);//还要理解。。。
+                ConnectionMetrics.totalTimeouts.mark();//增加超时次数
+                getConnectionPool(expiredCallbackInfo.target).incrementTimeout();//对应的out连接增加超时次数
 
-                if (expiredCallbackInfo.shouldHint())
+                if (expiredCallbackInfo.shouldHint())//如果应该hint（消息不空，对方机器当机时间没超过最大hint时间）
                 {
                     assert expiredCallbackInfo.sentMessage != null;
                     RowMutation rm = (RowMutation) expiredCallbackInfo.sentMessage.payload;
-                    return StorageProxy.submitHint(rm, expiredCallbackInfo.target, null, null);
+                    return StorageProxy.submitHint(rm, expiredCallbackInfo.target, null, null);//TODO
                 }
 
                 return null;
             }
-        };
+        };     
 
         callbacks = new ExpiringMap<String, CallbackInfo>(DatabaseDescriptor.getMinRpcTimeout(), timeoutReporter);
 
@@ -354,7 +357,7 @@ public final class MessagingService implements MessagingServiceMBean
 
     /**
      * Track latency information for the dynamic snitch
-     *
+     *不明觉厉，但是通知ILatencySubscriber，调用所有subcriber的receiveTiming函数
      * @param cb      the callback associated with this message -- this lets us know if it's a message type we're interested in
      * @param address the host that replied to the message
      * @param latency
@@ -372,6 +375,7 @@ public final class MessagingService implements MessagingServiceMBean
     }
 
     /**
+     * (宣布有罪)如果gossiper发现一个节点无响应了，就调用该方法，重置本节点与之的outboundTcpConnection<br>
      * called from gossiper when it notices a node is not responding.
      */
     public void convict(InetAddress ep)
@@ -396,7 +400,12 @@ public final class MessagingService implements MessagingServiceMBean
         }
         listenGate.signalAll();
     }
-
+/**
+ * 根据配置文件 选择创建ssl还是普通socket，绑定的是7000端口
+ * @param localEp
+ * @return
+ * @throws ConfigurationException
+ */
     private List<ServerSocket> getServerSocket(InetAddress localEp) throws ConfigurationException
     {
         final List<ServerSocket> ss = new ArrayList<ServerSocket>(2);
@@ -455,7 +464,9 @@ public final class MessagingService implements MessagingServiceMBean
         ss.add(socket);
         return ss;
     }
-
+/**
+ * 被gossiper.gossipTask调用，阻塞等待本类的listenGate的signal信号
+ */
     public void waitUntilListening()
     {
         try
@@ -517,7 +528,14 @@ public final class MessagingService implements MessagingServiceMBean
     {
         return verbHandlers.get(type);
     }
-
+/**
+ * 封装成callbackinfo 加入callbacks中，如果该消息有可能要被hint，则message也保存下来，否则不保存
+ * @param cb
+ * @param message
+ * @param to
+ * @param timeout
+ * @return
+ */
     public String addCallback(IMessageCallback cb, MessageOut message, InetAddress to, long timeout)
     {
         String messageId = nextId();
@@ -701,13 +719,18 @@ public final class MessagingService implements MessagingServiceMBean
             throw new IOError(e);
         }
     }
-
+/**
+ * 对于接收到的message，先用sinkManager处理一下（暂时不知道干嘛的），然后找到消息对应的verb的stage，如果消息是request_response，并且PBS要记录，就进行记录。然后stage运行。
+ * @param message
+ * @param id
+ * @param timestamp
+ */
     public void receive(MessageIn message, String id, long timestamp)
     {
         Tracing.instance().initializeFromMessage(message);
         Tracing.trace("Message received from {}", message.from);
 
-        message = SinkManager.processInboundMessage(message, id);
+        message = SinkManager.processInboundMessage(message, id);//暂时不知道干嘛的
         if (message == null)
             return;
 
@@ -731,22 +754,38 @@ public final class MessagingService implements MessagingServiceMBean
 
         stage.execute(runnable);
     }
-
+    /**
+     * 从callbacks中设置callbackinfo
+     * @param messageId
+     * @return
+     */
     public void setCallbackForTests(String messageId, CallbackInfo callback)
     {
         callbacks.put(messageId, callback);
     }
-
+/**
+ * 从callbacks中取callbackinfo
+ * @param messageId
+ * @return
+ */
     public CallbackInfo getRegisteredCallback(String messageId)
     {
         return callbacks.get(messageId);
     }
-
+    /**
+     * 从callbacks中移除callbackinfo
+     * @param messageId
+     * @return
+     */
     public CallbackInfo removeRegisteredCallback(String messageId)
     {
         return callbacks.remove(messageId);
     }
-
+    /**
+     * 从callbacks得到callbackinfo的创建时间
+     * @param messageId
+     * @return
+     */
     public long getRegisteredCallbackAge(String messageId)
     {
         return callbacks.getAge(messageId);
@@ -757,12 +796,28 @@ public final class MessagingService implements MessagingServiceMBean
         if (magic != PROTOCOL_MAGIC)
             throw new IOException("invalid protocol header");
     }
-
+/**
+ * 先把packed右移start+1-count位，然后减去：
+ * <br>对于count<=31, (-1 << count)相当于将-1*2^count倍，然后~表示取反，相当于取负号然后-1（比如-1024变成1023） 。或者说，~（-1<<count）相当于得到count个1这样的二进制（1023就是10个1）
+ * <br>所以说 这个计算相当于从packed的第start+1-count位开始，根据count位1的个数决定结果。
+ * <br>如果packed>>>之后 小于count，则结果等于前者。
+ * <br>通过调试，目前来看，packed的二进制表示，第三位表示是否压缩，第四位表示是否是stream流，第9-12位表示版本号
+ * @param packed
+ * @param start
+ * @param count
+ * @return
+ */
     public static int getBits(int packed, int start, int count)
     {
         return packed >>> (start + 1) - count & ~(-1 << count);
     }
-
+/**
+ * 和stream相关的，暂时不考虑
+ * @param streamHeader
+ * @param compress
+ * @param version
+ * @return
+ */
     public ByteBuffer constructStreamHeader(StreamHeader streamHeader, boolean compress, int version)
     {
         int header = 0;
@@ -802,6 +857,7 @@ public final class MessagingService implements MessagingServiceMBean
     }
 
     /**
+     * 更新记录的某个节点的版本号
      * @return the last version associated with address, or @param version if this is the first such version
      */
     public int setVersion(InetAddress address, int version)
@@ -810,13 +866,20 @@ public final class MessagingService implements MessagingServiceMBean
         Integer v = versions.put(address, version);
         return v == null ? version : v;
     }
-
+/**
+ * 清空记录的所有节点的版本号
+ * @param endpoint
+ */
     public void resetVersion(InetAddress endpoint)
     {
         logger.debug("Reseting version for {}", endpoint);
         versions.remove(endpoint);
     }
-
+/**
+ * 得到某个节点的版本号
+ * @param address
+ * @return
+ */
     public Integer getVersion(InetAddress address)
     {
         Integer v = versions.get(address);
@@ -829,17 +892,28 @@ public final class MessagingService implements MessagingServiceMBean
         else
             return v;
     }
-
+    /**
+     * 得到某个节点的版本号
+     * @param address
+     * @return
+     */
     public int getVersion(String address) throws UnknownHostException
     {
         return getVersion(InetAddress.getByName(address));
     }
-
+    /**
+     * 查看versions中是否保存了endpoint的版本号
+     * @param address
+     * @return
+     */
     public boolean knowsVersion(InetAddress endpoint)
     {
         return versions.get(endpoint) != null;
     }
-
+/**
+ * 增加对应的verb的drop记录数
+ * @param verb
+ */
     public void incrementDroppedMessages(Verb verb)
     {
         assert DROPPABLE_VERBS.contains(verb) : "Verb " + verb + " should not legally be dropped";
@@ -847,7 +921,7 @@ public final class MessagingService implements MessagingServiceMBean
     }
     /**
      * 对每个可drop的verb， 用其被drop的最新的次数-这个次数，若是>0 则说明一定时间内这个verb被drop过，然后将值赋值为最新次数，以便下次使用。（这个“一段时间” 很可能就是这个判断、修改线程的时间间隔）
-     * 如果发现最近时间内被drop过，
+     * 如果发现最近时间内被drop过，调用StatusLogger.log(),暂时不知道干嘛
      */
     private void logDroppedMessages()
     {
@@ -867,9 +941,13 @@ public final class MessagingService implements MessagingServiceMBean
         }
 
         if (logTpstats)
-            StatusLogger.log();//暂时不知道干嘛的。
+            StatusLogger.log();//暂时不知道干嘛的。似乎是把各个service的状态都打印出来了。
     }
-
+/**
+ * serversocket的线程类，绑定衣蛾serversocket 然后开始accept，接收到一个连接后，验证下权限，然后生成IncomingTcpConnection并启动incoming线程
+ * @author hxd
+ *
+ */
     private static class SocketThread extends Thread
     {
         private final ServerSocket server;
@@ -914,8 +992,12 @@ public final class MessagingService implements MessagingServiceMBean
         {
             server.close();
         }
-
-        private boolean authenticate(Socket socket)
+/**
+ * 默认的InternodeAuthenticator是AllowAllInternodeAuthenticator
+ * @param socket
+ * @return
+ */
+        private boolean authenticate(Socket socket)//TODO 查看绑定的哪个端口？
         {
             return DatabaseDescriptor.getInternodeAuthenticator().authenticate(socket.getInetAddress(), socket.getPort());
         }

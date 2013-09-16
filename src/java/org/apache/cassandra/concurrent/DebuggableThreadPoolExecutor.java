@@ -28,13 +28,17 @@ import org.apache.cassandra.tracing.Tracing;
 import static org.apache.cassandra.tracing.Tracing.isTracing;
 
 /**
+ * 默认的tpe是这样的：
+ *<br>1、如果运行线程少 就优先增加新线程，而不是排队
+ *<br>2、如果超过corePoolSize个线程在运行，就优先排队
+ *<br>3、如果一个线程无法被排队，就创建新线程，如果线程数已经超过最大，就拒绝任务
+ *<br>我们不希望第三条出现，这使得系统的行为很难解释。因此如果核心线程都工作着，而queue满了，我们让他阻塞等待进入队列。但是我们允许如果一个stage不太忙的话，可以drop掉一些线程（核心线程的超时是管用的）
  * This class encorporates some Executor best practices for Cassandra.  Most of the executors in the system
  * should use or extend this.  There are two main improvements over a vanilla TPE:
  *
  * - If a task throws an exception, the default uncaught exception handler will be invoked; if there is
  *   no such handler, the exception will be logged.
  * - MaximumPoolSize is not supported.  Here is what that means (quoting TPE javadoc):
- *
  *     If fewer than corePoolSize threads are running, the Executor always prefers adding a new thread rather than queuing.
  *     If corePoolSize or more threads are running, the Executor always prefers queuing a request rather than adding a new thread.
  *     If a request cannot be queued, a new thread is created unless this would exceed maximumPoolSize, in which case, the task will be rejected.
@@ -62,7 +66,7 @@ public class DebuggableThreadPoolExecutor extends ThreadPoolExecutor
                 }
                 try
                 {
-                    if (queue.offer(task, 1000, TimeUnit.MILLISECONDS))
+                    if (queue.offer(task, 1000, TimeUnit.MILLISECONDS))//不断1s的等待，知道被插入
                     {
                         ((DebuggableThreadPoolExecutor) executor).onFinalAccept(task);
                         break;
@@ -75,23 +79,42 @@ public class DebuggableThreadPoolExecutor extends ThreadPoolExecutor
             }
         }
     };
-
+/**
+ * 得到一个固定大小的线程池，其中队列无限大，线程保活周期无限长。
+ * @param threadPoolName
+ * @param priority
+ */
     public DebuggableThreadPoolExecutor(String threadPoolName, int priority)
     {
         this(1, Integer.MAX_VALUE, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(), new NamedThreadFactory(threadPoolName, priority));
     }
-
+/**
+ * 得到一个maxPoolSize=corePoolSize的线程池（即固定大小线程池）
+ * @param corePoolSize
+ * @param keepAliveTime
+ * @param unit
+ * @param queue
+ * @param factory
+ */
     public DebuggableThreadPoolExecutor(int corePoolSize, long keepAliveTime, TimeUnit unit, BlockingQueue<Runnable> queue, ThreadFactory factory)
     {
         this(corePoolSize, corePoolSize, keepAliveTime, unit, queue, factory);
     }
-
+/**
+ * 创建一个正常的线程池，允许coreThread被回收，绑定一个钩子：如果队列满了，被拒绝，则不断充实
+ * @param corePoolSize
+ * @param maximumPoolSize
+ * @param keepAliveTime
+ * @param unit
+ * @param workQueue
+ * @param threadFactory
+ */
     public DebuggableThreadPoolExecutor(int corePoolSize, int maximumPoolSize, long keepAliveTime, TimeUnit unit, BlockingQueue<Runnable> workQueue, ThreadFactory threadFactory)
     {
         super(corePoolSize, maximumPoolSize, keepAliveTime, unit, workQueue, threadFactory);
         allowCoreThreadTimeOut(true);
 
-        // block task submissions until queue has room.
+        // block task submissions until queue has room.阻塞任务的提交 知道队列有空位置了，这跟TPE的设计初衷不符，他原本是如果队列满了，就拒绝提交的。我们重写了这点，如果满了，就不断重试。
         // this is fighting TPE's design a bit because TPE rejects if queue.offer reports a full queue.
         // we'll just override this with a handler that retries until it gets in.  ugly, but effective.
         // (there is an extensive analysis of the options here at
@@ -100,6 +123,7 @@ public class DebuggableThreadPoolExecutor extends ThreadPoolExecutor
     }
 
     /**
+     * 创建一个核心线程数为size，最大线程数无限的池子，线程不会被回收，排队队列无限长<br>建议：如果池子中的大多数线程经常空置，建议不要用这个池子
      * Returns a ThreadPoolExecutor with a fixed number of threads.
      * When all threads are actively executing tasks, new tasks are queued.
      * If (most) threads are expected to be idle most of the time, prefer createWithMaxSize() instead.
@@ -113,6 +137,7 @@ public class DebuggableThreadPoolExecutor extends ThreadPoolExecutor
     }
 
     /**
+     * 创建一个核心线程数为size，最大线程数无限的池子，允许核心线程长时间idle被回收，排队队列无限长
      * Returns a ThreadPoolExecutor with a fixed maximum number of threads, but whose
      * threads are terminated when idle for too long.
      * When all threads are actively executing tasks, new tasks are queued.
@@ -126,9 +151,20 @@ public class DebuggableThreadPoolExecutor extends ThreadPoolExecutor
     {
         return new DebuggableThreadPoolExecutor(size, Integer.MAX_VALUE, keepAliveTime, unit, new LinkedBlockingQueue<Runnable>(), new NamedThreadFactory(threadPoolName));
     }
-
+/**
+ * 队列满时，一个任务被拒绝了，重试前调用该方法
+ * @param task
+ */
     protected void onInitialRejection(Runnable task) {}
+    /**
+     * 队列满室，一个任务被拒绝了，每隔1s视图插入队列一次，等成功了，调用该方法
+     * @param task
+     */
     protected void onFinalAccept(Runnable task) {}
+    /**
+     * 知道线程池被关闭了，还没有插入成功，则调用该方法
+     * @param task
+     */
     protected void onFinalRejection(Runnable task) {}
 
     // execute does not call newTaskFor

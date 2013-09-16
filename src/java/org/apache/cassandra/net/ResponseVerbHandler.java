@@ -21,7 +21,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.tracing.Tracing;
-
+/**
+ * 先根据id从messageService中获取callbackinfo，然后从messageService中删除其保存值。如果callbackInfo为空，直接返回。
+ * <br>否则，调用MessagingService的maybeAddLatency。然后调用callback的response或者result方法。
+ * @author hxd
+ *
+ */
 public class ResponseVerbHandler implements IVerbHandler
 {
     private static final Logger logger = LoggerFactory.getLogger( ResponseVerbHandler.class );

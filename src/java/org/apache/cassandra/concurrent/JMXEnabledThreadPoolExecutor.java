@@ -28,6 +28,7 @@ import javax.management.ObjectName;
 import org.apache.cassandra.metrics.ThreadPoolMetrics;
 
 /**
+ * 带度量的jmx格式的线程池
  * This is a wrapper class for the <i>ScheduledThreadPoolExecutor</i>. It provides an implementation
  * for the <i>afterExecute()</i> found in the <i>ThreadPoolExecutor</i> class to log any unexpected
  * Runtime Exceptions.
@@ -37,22 +38,49 @@ public class JMXEnabledThreadPoolExecutor extends DebuggableThreadPoolExecutor i
 {
     private final String mbeanName;
     private final ThreadPoolMetrics metrics;
-
+    /**
+     * 创建一个固定大小=1的线程池，不允许coreThread被回收.队列无限长。jmx路径名字叫org.apache.cassandra.internal
+     * <br>启动所有核心线程，使其处于等待工作的空闲状态。
+     * <br> 然后注册该Mbean，启动度量各种线程状态的度量器
+     * @param threadPoolName
+     */
     public JMXEnabledThreadPoolExecutor(String threadPoolName)
     {
         this(1, Integer.MAX_VALUE, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(), new NamedThreadFactory(threadPoolName), "internal");
     }
-
+    /**
+     * 创建一个固定大小=1的线程池，不允许coreThread被回收.队列无限长。
+     * <br>启动所有核心线程，使其处于等待工作的空闲状态。
+     * <br> 然后注册该Mbean，启动度量各种线程状态的度量器
+     * @param threadPoolName
+     * @param jmxPath
+     */
     public JMXEnabledThreadPoolExecutor(String threadPoolName, String jmxPath)
     {
         this(1, Integer.MAX_VALUE, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(), new NamedThreadFactory(threadPoolName), jmxPath);
     }
-
+/**
+ * 创建一个固定大小=1的线程池，不允许coreThread被回收.队列无限长。jmx路径名字叫org.apache.cassandra.internal
+ * <br>启动所有核心线程，使其处于等待工作的空闲状态。
+ * <br> 然后注册该Mbean，启动度量各种线程状态的度量器
+ * @param threadPoolName
+ * @param priority
+ */
     public JMXEnabledThreadPoolExecutor(String threadPoolName, int priority)
     {
         this(1, Integer.MAX_VALUE, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(), new NamedThreadFactory(threadPoolName, priority), "internal");
     }
-
+/**
+ * 创建一个固定大小的线程池，允许coreThread被回收，绑定一个钩子：如果队列满了，被拒绝，则不断充实。
+ * <br>启动所有核心线程，使其处于等待工作的空闲状态。
+ * <br> 然后注册该Mbean，启动度量各种线程状态的度量器
+ * @param corePoolSize
+ * @param keepAliveTime
+ * @param unit
+ * @param workQueue
+ * @param threadFactory
+ * @param jmxPath
+ */
     public JMXEnabledThreadPoolExecutor(int corePoolSize,
             long keepAliveTime,
             TimeUnit unit,
@@ -62,7 +90,18 @@ public class JMXEnabledThreadPoolExecutor extends DebuggableThreadPoolExecutor i
     {
         this(corePoolSize, corePoolSize, keepAliveTime, unit, workQueue, threadFactory, jmxPath);
     }
-
+/**
+ * 创建一个正常的线程池，允许coreThread被回收，绑定一个钩子：如果队列满了，被拒绝，则不断充实。
+ * <br>启动所有核心线程，使其处于等待工作的空闲状态。
+ * <br> 然后注册该Mbean，启动度量各种线程状态的度量器
+ * @param corePoolSize
+ * @param maxPoolSize
+ * @param keepAliveTime
+ * @param unit
+ * @param workQueue
+ * @param threadFactory
+ * @param jmxPath
+ */
     public JMXEnabledThreadPoolExecutor(int corePoolSize,
                                         int maxPoolSize,
                                         long keepAliveTime,
@@ -88,7 +127,14 @@ public class JMXEnabledThreadPoolExecutor extends DebuggableThreadPoolExecutor i
             throw new RuntimeException(e);
         }
     }
+/**
+ * 
+ *创建一个固定大小=1的线程池，不允许coreThread被回收.队列无限长。 
+ *<br>启动所有核心线程，使其处于等待工作的空闲状态。 
+ *<br>然后注册该Mbean，启动度量各种线程状态的度量器
 
+ * @param stage
+ */
     public JMXEnabledThreadPoolExecutor(Stage stage)
     {
         this(stage.getJmxName(), stage.getJmxType());

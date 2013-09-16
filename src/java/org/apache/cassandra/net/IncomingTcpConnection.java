@@ -31,7 +31,11 @@ import org.apache.cassandra.io.util.FastByteArrayInputStream;
 import org.apache.cassandra.streaming.IncomingStreamReader;
 import org.apache.cassandra.streaming.StreamHeader;
 import org.xerial.snappy.SnappyInputStream;
-
+/**
+ * 接入的连接
+ * @author hxd
+ *
+ */
 public class IncomingTcpConnection extends Thread
 {
     private static final Logger logger = LoggerFactory.getLogger(IncomingTcpConnection.class);
@@ -60,6 +64,7 @@ public class IncomingTcpConnection extends Thread
      * A new connection will either stream or message for its entire lifetime: because streaming
      * bypasses the InputStream implementations to use sendFile, we cannot begin buffering until
      * we've determined the type of the connection.
+     * 重点是最后的recevieMessage().
      */
     @Override
     public void run()
@@ -70,7 +75,7 @@ public class IncomingTcpConnection extends Thread
             DataInputStream in = new DataInputStream(socket.getInputStream());
             MessagingService.validateMagic(in.readInt());
             int header = in.readInt();
-            boolean isStream = MessagingService.getBits(header, 3, 1) == 1;
+            boolean isStream = MessagingService.getBits(header, 3, 1) == 1;//相当于看header的第四位是否为1
             int version = MessagingService.getBits(header, 15, 8);
             logger.debug("Connection version {} from {}", version, socket.getInetAddress());
 

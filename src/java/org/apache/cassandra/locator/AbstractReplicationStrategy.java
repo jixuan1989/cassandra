@@ -42,6 +42,7 @@ import org.apache.cassandra.utils.FBUtilities;
 import org.cliffc.high_scale_lib.NonBlockingHashMap;
 
 /**
+ *主要方法是 根据toekn获取在哪个机器上。
  * A abstract parent for all replication strategies.
 */
 public abstract class AbstractReplicationStrategy
@@ -75,12 +76,18 @@ public abstract class AbstractReplicationStrategy
     {
         return cachedEndpoints.get(t);
     }
-
+/**
+ * 村放入cachedEndpoints中
+ * @param t
+ * @param addr
+ */
     public void cacheEndpoint(Token t, ArrayList<InetAddress> addr)
     {
         cachedEndpoints.put(t, addr);
     }
-
+/**
+ * 清空cachedEndpoints
+ */
     public void clearEndpointCache()
     {
         logger.debug("clearing cached endpoints");
@@ -88,6 +95,8 @@ public abstract class AbstractReplicationStrategy
     }
 
     /**
+     * 得到那些应该存储着给定的toeken的（可能被缓存的）endpoints。虽然返回的endpoints应该是一个没用重复的set，但是为了避免额外的排序，我们用list返回
+     * <br> 如果cachedEndpoints中没有的话，通过calculateNaturalEndpoints得到并保存。
      * get the (possibly cached) endpoints that should store the given Token.
      * Note that while the endpoints are conceptually a Set (no duplicates will be included),
      * we return a List to avoid an extra allocation when sorting by proximity later
@@ -119,7 +128,18 @@ public abstract class AbstractReplicationStrategy
      * @return a copy of the natural endpoints for the given token
      */
     public abstract List<InetAddress> calculateNaturalEndpoints(Token searchToken, TokenMetadata tokenMetadata);
-
+/**
+ * 基本上是直接调用了构造函数。
+ * 如果一致性级别是Local_quorum则生成DatacenterWriteResponseHandler<br>
+ * 如果一致性级别是each_quorum，则生成DatacenterSyncWriteResponseHandler<br>
+ * 否则生成WriteResponseHandler
+ * @param naturalEndpoints
+ * @param pendingEndpoints
+ * @param consistency_level
+ * @param callback
+ * @param writeType
+ * @return
+ */
     public AbstractWriteResponseHandler getWriteResponseHandler(Collection<InetAddress> naturalEndpoints, Collection<InetAddress> pendingEndpoints, ConsistencyLevel consistency_level, Runnable callback, WriteType writeType)
     {
         if (consistency_level == ConsistencyLevel.LOCAL_QUORUM)
@@ -133,7 +153,10 @@ public abstract class AbstractReplicationStrategy
         }
         return new WriteResponseHandler(naturalEndpoints, pendingEndpoints, consistency_level, getTable(), callback, writeType);
     }
-
+/**
+ * Table.open 然后返回table
+ * @return
+ */
     private Table getTable()
     {
         if (table == null)
@@ -142,6 +165,7 @@ public abstract class AbstractReplicationStrategy
     }
 
     /**
+     *abstract 基于strategy_options得到备份数。注意这个方法要保证非常快，因为经常被调用
      * calculate the RF based on strategy_options. When overwriting, ensure that this get()
      *  is FAST, as this is called often.
      *
@@ -149,7 +173,8 @@ public abstract class AbstractReplicationStrategy
      */
     public abstract int getReplicationFactor();
 
-    /*
+    /**
+     * 
      * NOTE: this is pretty inefficient. also the inverse (getRangeAddresses) below.
      * this is fine as long as we don't use this on any critical path.
      * (fixing this would probably require merging tokenmetadata into replicationstrategy,
@@ -203,7 +228,9 @@ public abstract class AbstractReplicationStrategy
         temp.updateNormalTokens(pendingTokens, pendingAddress);
         return getAddressRanges(temp).get(pendingAddress);
     }
-
+/**
+ * 清空endpointCache
+ */
     public void invalidateCachedTokenEndpointValues()
     {
         clearEndpointCache();
@@ -211,7 +238,8 @@ public abstract class AbstractReplicationStrategy
 
     public abstract void validateOptions() throws ConfigurationException;
 
-    /*
+    /**
+     * 定义那些参数应该被识别，如果返回empty 则表示什么都不接受，返回null表示什么都接受
      * The options recognized by the strategy.
      * The empty collection means that no options are accepted, but null means
      * that any option is accepted.
@@ -221,7 +249,16 @@ public abstract class AbstractReplicationStrategy
         // We default to null for backward compatibility sake
         return null;
     }
-
+/**
+ * 创建一个replicationStrategy实例
+ * @param table
+ * @param strategyClass
+ * @param tokenMetadata
+ * @param snitch
+ * @param strategyOptions
+ * @return
+ * @throws ConfigurationException
+ */
     private static AbstractReplicationStrategy createInternal(String table,
                                                               Class<? extends AbstractReplicationStrategy> strategyClass,
                                                               TokenMetadata tokenMetadata,
@@ -242,7 +279,15 @@ public abstract class AbstractReplicationStrategy
         }
         return strategy;
     }
-
+/**
+ * 创建一个replicationStrategy实例。然后验证其参数。如果有无法识别的参数，log4j输出警告，然后忽略之。
+ * @param table
+ * @param strategyClass
+ * @param tokenMetadata
+ * @param snitch
+ * @param strategyOptions
+ * @return
+ */
     public static AbstractReplicationStrategy createReplicationStrategy(String table,
                                                                         Class<? extends AbstractReplicationStrategy> strategyClass,
                                                                         TokenMetadata tokenMetadata,
@@ -272,7 +317,15 @@ public abstract class AbstractReplicationStrategy
             throw new RuntimeException();
         }
     }
-
+/**
+ * 创建一个实例，然后验证之，如果有不可识别的参数 抛出异常：ConfigurationException
+ * @param table
+ * @param strategyClassName
+ * @param tokenMetadata
+ * @param snitch
+ * @param strategyOptions
+ * @throws ConfigurationException
+ */
     public static void validateReplicationStrategy(String table,
                                                    String strategyClassName,
                                                    TokenMetadata tokenMetadata,
@@ -283,7 +336,16 @@ public abstract class AbstractReplicationStrategy
         strategy.validateExpectedOptions();
         strategy.validateOptions();
     }
-
+/**
+ * 创建一个实例，然后验证之，忽略检查是否有不可识别的参数 
+ * For backward compatibility sake on the thrift side
+ * @param table
+ * @param strategyClass
+ * @param tokenMetadata
+ * @param snitch
+ * @param strategyOptions
+ * @throws ConfigurationException
+ */
     // For backward compatibility sake on the thrift side
     public static void validateReplicationStrategyIgnoreUnexpected(String table,
                                                                    Class<? extends AbstractReplicationStrategy> strategyClass,
@@ -294,7 +356,12 @@ public abstract class AbstractReplicationStrategy
         AbstractReplicationStrategy strategy = createInternal(table, strategyClass, tokenMetadata, snitch, strategyOptions);
         strategy.validateOptions();
     }
-
+/**
+ * 根据类名得到一个replicationStrategy的实例（空构造函数），如果该实例没有实现本接口，抛出异常
+ * @param cls
+ * @return
+ * @throws ConfigurationException
+ */
     public static Class<AbstractReplicationStrategy> getClass(String cls) throws ConfigurationException
     {
         String className = cls.contains(".") ? cls : "org.apache.cassandra.locator." + cls;
@@ -305,7 +372,11 @@ public abstract class AbstractReplicationStrategy
         }
         return strategyClass;
     }
-
+/**
+ * 判断下复制数是否是正整数
+ * @param rf
+ * @throws ConfigurationException
+ */
     protected void validateReplicationFactor(String rf) throws ConfigurationException
     {
         try
@@ -320,7 +391,10 @@ public abstract class AbstractReplicationStrategy
             throw new ConfigurationException("Replication factor must be numeric; found " + rf);
         }
     }
-
+/**
+ * 验证有没有不认识的参数。 认识的参数用recognizedOptions获得。
+ * @throws ConfigurationException
+ */
     private void validateExpectedOptions() throws ConfigurationException
     {
         Collection expectedOptions = recognizedOptions();

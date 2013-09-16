@@ -37,7 +37,12 @@ import org.apache.cassandra.utils.UUIDGen;
 
 import static org.apache.cassandra.tracing.Tracing.TRACE_HEADER;
 import static org.apache.cassandra.tracing.Tracing.isTracing;
-
+/**
+ * 要发出的消息
+ * @author hxd
+ *
+ * @param <T>
+ */
 public class MessageOut<T>
 {
     public final InetAddress from;

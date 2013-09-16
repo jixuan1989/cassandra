@@ -30,8 +30,9 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.concurrent.DebuggableScheduledThreadPoolExecutor;
 /**
- * 拥有一个线程池，到期循环看各个值是否过期，过期则remove出去
- *
+ * 拥有一个线程池，到期循环看各个值是否过期，过期则remove出去，同时会调用messagingService的timerepoter，增加超时记录，并可能hint给storageProxy。
+ *<br>线程间隔，minRpcTimeout/2
+ *<br>这个类的shutdown字段一旦为true。 所有调用该实例的put方法的线程就会永久sleep..(MessagingService调用了。)
  * @param <K>
  * @param <V>
  */
@@ -87,7 +88,7 @@ public class ExpiringMap<K, V>
         Runnable runnable = new Runnable()
         {
             public void run()
-            {
+            { 
                 long start = System.currentTimeMillis();
                 int n = 0;
                 for (Map.Entry<K, CacheableObject<V>> entry : cache.entrySet())

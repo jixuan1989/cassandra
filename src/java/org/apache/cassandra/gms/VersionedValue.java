@@ -124,7 +124,8 @@ public class VersionedValue implements Comparable<VersionedValue>
                                                     makeTokenString(tokens)));
         }
 
-        private String makeTokenString(Collection<Token> tokens)
+        @SuppressWarnings("unchecked")
+		private String makeTokenString(Collection<Token> tokens)
         {
             return partitioner.getTokenFactory().toString(Iterables.get(tokens, 0));
         }

@@ -27,7 +27,7 @@ import java.util.concurrent.locks.ReentrantLock;
 
 class AsyncResult<T> implements IAsyncResult<T>
 {
-    private T result;
+    private T result;//用来存储结果
     private final AtomicBoolean done = new AtomicBoolean(false);
     private final Lock lock = new ReentrantLock();
     private final Condition condition;

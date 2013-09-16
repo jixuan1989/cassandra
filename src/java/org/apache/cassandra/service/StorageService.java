@@ -95,7 +95,10 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     private final AtomicLong notificationSerialNumber = new AtomicLong();
 
     private final AtomicDouble severity = new AtomicDouble();
-
+/**
+ * 如果-Dcassandra.ring_delay_ms设置了 则返回设置值，否则返回30s
+ * @return
+ */
     private static int getRingDelay()
     {
         String newdelay = System.getProperty("cassandra.ring_delay_ms");
@@ -128,7 +131,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
     /* This abstraction maintains the token/endpoint metadata information */
     private TokenMetadata tokenMetadata = new TokenMetadata();
-
+    /**创建一个valueFactory，用来生成各种versionValue（一般是用字符串表明当前的状态，以及相关的token）*/
     public VersionedValue.VersionedValueFactory valueFactory = new VersionedValue.VersionedValueFactory(getPartitioner());
 
     public static final StorageService instance = new StorageService();
@@ -167,18 +170,18 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
     private InetAddress removingNode;
 
-    /* Are we starting this node in bootstrap mode? */
+    /** Are we starting this node in bootstrap mode? */
     private boolean isBootstrapMode;
 
-    /* we bootstrap but do NOT join the ring unless told to do so */
+    /** we bootstrap but do NOT join the ring unless told to do so */
     private boolean isSurveyMode= Boolean.parseBoolean(System.getProperty("cassandra.write_survey", "false"));
 
-    /* when intialized as a client, we shouldn't write to the system table. */
+    /** when intialized as a client, we shouldn't write to the system table. */
     private boolean isClientMode;
     private boolean initialized;
     private volatile boolean joined = false;
 
-    /* the probability for tracing any particular request, 0 disables tracing and 1 enables for all */
+    /** the probability for tracing any particular request, 0 disables tracing and 1 enables for all */
     private double tracingProbability = 0.0;
 
     private static enum Mode { NORMAL, CLIENT, JOINING, LEAVING, DECOMMISSIONED, MOVING, DRAINING, DRAINED, RELOCATING }
@@ -186,7 +189,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
     private final MigrationManager migrationManager = MigrationManager.instance;
 
-    /* Used for tracking drain progress */
+    /** Used for tracking drain progress */
     private volatile int totalCFs, remainingCFs;
 
     private static final AtomicInteger nextRepairCommand = new AtomicInteger();
@@ -378,7 +381,13 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     {
         return initialized;
     }
-
+/**
+ * 首先启动goosiper，messagingService。<br>
+ * 然后休息直到有其他节点isFatClient()(暂不明白)<br>
+ * 然后休息直到schema迁移完成
+ * @throws IOException
+ * @throws ConfigurationException
+ */
     public synchronized void initClient() throws IOException, ConfigurationException
     {
         // We don't wait, because we're going to actually try to work on
@@ -391,7 +400,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             while (!isUp)
             {
                 Thread.sleep(1000);
-                for (InetAddress address : Gossiper.instance.getLiveMembers())
+                for (InetAddress address : Gossiper.instance.getLiveMembers())//TODO 靠1s钟休息 靠谱吗。。
                 {
                     if (!Gossiper.instance.isFatClient(address))
                     {
@@ -411,7 +420,12 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             throw new AssertionError(e);
         }
     }
-
+/**
+ * 设置isClientMode=true。开启Gossiper。开启MessagingService。然后休息ringDelay ms
+ * @param ringDelay
+ * @throws IOException
+ * @throws ConfigurationException
+ */
     public synchronized void initClient(int ringDelay) throws IOException, ConfigurationException
     {
         if (initialized)
@@ -439,12 +453,29 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             throw new AssertionError(e);
         }
     }
-
+    /**
+     * 加载StorageProxy类。
+     * <br>启动 PBSPredictor。
+     * <br>从本地加载token记录，然后更新tokenMetadata信息。
+     * <br>注册一个jvm关闭钩子，做扫尾工作
+     * <br>join_ring
+     * @throws ConfigurationException
+     */
     public synchronized void initServer() throws ConfigurationException
     {
         initServer(RING_DELAY);
     }
-
+/**
+ * 加载StorageProxy类。
+ * <br>启动 PBSPredictor。
+ * <br>从本地加载token记录，然后更新tokenMetadata信息。
+ * <br>注册一个jvm关闭钩子，做扫尾工作
+ * <br>join_ring
+ * 
+ * 
+ * @param delay
+ * @throws ConfigurationException
+ */
     public synchronized void initServer(int delay) throws ConfigurationException
     {
         logger.info("Cassandra version: " + FBUtilities.getReleaseVersionString());
@@ -575,7 +606,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         Gossiper.instance.register(migrationManager);
         Gossiper.instance.start(SystemTable.incrementAndGetGeneration(), appStates); // needed for node-ring gathering.
         // gossip snitch infos (local DC and rack)
-        gossipSnitchInfo();
+        gossipSnitchInfo();//把gossip启动起来了，并且启动了1s一次的计划任务
         // gossip Schema.emptyVersion forcing immediate check for schema updates (see MigrationManager#maybeScheduleSchemaPull)
         Schema.instance.updateVersionAndAnnounce(); // Ensure we know our own actual Schema UUID in preparation for updates
 

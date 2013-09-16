@@ -75,6 +75,11 @@ public abstract class Token<T> implements RingPosition<Token<T>>, Serializable
     {
         public abstract ByteBuffer toByteArray(Token<T> token);
         public abstract Token<T> fromByteArray(ByteBuffer bytes);
+        /**
+         * serialize as string, not necessarily human-readable
+         * @param token
+         * @return
+         */
         public abstract String toString(Token<T> token); // serialize as string, not necessarily human-readable
         public abstract Token<T> fromString(String string); // deserialize
 

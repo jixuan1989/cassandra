@@ -35,7 +35,11 @@ import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+/**
+ * 包含一个10s中执行一次的计划任务。 定期根据range_xfers进行relocateToken操作。
+ * @author hxd
+ *
+ */
 public class ScheduledRangeTransferExecutorService
 {
     private static final Logger LOG = LoggerFactory.getLogger(ScheduledRangeTransferExecutorService.class);
@@ -67,7 +71,11 @@ public class ScheduledRangeTransferExecutorService
         scheduler.shutdownNow();
     }
 }
-
+/**
+ * 从system.range_xfers中获取记录，然后relocateTokens().之后清除range_xfers。
+ * @author hxd
+ *
+ */
 class RangeTransfer implements Runnable
 {
     private static final Logger LOG = LoggerFactory.getLogger(RangeTransfer.class);

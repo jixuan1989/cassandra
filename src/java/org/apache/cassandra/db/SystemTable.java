@@ -367,6 +367,7 @@ public class SystemTable
     }
 
     /**
+     * 得到系统表中保存的其他节点的信息。
      * Return a map of store host_ids to IP addresses
      *
      */

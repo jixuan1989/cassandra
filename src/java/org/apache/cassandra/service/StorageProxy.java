@@ -909,7 +909,7 @@ public class StorageProxy implements StorageProxyMBean
                     StageManager.getStage(Stage.READ).execute(new LocalReadRunnable(command, handler));
                 }
                 else
-                {
+                {//TODO
                     logger.trace("reading data from {}", dataPoint);
                     MessagingService.instance().sendRR(command.createMessage(), dataPoint, handler);
                 }

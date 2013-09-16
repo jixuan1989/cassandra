@@ -30,6 +30,7 @@ import static org.apache.cassandra.config.DatabaseDescriptor.*;
 
 
 /**
+ * 给每种stage创建了一个线程池。 放在map中。
  * This class manages executor services for Messages recieved: each Message requests
  * running on a specific "stage" for concurrency control; hence the Map approach,
  * even though stages (executors) are not created dynamically.
@@ -59,7 +60,10 @@ public class StageManager
         stages.put(Stage.READ_REPAIR, multiThreadedStage(Stage.READ_REPAIR, FBUtilities.getAvailableProcessors()));
         stages.put(Stage.TRACING, tracingExecutor());
     }
-
+/**
+ * 固定大小为1的线程池，队列为1000，满了就扔掉（在MS中dropped verb度量值+1）
+ * @return
+ */
     private static ThreadPoolExecutor tracingExecutor()
     {
         RejectedExecutionHandler reh = new RejectedExecutionHandler()
@@ -77,7 +81,12 @@ public class StageManager
                                        new NamedThreadFactory(Stage.TRACING.getJmxName()),
                                        reh);
     }
-
+    /**
+     * 固定大小线程池，队列无限
+     * @param stage
+     * @param numThreads
+     * @return
+     */
     private static ThreadPoolExecutor multiThreadedStage(Stage stage, int numThreads)
     {
         return new JMXEnabledThreadPoolExecutor(numThreads,
@@ -87,7 +96,12 @@ public class StageManager
                                                 new NamedThreadFactory(stage.getJmxName()),
                                                 stage.getJmxType());
     }
-
+/**
+ * 固定大小线程池，队列无限
+ * @param stage
+ * @param numThreads
+ * @return
+ */
     private static ThreadPoolExecutor multiThreadedConfigurableStage(Stage stage, int numThreads)
     {
         return new JMXConfigurableThreadPoolExecutor(numThreads,
@@ -97,7 +111,14 @@ public class StageManager
                                                      new NamedThreadFactory(stage.getJmxName()),
                                                      stage.getJmxType());
     }
-
+/**
+ * 固定大小线程池
+ * 队列不是无限的
+ * @param stage
+ * @param numThreads
+ * @param maxTasksBeforeBlock
+ * @return
+ */
     private static ThreadPoolExecutor multiThreadedConfigurableStage(Stage stage, int numThreads, int maxTasksBeforeBlock)
     {
         return new JMXConfigurableThreadPoolExecutor(numThreads,
@@ -129,6 +150,7 @@ public class StageManager
     }
 
     /**
+     * 目测完全没区别啊。。跟普通的TPE
      * A TPE that disallows submit so that we don't need to worry about unwrapping exceptions on the
      * tracing stage.  See CASSANDRA-1123 for background.
      */
