@@ -65,12 +65,18 @@ public abstract class AbstractEndpointSnitch implements IEndpointSnitch
         // Querying remote DC is likely to be an order of magnitude slower than
         // querying locally, so 2 queries to local nodes is likely to still be
         // faster than 1 query involving remote ones
+    	// 针对多数据中心，暂不考虑
         boolean mergedHasRemote = hasRemoteNode(merged);
         return mergedHasRemote
              ? hasRemoteNode(l1) || hasRemoteNode(l2)
              : true;
     }
 
+    /**
+     * 检查其他节点是否在不同的数据中心
+     * @param l 其他节点的IP地址列表
+     * @return 如果有不同数据中心的节点返回<code>true</code>,否则返回<code>false</code>
+     */
     private boolean hasRemoteNode(List<InetAddress> l)
     {
         String localDc = DatabaseDescriptor.getLocalDataCenter();

@@ -48,6 +48,9 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILa
     private String mbeanName;
     private boolean registered = false;
 
+    /**
+     * 保存每个节点相对于本节点的得分
+     */
     private final ConcurrentHashMap<InetAddress, Double> scores = new ConcurrentHashMap<InetAddress, Double>();
     private final ConcurrentHashMap<InetAddress, Long> lastReceived = new ConcurrentHashMap<InetAddress, Long>();
     private final ConcurrentHashMap<InetAddress, ExponentiallyDecayingSample> samples = new ConcurrentHashMap<InetAddress, ExponentiallyDecayingSample>();

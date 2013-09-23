@@ -105,6 +105,9 @@ public class TokenMetadata
         }
     };
 
+    /**
+     * 系统启动时，StorageService初始化TokenMetadata实例
+     */
     public TokenMetadata()
     {
         this(SortedBiMultiValMap.<Token, InetAddress>create(null, inetaddressCmp),
