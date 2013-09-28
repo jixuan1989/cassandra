@@ -40,6 +40,7 @@ public abstract class AbstractEndpointSnitch implements IEndpointSnitch
     }
 
     /**
+     * 调用compareEndpoints对ips进行排序
      * Sorts the <tt>List</tt> of node addresses, in-place, by proximity to the given address
      * @param address the address to sort the proximity by
      * @param addresses the nodes to sort
@@ -70,7 +71,11 @@ public abstract class AbstractEndpointSnitch implements IEndpointSnitch
              ? hasRemoteNode(l1) || hasRemoteNode(l2)
              : true;
     }
-
+/**
+ * 查看l中是否有ip不在本地datacenter中
+ * @param l
+ * @return
+ */
     private boolean hasRemoteNode(List<InetAddress> l)
     {
         String localDc = DatabaseDescriptor.getLocalDataCenter();

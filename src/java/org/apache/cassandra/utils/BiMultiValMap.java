@@ -28,6 +28,8 @@ import com.google.common.collect.Multimaps;
 
 /**
  *能同时通过key或者value快速定位的map（用了一个Multimap当做reverseMap来快速查找value）
+ *<br>一个key对应一个v。但是如果指定v来寻找k。可能能找到多个
+ *
  * A variant of BiMap which does not enforce uniqueness of values. This means the inverse
  * is a Multimap.
  *
@@ -120,7 +122,11 @@ public class BiMultiValMap<K, V> implements Map<K, V>
         reverseMap.remove(oldVal, key);
         return oldVal;
     }
-
+/**
+ * 删除所有v=value的元素
+ * @param value
+ * @return
+ */
     public Collection<K> removeValue(V value)
     {
         Collection<K> keys = reverseMap.removeAll(value);

@@ -35,6 +35,8 @@ import org.apache.cassandra.utils.FBUtilities;
 import com.yammer.metrics.stats.ExponentiallyDecayingSample;
 
 /**
+ * 有两个线程放在了storageService 的 scheduledTasks中，分别是updateScore和reset。
+ * 默认每0.1s更新一次分数。每10分钟重置一次分数（否则那些一开始得分差的节点，永远都没机会再被读取了..）
  * A dynamic snitch that sorts endpoints by latency with an adapted phi failure detector
  */
 public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILatencySubscriber, DynamicEndpointSnitchMBean
@@ -58,6 +60,11 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILa
     {
         this(snitch, null);
     }
+    /**
+     *启动了两个定期线程，b并注册了jmx
+     * @param snitch
+     * @param instance
+     */
     public DynamicEndpointSnitch(IEndpointSnitch snitch, String instance)
     {
         mbeanName = "org.apache.cassandra.db:type=DynamicEndpointSnitch";
@@ -147,7 +154,11 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILa
             sortByProximityWithBadness(address, addresses);
         }
     }
-
+    /**
+     * 通过ip与ip的compareEndpoints的结果进行排序。
+     * @param address
+     * @param addresses
+     */
     private void sortByProximityWithScore(final InetAddress address, List<InetAddress> addresses)
     {
         super.sortByProximity(address, addresses);
@@ -166,7 +177,7 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILa
             Double next = scores.get(addr);
             if (next == null)
                 return;
-            if ((first - next) / first > BADNESS_THRESHOLD)
+            if ((first - next) / first > BADNESS_THRESHOLD)//如果发现有差距这么大的，就不用badness排序了？
             {
                 sortByProximityWithScore(address, addresses);
                 return;
@@ -198,7 +209,9 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILa
         else
             return 1;
     }
-
+/**
+ * 更新host对应的衰减延迟
+ */
     public void receiveTiming(InetAddress host, long latency) // this is cheap
     {
         lastReceived.put(host, System.currentTimeMillis());
