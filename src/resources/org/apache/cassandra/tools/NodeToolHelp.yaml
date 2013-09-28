@@ -82,6 +82,12 @@ commands:
   - name: enablethrift
     help: |
       Reenable thrift server
+  - name: enablebackup
+    help: |
+      Enable incremental backup
+  - name: disablebackup
+    help: |
+      Disable incremental backup
   - name: statusthrift
     help: |
       Status of thrift server
@@ -102,7 +108,7 @@ commands:
       Print network information on provided host (connecting node by default)
   - name: move <new token>
     help: |
-      Move node on the token ring to a new token. (for -ve tokens, use \\ to escape, Example: move \\-123)
+      Move node on the token ring to a new token. (for negative tokens, use \\ to escape, Example: move \\-123)
   - name: removenode status|force|<ID>
     help: |
       Show status of current node removal, force completion of pending removal or remove provided ID
@@ -112,6 +118,9 @@ commands:
   - name: setstreamthroughput  <value_in_mb>
     help: |
       Set the MB/s throughput cap for streaming in the system, or 0 to disable throttling.
+  - name: describecluster
+    help: |
+      Print the name, snitch, partitioner and schema version of a cluster.
   - name: describering [keyspace]
     help: |
       Shows the token ranges info of a given keyspace.
@@ -155,6 +164,12 @@ commands:
   - name: getcompactionthreshold <keyspace> <cfname>
     help: |
       Print min and max compaction thresholds for a given column family
+  - name: getcompactionthroughput
+    help: |
+      Print the MB/s throughput cap for compaction in the system
+  - name: getstreamthroughput
+    help: |
+      Print the MB/s throughput cap for streaming in the system
   - name: stop <compaction_type>
     help: |
       Supported types are COMPACTION, VALIDATION, CLEANUP, SCRUB, INDEX_BUILD

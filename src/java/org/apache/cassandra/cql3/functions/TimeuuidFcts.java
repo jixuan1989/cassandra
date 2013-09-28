@@ -35,13 +35,23 @@ public abstract class TimeuuidFcts
         {
             return ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes());
         }
+
+        @Override
+        public boolean isPure()
+        {
+            return false;
+        }
     };
 
     public static final Function minTimeuuidFct = new AbstractFunction("mintimeuuid", TimeUUIDType.instance, DateType.instance)
     {
         public ByteBuffer execute(List<ByteBuffer> parameters)
         {
-            return ByteBuffer.wrap(UUIDGen.decompose(UUIDGen.minTimeUUID(DateType.instance.compose(parameters.get(0)).getTime())));
+            ByteBuffer bb = parameters.get(0);
+            if (bb == null)
+                return null;
+
+            return ByteBuffer.wrap(UUIDGen.decompose(UUIDGen.minTimeUUID(DateType.instance.compose(bb).getTime())));
         }
     };
 
@@ -49,7 +59,11 @@ public abstract class TimeuuidFcts
     {
         public ByteBuffer execute(List<ByteBuffer> parameters)
         {
-            return ByteBuffer.wrap(UUIDGen.decompose(UUIDGen.maxTimeUUID(DateType.instance.compose(parameters.get(0)).getTime())));
+            ByteBuffer bb = parameters.get(0);
+            if (bb == null)
+                return null;
+
+            return ByteBuffer.wrap(UUIDGen.decompose(UUIDGen.maxTimeUUID(DateType.instance.compose(bb).getTime())));
         }
     };
 
@@ -57,7 +71,11 @@ public abstract class TimeuuidFcts
     {
         public ByteBuffer execute(List<ByteBuffer> parameters)
         {
-            return DateType.instance.decompose(new Date(UUIDGen.unixTimestamp(UUIDGen.getUUID(parameters.get(0)))));
+            ByteBuffer bb = parameters.get(0);
+            if (bb == null)
+                return null;
+
+            return DateType.instance.decompose(new Date(UUIDGen.unixTimestamp(UUIDGen.getUUID(bb))));
         }
     };
 
@@ -65,7 +83,11 @@ public abstract class TimeuuidFcts
     {
         public ByteBuffer execute(List<ByteBuffer> parameters)
         {
-            return ByteBufferUtil.bytes(UUIDGen.unixTimestamp(UUIDGen.getUUID(parameters.get(0))));
+            ByteBuffer bb = parameters.get(0);
+            if (bb == null)
+                return null;
+
+            return ByteBufferUtil.bytes(UUIDGen.unixTimestamp(UUIDGen.getUUID(bb)));
         }
     };
 }

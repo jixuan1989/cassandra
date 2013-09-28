@@ -97,7 +97,9 @@ public class Config
     public Integer native_transport_min_threads = 16;
     public Integer native_transport_max_threads = 128;
 
+    @Deprecated
     public Integer thrift_max_message_length_in_mb = 16;
+
     public Integer thrift_framed_transport_size_in_mb = 15;
     public Boolean snapshot_before_compaction = false;
     public Boolean auto_snapshot = true;
@@ -124,6 +126,7 @@ public class Config
     public Double commitlog_sync_batch_window_in_ms;
     public Integer commitlog_sync_period_in_ms;
     public int commitlog_segment_size_in_mb = 32;
+    public int commitlog_periodic_queue_size = 1024 * FBUtilities.getAvailableProcessors();
 
     public String endpoint_snitch;
     public Boolean dynamic_snitch = true;
@@ -167,6 +170,8 @@ public class Config
     public boolean populate_io_cache_on_flush = false;
 
     public boolean inter_dc_tcp_nodelay = true;
+
+    public String memtable_allocator = "SlabAllocator";
 
     private static boolean loadYaml = true;
     private static boolean outboundBindAny = false;

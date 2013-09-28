@@ -17,20 +17,21 @@
  */
 package org.apache.cassandra.tools;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.PrintStream;
+import java.io.*;
 import java.lang.management.MemoryUsage;
 import java.net.ConnectException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.text.DecimalFormat;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.Map.Entry;
 import java.util.concurrent.ExecutionException;
 
+import com.google.common.base.Joiner;
 import com.google.common.collect.LinkedHashMultimap;
 import com.google.common.collect.Maps;
+import org.apache.cassandra.utils.FBUtilities;
 import org.apache.commons.cli.*;
 import org.yaml.snakeyaml.Loader;
 import org.yaml.snakeyaml.TypeDescription;
@@ -55,6 +56,7 @@ import org.apache.cassandra.utils.Pair;
 
 public class NodeCmd
 {
+    private static final String HISTORYFILE = "nodetool.history";
     private static final Pair<String, String> SNAPSHOT_COLUMNFAMILY_OPT = Pair.create("cf", "column-family");
     private static final Pair<String, String> HOST_OPT = Pair.create("h", "host");
     private static final Pair<String, String> PORT_OPT = Pair.create("p", "port");
@@ -68,6 +70,7 @@ public class NodeCmd
     private static final Pair<String, String> START_TOKEN_OPT = Pair.create("st", "start-token");
     private static final Pair<String, String> END_TOKEN_OPT = Pair.create("et", "end-token");
     private static final Pair<String, String> UPGRADE_ALL_SSTABLE_OPT = Pair.create("a", "include-all-sstables");
+    private static final Pair<String, String> NO_SNAPSHOT = Pair.create("ns", "no-snapshot");
 
     private static final String DEFAULT_HOST = "127.0.0.1";
     private static final int DEFAULT_PORT = 7199;
@@ -91,6 +94,7 @@ public class NodeCmd
         options.addOption(START_TOKEN_OPT, true, "token at which repair range starts");
         options.addOption(END_TOKEN_OPT, true, "token at which repair range ends");
         options.addOption(UPGRADE_ALL_SSTABLE_OPT, false, "includes sstables that are already on the most recent version during upgradesstables");
+        options.addOption(NO_SNAPSHOT, false, "disables snapshot creation for scrub");
     }
 
     public NodeCmd(NodeProbe probe)
@@ -107,6 +111,7 @@ public class NodeCmd
         COMPACT,
         COMPACTIONSTATS,
         DECOMMISSION,
+        DESCRIBECLUSTER,
         DISABLEBINARY,
         DISABLEGOSSIP,
         DISABLEHANDOFF,
@@ -118,6 +123,8 @@ public class NodeCmd
         ENABLETHRIFT,
         FLUSH,
         GETCOMPACTIONTHRESHOLD,
+        GETCOMPACTIONTHROUGHPUT,
+        GETSTREAMTHROUGHPUT,
         GETENDPOINTS,
         GETSSTABLES,
         GOSSIPINFO,
@@ -155,7 +162,9 @@ public class NodeCmd
         RANGEKEYSAMPLE,
         REBUILD_INDEX,
         RESETLOCALSCHEMA,
-        PREDICTCONSISTENCY
+        PREDICTCONSISTENCY,
+        ENABLEBACKUP,
+        DISABLEBACKUP
     }
 
 
@@ -168,6 +177,14 @@ public class NodeCmd
         StringBuilder header = new StringBuilder(512);
         header.append("\nAvailable commands\n");
         final NodeToolHelp ntHelp = loadHelp();
+        Collections.sort(ntHelp.commands, new Comparator<NodeToolHelp.NodeToolCommand>() 
+        {
+            @Override
+            public int compare(NodeToolHelp.NodeToolCommand o1, NodeToolHelp.NodeToolCommand o2) 
+            {
+                return o1.name.compareTo(o2.name);
+            }
+        });
         for(NodeToolHelp.NodeToolCommand cmd : ntHelp.commands)
             addCmdHelp(header, cmd);
         String usage = String.format("java %s --host <arg> <command>%n", NodeCmd.class.getName());
@@ -556,6 +573,7 @@ public class NodeCmd
         outs.printf("%-17s: %s%n", "ID", probe.getLocalHostId());
         outs.printf("%-17s: %s%n", "Gossip active", gossipInitialized);
         outs.printf("%-17s: %s%n", "Thrift active", probe.isThriftServerRunning());
+        outs.printf("%-17s: %s%n", "Native Transport active", probe.isNativeTransportRunning());
         outs.printf("%-17s: %s%n", "Load", probe.getLoadString());
         if (gossipInitialized)
             outs.printf("%-17s: %s%n", "Generation No", probe.getCurrentGenerationNumber());
@@ -665,6 +683,8 @@ public class NodeCmd
                 outs.printf("   Error retrieving file data for %s%n", host);
             }
         }
+        
+        outs.printf("Read Repair Statistics:%nAttempted: %d%nMismatch (Blocking): %d%nMismatch (Background): %d%n", probe.getReadRepairAttempted(), probe.getReadRepairRepairedBlocking(), probe.getReadRepairRepairedBackground());
 
         MessagingServiceMBean ms = probe.msProxy;
         outs.printf("%-25s", "Pool Name");
@@ -717,6 +737,62 @@ public class NodeCmd
                         : String.format("%dh%02dm%02ds", remainingTimeInSecs / 3600, (remainingTimeInSecs % 3600) / 60, (remainingTimeInSecs % 60));
 
         outs.printf("%25s%10s%n", "Active compaction remaining time : ", remainingTime);
+    }
+
+    /**
+     * Print the compaction threshold
+     *
+     * @param outs the stream to write to
+     */
+    public void printCompactionThreshold(PrintStream outs, String ks, String cf)
+    {
+        ColumnFamilyStoreMBean cfsProxy = probe.getCfsProxy(ks, cf);
+        outs.println("Current compaction thresholds for " + ks + "/" + cf + ": \n" +
+                     " min = " + cfsProxy.getMinimumCompactionThreshold() + ", " +
+                     " max = " + cfsProxy.getMaximumCompactionThreshold());
+    }
+
+    /**
+     * Print the compaction throughput
+     *
+     * @param outs the stream to write to
+     */
+    public void printCompactionThroughput(PrintStream outs)
+    {
+        outs.println("Current compaction throughput: " + probe.getCompactionThroughput() + " MB/s");
+    }
+
+    /**
+     * Print the stream throughput
+     *
+     * @param outs the stream to write to
+     */
+    public void printStreamThroughput(PrintStream outs)
+    {
+        outs.println("Current stream throughput: " + probe.getStreamThroughput() + " MB/s");
+    }
+
+    /**
+     * Print the name, snitch, partitioner and schema version(s) of a cluster
+     *
+     * @param outs Output stream
+     * @param host Server address
+     */
+    public void printClusterDescription(PrintStream outs, String host)
+    {
+        // display cluster name, snitch and partitioner
+        outs.println("Cluster Information:");
+        outs.println("\tName: " + probe.getClusterName());
+        outs.println("\tSnitch: " + probe.getEndpointSnitchInfoProxy().getSnitchName());
+        outs.println("\tPartitioner: " + probe.getPartitioner());
+
+        // display schema version for each node
+        outs.println("\tSchema versions:");
+        Map<String, List<String>> schemaVersions = probe.getSpProxy().getSchemaVersions();
+        for (String version : schemaVersions.keySet())
+        {
+            outs.println(String.format("\t\t%s: %s%n", version, schemaVersions.get(version)));
+        }
     }
 
     public void printColumnFamilyStats(PrintStream outs)
@@ -816,6 +892,7 @@ public class NodeCmd
                 }
                 outs.println("\t\tSpace used (live): " + cfstore.getLiveDiskSpaceUsed());
                 outs.println("\t\tSpace used (total): " + cfstore.getTotalDiskSpaceUsed());
+                outs.println("\t\tSSTable Compression Ratio: " + cfstore.getCompressionRatio());
                 outs.println("\t\tNumber of Keys (estimate): " + cfstore.estimateKeys());
                 outs.println("\t\tMemtable Columns Count: " + cfstore.getMemtableColumnsCount());
                 outs.println("\t\tMemtable Data Size: " + cfstore.getMemtableDataSize());
@@ -1024,6 +1101,8 @@ public class NodeCmd
         }
         try
         {
+            //print history here after we've already determined we can reasonably call cassandra
+            printHistory(args, cmd);
             NodeCommand command = null;
 
             try
@@ -1034,7 +1113,6 @@ public class NodeCmd
             {
                 badUse(e.getMessage());
             }
-
 
             NodeCmd nodeCmd = new NodeCmd(probe);
 
@@ -1056,6 +1134,7 @@ public class NodeCmd
                 case TPSTATS         : nodeCmd.printThreadPoolStats(System.out); break;
                 case VERSION         : nodeCmd.printReleaseVersion(System.out); break;
                 case COMPACTIONSTATS : nodeCmd.printCompactionStats(System.out); break;
+                case DESCRIBECLUSTER : nodeCmd.printClusterDescription(System.out, host); break;
                 case DISABLEBINARY   : probe.stopNativeTransport(); break;
                 case ENABLEBINARY    : probe.startNativeTransport(); break;
                 case STATUSBINARY    : nodeCmd.printIsNativeTransportRunning(System.out); break;
@@ -1069,6 +1148,9 @@ public class NodeCmd
                 case ENABLETHRIFT    : probe.startThriftServer(); break;
                 case STATUSTHRIFT    : nodeCmd.printIsThriftServerRunning(System.out); break;
                 case RESETLOCALSCHEMA: probe.resetLocalSchema(); break;
+                case ENABLEBACKUP    : probe.setIncrementalBackupsEnabled(true); break;
+                case DISABLEBACKUP   : probe.setIncrementalBackupsEnabled(false); break;
+                    
 
                 case STATUS :
                     if (arguments.length > 0) nodeCmd.printClusterStatus(System.out, arguments[0]);
@@ -1173,8 +1255,11 @@ public class NodeCmd
 
                 case GETCOMPACTIONTHRESHOLD :
                     if (arguments.length != 2) { badUse("getcompactionthreshold requires ks and cf args."); }
-                    probe.getCompactionThreshold(System.out, arguments[0], arguments[1]);
+                    nodeCmd.printCompactionThreshold(System.out, arguments[0], arguments[1]);
                     break;
+
+                case GETCOMPACTIONTHROUGHPUT : nodeCmd.printCompactionThroughput(System.out); break;
+                case GETSTREAMTHROUGHPUT : nodeCmd.printStreamThroughput(System.out); break;
 
                 case CFHISTOGRAMS :
                     if (arguments.length != 2) { badUse("cfhistograms requires ks and cf args"); }
@@ -1276,6 +1361,34 @@ public class NodeCmd
         System.exit(probe.isFailed() ? 1 : 0);
     }
 
+    private static void printHistory(String[] args, ToolCommandLine cmd)
+    {
+        //don't bother to print if no args passed (meaning, nodetool is just printing out the sub-commands list)
+        if (args.length == 0)
+            return;
+        String cmdLine = Joiner.on(" ").skipNulls().join(args);
+        final String password = cmd.getOptionValue(PASSWORD_OPT.left);
+        if (password != null)
+            cmdLine = cmdLine.replace(password, "<hidden>");
+
+        FileWriter writer = null;
+        try
+        {
+            final String outputDir = FBUtilities.getToolsOutputDirectory().getCanonicalPath();
+            writer = new FileWriter(new File(outputDir, HISTORYFILE), true);
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss,SSS");
+            writer.append(sdf.format(new Date()) + ": " + cmdLine + "\n");
+        }
+        catch (IOException ioe)
+        {
+            //quietly ignore any errors about not being able to write out history
+        }
+        finally
+        {
+            FileUtils.closeQuietly(writer);
+        }
+    }
+
     private static Throwable findInnermostThrowable(Throwable ex)
     {
         Throwable inner = ex.getCause();
@@ -1339,7 +1452,7 @@ public class NodeCmd
     private static void handleSnapshots(NodeCommand nc, String tag, String[] cmdArgs, String columnFamily, NodeProbe probe) throws InterruptedException, IOException
     {
         String[] keyspaces = Arrays.copyOfRange(cmdArgs, 0, cmdArgs.length);
-        System.out.print("Requested snapshot for: ");
+        System.out.print("Requested " + ((nc == NodeCommand.SNAPSHOT) ? "creating" : "clearing") + " snapshot for: ");
         if ( keyspaces.length > 0 )
         {
           for (int i = 0; i < keyspaces.length; i++)
@@ -1412,7 +1525,8 @@ public class NodeCmd
                     catch (ExecutionException ee) { err(ee, "Error occurred during cleanup"); }
                     break;
                 case SCRUB :
-                    try { probe.scrub(keyspace, columnFamilies); }
+                    boolean disableSnapshot = cmd.hasOption(NO_SNAPSHOT.left);
+                    try { probe.scrub(disableSnapshot, keyspace, columnFamilies); }
                     catch (ExecutionException ee) { err(ee, "Error occurred while scrubbing keyspace " + keyspace); }
                     break;
                 case UPGRADESSTABLES :
