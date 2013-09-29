@@ -174,7 +174,8 @@ public abstract class AbstractReplicationStrategy
     public abstract int getReplicationFactor();
 
     /**
-     * 
+     * 对metadata中sortedToken中的每个token进行二分查找，生成range对，并计算这个token对应的ip是多少。然后保存ip-range对
+     * <br>效率不高,for循环的调用二分查找...
      * NOTE: this is pretty inefficient. also the inverse (getRangeAddresses) below.
      * this is fine as long as we don't use this on any critical path.
      * (fixing this would probably require merging tokenmetadata into replicationstrategy,
@@ -186,7 +187,8 @@ public abstract class AbstractReplicationStrategy
 
         for (Token token : metadata.sortedTokens())
         {
-            Range<Token> range = metadata.getPrimaryRangeFor(token);
+            @SuppressWarnings("deprecation")
+			Range<Token> range = metadata.getPrimaryRangeFor(token);//二分查找
             for (InetAddress ep : calculateNaturalEndpoints(token, metadata))
             {
                 map.put(ep, range);
@@ -195,7 +197,12 @@ public abstract class AbstractReplicationStrategy
 
         return map;
     }
-
+/**
+ * 对metadata中sortedToken中的每个token进行二分查找，生成range对，并计算这个token对应的ip是多少。然后保存range-ip对
+ * <br>效率不高,for循环的调用二分查找...
+ * @param metadata
+ * @return
+ */
     public Multimap<Range<Token>, InetAddress> getRangeAddresses(TokenMetadata metadata)
     {
         Multimap<Range<Token>, InetAddress> map = HashMultimap.create();
@@ -211,7 +218,11 @@ public abstract class AbstractReplicationStrategy
 
         return map;
     }
-
+/**
+ * 对metadata中sortedToken中的每个token进行二分查找，生成range对，并计算这个token对应的ip是多少。然后保存ip-range对
+ * <br>效率不高,for循环的调用二分查找...
+ * @return
+ */
     public Multimap<InetAddress, Range<Token>> getAddressRanges()
     {
         return getAddressRanges(tokenMetadata.cloneOnlyTokenMap());
@@ -221,16 +232,22 @@ public abstract class AbstractReplicationStrategy
     {
         return getPendingAddressRanges(metadata, Arrays.asList(pendingToken), pendingAddress);
     }
-
+/**
+ * 将pendingTokens中的元素更新到tokenToEndpoints中，然后二分查找metadata中的所有token，生成range，生成ip-range对... 然后获取有关的ip对应的range。。
+ * @param metadata
+ * @param pendingTokens
+ * @param pendingAddress
+ * @return
+ */
     public Collection<Range<Token>> getPendingAddressRanges(TokenMetadata metadata, Collection<Token> pendingTokens, InetAddress pendingAddress)
     {
         TokenMetadata temp = metadata.cloneOnlyTokenMap();
         temp.updateNormalTokens(pendingTokens, pendingAddress);
         return getAddressRanges(temp).get(pendingAddress);
     }
-/**
- * 清空endpointCache
- */
+	/**
+	 * 清空endpointCache
+	 */
     public void invalidateCachedTokenEndpointValues()
     {
         clearEndpointCache();

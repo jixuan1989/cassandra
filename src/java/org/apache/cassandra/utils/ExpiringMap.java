@@ -96,6 +96,7 @@ public class ExpiringMap<K, V>
                     if (entry.getValue().isReadyToDieAt(start))
                     {
                         cache.remove(entry.getKey());
+                        logger.trace("-----Expired {},{} entries", entry.getKey(),entry.getValue());
                         n++;
                         if (postExpireHook != null)
                             postExpireHook.apply(Pair.create(entry.getKey(), entry.getValue()));
@@ -148,6 +149,7 @@ public class ExpiringMap<K, V>
                 throw new AssertionError(e);
             }
         }
+        logger.debug("add into ExpiringMap:"+key.getClass().toString()+"||"+value.getClass().toString());
         CacheableObject<V> previous = cache.put(key, new CacheableObject<V>(value, timeout));
         return (previous == null) ? null : previous.value;
     }

@@ -41,7 +41,9 @@ public class SimpleStrategy extends AbstractReplicationStrategy
     {
         super(table, tokenMetadata, snitch, configOptions);
     }
-
+/**
+ * 从给定的token开始，向后找副本个数个token，并返回他们的ip
+ */
     public List<InetAddress> calculateNaturalEndpoints(Token token, TokenMetadata metadata)
     {
         int replicas = getReplicationFactor();

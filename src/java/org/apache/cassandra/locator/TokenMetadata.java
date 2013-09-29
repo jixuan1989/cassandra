@@ -40,7 +40,12 @@ import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.gms.FailureDetector;
 import org.apache.cassandra.service.StorageService;
-
+/**
+ * 一个token对应一个ip。一个ip可以对应多个token。
+ * <br> token莫非表示的是一个虚拟节点？
+ * @author hxd
+ *
+ */
 public class TokenMetadata
 {
     private static final Logger logger = LoggerFactory.getLogger(TokenMetadata.class);
@@ -53,7 +58,7 @@ public class TokenMetadata
 
     // Prior to CASSANDRA-603, we just had <tt>Map<Range, InetAddress> pendingRanges<tt>,
     // which was added to when a node began bootstrap and removed from when it finished.
-    //
+    //节点开始启动的时候，加入pendingRanges，启动完毕删除之。
     // This is inadequate when multiple changes are allowed simultaneously.  For example,
     // suppose that there is a ring of nodes A, C and E, with replication factor 3.
     // Node D bootstraps between C and E, so its pending ranges will be E-A, A-C and C-D.
@@ -80,7 +85,9 @@ public class TokenMetadata
     private final Set<InetAddress> leavingEndpoints = new HashSet<InetAddress>();
     // this is a cache of the calculation from {tokenToEndpointMap, bootstrapTokens, leavingEndpoints}
     private final ConcurrentMap<String, Multimap<Range<Token>, InetAddress>> pendingRanges = new ConcurrentHashMap<String, Multimap<Range<Token>, InetAddress>>();
-
+    /**
+     * tokens which are migrating to new endpoints .为何要用一个set呢。。。 
+     */
     // nodes which are migrating to the new tokens in the ring
     private final Set<Pair<Token, InetAddress>> movingEndpoints = new HashSet<Pair<Token, InetAddress>>();
 
@@ -152,13 +159,18 @@ public class TokenMetadata
     }
 
     /**
+     *  更新正常的token。该方法首先将该ip涉及的元素从各个容器中删除（会通知subscriber们清空token-endpoint缓存），然后再重新将token与ip的对应关系放入tokenToEndpointMap中<br>然后重新排序一下token
      * Update token map with a single token/endpoint pair in normal state.
      */
     public void updateNormalToken(Token token, InetAddress endpoint)
     {
         updateNormalTokens(Collections.singleton(token), endpoint);
     }
-
+/**
+ *  更新正常的token。该方法首先将该ip涉及的元素从各个容器中删除（会通知subscriber们清空token-endpoint缓存），然后再重新将token与ip的对应关系放入tokenToEndpointMap中<br>然后重新排序一下token
+ * @param tokens
+ * @param endpoint
+ */
     public void updateNormalTokens(Collection<Token> tokens, InetAddress endpoint)
     {
         Multimap<InetAddress, Token> endpointTokens = HashMultimap.create();
@@ -168,6 +180,8 @@ public class TokenMetadata
     }
 
     /**
+     * 更新正常的token。该方法首先将所有涉及的ip从各个容器中删除（会通知subscriber们清空token-endpoint缓存），然后再重新将token与这些ip的对应关系放入tokenToEndpointMap中
+     * <br>然后重新排序一下token
      * Update token map with a set of token/endpoint pairs in normal state.
      *
      * Prefer this whenever there are multiple pairs to update, as each update (whether a single or multiple)
@@ -190,8 +204,8 @@ public class TokenMetadata
 
                 assert tokens != null && !tokens.isEmpty();
 
-                bootstrapTokens.removeValue(endpoint);
-                tokenToEndpointMap.removeValue(endpoint);
+                bootstrapTokens.removeValue(endpoint);//bootstrapToken中删除该ip的元素
+                tokenToEndpointMap.removeValue(endpoint);//tokenToEndpointMap中删除该ip的元素
                 topology.addEndpoint(endpoint);
                 leavingEndpoints.remove(endpoint);
                 removeFromMoving(endpoint); // also removing this endpoint from moving
@@ -218,6 +232,7 @@ public class TokenMetadata
     }
 
     /**
+     * 将ip-id存入endpointToHostIdMap中。如果这个id已经跟某个ip对应起来了，那么报错。 如果这个ip已经有一个id了，那么会打出一个警告，但是还是会修改...（与英文注释不一样啊。。。）
      * Store an end-point to host ID mapping.  Each ID must be unique, and
      * cannot be changed after the fact.
      *
@@ -232,7 +247,7 @@ public class TokenMetadata
         InetAddress storedEp = endpointToHostIdMap.inverse().get(hostId);
         if (storedEp != null)
         {
-            if (!storedEp.equals(endpoint) && (FailureDetector.instance.isAlive(storedEp)))
+            if (!storedEp.equals(endpoint) && (FailureDetector.instance.isAlive(storedEp)))//发现hostId对应的旧的ip与新提供的不等，并且旧的没有死，那么报错。
             {
                 throw new RuntimeException(String.format("Host ID collision between active endpoint %s and %s (id=%s)",
                                                          storedEp,
@@ -241,7 +256,7 @@ public class TokenMetadata
             }
         }
 
-        UUID storedId = endpointToHostIdMap.get(endpoint);
+        UUID storedId = endpointToHostIdMap.get(endpoint);//判断下提供的ip是否已经有对应的id了。有的话 打出一个警告
         if ((storedId != null) && (!storedId.equals(hostId)))
             logger.warn("Changing {}'s host ID from {} to {}", new Object[] {endpoint, storedId, hostId});
 
@@ -273,7 +288,12 @@ public class TokenMetadata
     {
         addBootstrapTokens(Collections.singleton(token), endpoint);
     }
-
+/**
+ * 首先判断每个token是否已经出现在bootstrapTokens或tokenToEndpointMap中了，且对应的ip！=endpoint，那么报错
+ * <br>然后从bootstrapTokens中先把这个endpoint对应的旧的元素删掉，然后将这个给强制加进去
+ * @param tokens
+ * @param endpoint
+ */
     public void addBootstrapTokens(Collection<Token> tokens, InetAddress endpoint)
     {
         assert tokens != null && !tokens.isEmpty();
@@ -306,7 +326,10 @@ public class TokenMetadata
             lock.writeLock().unlock();
         }
     }
-
+/**
+ * 把所有的token相关的元素从bootstrapTokens中删除
+ * @param tokens
+ */
     public void removeBootstrapTokens(Collection<Token> tokens)
     {
         assert tokens != null && !tokens.isEmpty();
@@ -322,7 +345,10 @@ public class TokenMetadata
             lock.writeLock().unlock();
         }
     }
-
+/**
+ * 增加一个ip到leavingEndpoints
+ * @param endpoint
+ */
     public void addLeavingEndpoint(InetAddress endpoint)
     {
         assert endpoint != null;
@@ -339,6 +365,7 @@ public class TokenMetadata
     }
 
     /**
+     * 加入一个token-ip对到movingEndpoints中
      * Add a new moving endpoint
      * @param token token which is node moving to
      * @param endpoint address of the moving node
@@ -360,6 +387,7 @@ public class TokenMetadata
     }
 
     /**
+     * 将token-ip放入relocatingToken中取
      * Add new relocating ranges (tokens moving from their respective endpoints, to another).
      * @param tokens tokens being moved
      * @param endpoint destination of moves
@@ -385,7 +413,10 @@ public class TokenMetadata
             lock.writeLock().unlock();
         }
     }
-
+/**
+ * 从各个容器中删除与该ip相关的元素
+ * @param endpoint
+ */
     public void removeEndpoint(InetAddress endpoint)
     {
         assert endpoint != null;
@@ -408,6 +439,8 @@ public class TokenMetadata
     }
 
     /**
+     * 从movingEndpoints中删除pair的右边=该ip的元素对
+     * <br>然后通知subcribers清空token-endpoint的缓存
      * Remove pair of token/address from moving endpoints
      * @param endpoint address of the moving node
      */
@@ -436,6 +469,7 @@ public class TokenMetadata
     }
 
     /**
+     * 根据token将之从
      * Remove pair of token/address from relocating ranges.
      * @param endpoint
      */
@@ -466,7 +500,11 @@ public class TokenMetadata
             lock.writeLock().unlock();
         }
     }
-
+/**
+ * 从tokenToEndpointMap中获取ip对应的token
+ * @param endpoint
+ * @return
+ */
     public Collection<Token> getTokens(InetAddress endpoint)
     {
         assert endpoint != null;
@@ -488,7 +526,11 @@ public class TokenMetadata
     {
         return getTokens(endpoint).iterator().next();
     }
-
+/**
+ * 判断ip在tokenToEndpointMap中出现过没有
+ * @param endpoint
+ * @return
+ */
     public boolean isMember(InetAddress endpoint)
     {
         assert endpoint != null;
@@ -503,7 +545,11 @@ public class TokenMetadata
             lock.readLock().unlock();
         }
     }
-
+/**
+ * 判断ip在leavingEndpoints中出现过没有
+ * @param endpoint
+ * @return
+ */
     public boolean isLeaving(InetAddress endpoint)
     {
         assert endpoint != null;
@@ -518,7 +564,11 @@ public class TokenMetadata
             lock.readLock().unlock();
         }
     }
-
+/**
+ * 判断ip在movingEndpoints中出现过没有
+ * @param endpoint
+ * @return
+ */
     public boolean isMoving(InetAddress endpoint)
     {
         assert endpoint != null;
@@ -540,7 +590,11 @@ public class TokenMetadata
             lock.readLock().unlock();
         }
     }
-
+/**
+ * 判断token在relocatingTokens中出现过没有
+ * @param token
+ * @return
+ */
     public boolean isRelocating(Token token)
     {
         assert token != null;
@@ -577,6 +631,7 @@ public class TokenMetadata
     }
 
     /**
+     * 拷贝完tokenToEndpointMap后，从新的对象中将在leavingEndpoints中出现过的ip删除。
      * Create a copy of TokenMetadata with tokenToEndpointMap reflecting situation after all
      * current leave operations have finished.
      *
@@ -601,6 +656,7 @@ public class TokenMetadata
     }
 
     /**
+     * 首先拷贝一份tokenToEndpointMap。然后删除所有在leavingEndpoints中的ip。然后将moving、relocating的ip都更新到正常状态下（放入tokenToEndpointMap中）
      * Create a copy of TokenMetadata with tokenToEndpointMap reflecting situation after all
      * current leave, move, and relocate operations have finished.
      *
@@ -631,7 +687,11 @@ public class TokenMetadata
             lock.readLock().unlock();
         }
     }
-
+/**
+ * 从tokenToEndpointMap中获取token对应的ip
+ * @param token
+ * @return
+ */
     public InetAddress getEndpoint(Token token)
     {
         lock.readLock().lock();
@@ -644,7 +704,11 @@ public class TokenMetadata
             lock.readLock().unlock();
         }
     }
-
+/**
+ * 根据每个token得到一个<他的前者，他>的range范围
+ * @param tokens
+ * @return
+ */
     public Collection<Range<Token>> getPrimaryRangesFor(Collection<Token> tokens)
     {
         Collection<Range<Token>> ranges = new ArrayList<Range<Token>>(tokens.size());
@@ -652,7 +716,11 @@ public class TokenMetadata
             ranges.add(new Range<Token>(getPredecessor(right), right));
         return ranges;
     }
-
+    /**
+     * 根据token得到一个<他的前者，他>的range范围
+     * @param tokens
+     * @return
+     */
     @Deprecated
     public Range<Token> getPrimaryRangeFor(Token right)
     {
@@ -663,7 +731,11 @@ public class TokenMetadata
     {
         return sortedTokens;
     }
-
+/**
+ * 从pendingRanges中得到对应的map。如果为空，则新建一个空的并放入pendingRanges中。
+ * @param table
+ * @return
+ */
     private Multimap<Range<Token>, InetAddress> getPendingRangesMM(String table)
     {
         Multimap<Range<Token>, InetAddress> map = pendingRanges.get(table);
@@ -677,12 +749,19 @@ public class TokenMetadata
         return map;
     }
 
-    /** a mutable map may be returned but caller should not modify it */
+    /**从pendingRanges中得到对应的map。如果为空，则新建一个空的并放入pendingRanges中。 但是返回值是一个标准的map。
+     *  a mutable map may be returned but caller should not modify it */
     public Map<Range<Token>, Collection<InetAddress>> getPendingRanges(String table)
     {
         return getPendingRangesMM(table).asMap();
     }
-
+/**
+ * 从pendingRanges中得到对应的map。如果为空，则新建一个空的并放入pendingRanges中。 
+ * <br>然后从这个map中（key为Range<token>，value为ip），获取ip等于endpoint的那些Range<token>。
+ * @param table
+ * @param endpoint
+ * @return
+ */
     public List<Range<Token>> getPendingRanges(String table, InetAddress endpoint)
     {
         List<Range<Token>> ranges = new ArrayList<Range<Token>>();
@@ -695,12 +774,20 @@ public class TokenMetadata
         }
         return ranges;
     }
-
+/**
+ * 放入pendingRange中去
+ * @param table
+ * @param rangeMap
+ */
     public void setPendingRanges(String table, Multimap<Range<Token>, InetAddress> rangeMap)
     {
         pendingRanges.put(table, rangeMap);
     }
-
+/**
+ * 二分查找法取离该token最近的前一个token。如果token排在第0位，则取最后一个
+ * @param token
+ * @return
+ */
     public Token getPredecessor(Token token)
     {
         List tokens = sortedTokens();
@@ -708,7 +795,11 @@ public class TokenMetadata
         assert index >= 0 : token + " not found in " + StringUtils.join(tokenToEndpointMap.keySet(), ", ");
         return (Token) (index == 0 ? tokens.get(tokens.size() - 1) : tokens.get(index - 1));
     }
-
+/**
+ * 二分查找法去离该token最近的后一个token。如果token排在最末尾，则取第一个。
+ * @param token
+ * @return
+ */
     public Token getSuccessor(Token token)
     {
         List tokens = sortedTokens();
@@ -730,7 +821,10 @@ public class TokenMetadata
             lock.readLock().unlock();
         }
     }
-
+/**
+ * 返回endpointToHostIdMap中出现的所有ip
+ * @return
+ */
     public Set<InetAddress> getAllEndpoints()
     {
         return endpointToHostIdMap.keySet();
@@ -759,27 +853,41 @@ public class TokenMetadata
     {
         return relocatingTokens;
     }
-
+/**
+ * 找到start所在的位置。如果start不存在，则返回离他最近的左边的一个。 如果所有的都比start小，那么要么返回-1（insertMin=true） ，要么返回0
+ * <br>所谓的insertMin,其实是指的将来iterator遍历时，是否包含StorageService.getPartitioner().getMinimumToken()。
+ * @param ring
+ * @param start
+ * @param insertMin
+ * @return
+ */
     public static int firstTokenIndex(final ArrayList ring, Token start, boolean insertMin)
     {
         assert ring.size() > 0;
         // insert the minimum token (at index == -1) if we were asked to include it and it isn't a member of the ring
-        int i = Collections.binarySearch(ring, start);
+        int i = Collections.binarySearch(ring, start);//如果搜索键包含在列表中，则返回搜索键的索引；否则返回 (-(插入点) - 1)。插入点 被定义为将键插入列表的那一点：即第一个大于此键的元素索引；如果列表中的所有元素都小于指定的键，则为 list.size()。注意，这保证了当且仅当此键被找到时，返回的值将 >= 0。 
         if (i < 0)
         {
-            i = (i + 1) * (-1);
-            if (i >= ring.size())
+            i = (i + 1) * (-1);//表示最近的比start小的那个token的位置
+            if (i >= ring.size())//如果所有的都比start小
                 i = insertMin ? -1 : 0;
         }
         return i;
     }
-
+/**
+ * 找到start所在的位置的token。如果start不存在，则返回离他最近的左边的一个。 如果所有的都比start小，那么返回0
+ * 然后得到ring.get(位置)。
+ * @param ring
+ * @param start
+ * @return
+ */
     public static Token firstToken(final ArrayList<Token> ring, Token start)
     {
         return ring.get(firstTokenIndex(ring, start, false));
     }
 
     /**
+     * 从start开始，得到一个能转一圈的指针。
      * iterator over the Tokens in the given ring, starting with the token for the node owning start
      * (which does not have to be a Token in the ring)
      * @param includeMin True if the minimum token should be returned in the ring even if it has no owner.
@@ -915,7 +1023,9 @@ public class TokenMetadata
 
         return sb.toString();
     }
-
+/**
+ * 通知subscribers，清空token-endpoint的缓存。
+ */
     public void invalidateCaches()
     {
         for (AbstractReplicationStrategy subscriber : subscribers)
@@ -923,17 +1033,28 @@ public class TokenMetadata
             subscriber.invalidateCachedTokenEndpointValues();
         }
     }
-
+/**
+ * 添加到subscribers中，目前发现有strategy进行了注册
+ * @param subscriber
+ */
     public void register(AbstractReplicationStrategy subscriber)
     {
         subscribers.add(subscriber);
     }
-
+/**
+ * 从subscriber中移除
+ * @param subscriber
+ */
     public void unregister(AbstractReplicationStrategy subscriber)
     {
         subscribers.remove(subscriber);
     }
-
+/**
+ * 根据table从pendingRanges中找到素有相关的range-ips的map。然后判断哪个range包含指定的token，就返回这些ip。
+ * @param token
+ * @param table
+ * @return
+ */
     public Collection<InetAddress> pendingEndpointsFor(Token token, String table)
     {
         Map<Range<Token>, Collection<InetAddress>> ranges = getPendingRanges(table);
@@ -950,7 +1071,8 @@ public class TokenMetadata
         return endpoints;
     }
 
-    /**
+    /** 
+     * 得到pending中所有的和token相关的ip以及naturalEndpoints。
      * @deprecated retained for benefit of old tests
      */
     public Collection<InetAddress> getWriteEndpoints(Token token, String table, Collection<InetAddress> naturalEndpoints)

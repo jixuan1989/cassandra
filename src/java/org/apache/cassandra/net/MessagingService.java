@@ -330,7 +330,7 @@ public final class MessagingService implements MessagingServiceMBean
                 maybeAddLatency(expiredCallbackInfo.callback, expiredCallbackInfo.target, pair.right.timeout);//还要理解。。。
                 ConnectionMetrics.totalTimeouts.mark();//增加超时次数
                 getConnectionPool(expiredCallbackInfo.target).incrementTimeout();//对应的out连接增加超时次数
-
+                logger.debug("------apply timeoutReporter：{},{}",expiredCallbackInfo.callback.toString(),expiredCallbackInfo.sentMessage.toString());
                 if (expiredCallbackInfo.shouldHint())//如果应该hint（消息不空，对方机器当机时间没超过最大hint时间）
                 {
                     assert expiredCallbackInfo.sentMessage != null;

@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.net;
 
+import org.apache.cassandra.net.MessagingService.Verb;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 /**
@@ -65,7 +66,10 @@ public class MessageDeliveryTask implements Runnable
             logger.debug("Unknown verb {}", verb);
             return;
         }
-
+        if(verb!=Verb.GOSSIP_DIGEST_ACK &&verb!=Verb.GOSSIP_DIGEST_ACK2&& verb!=Verb.GOSSIP_DIGEST_SYN){
+        	logger.debug("----------verbHandler type："+verbHandler.getClass().toString());
+        	logger.debug("----------verbHandler："+verbHandler.toString());
+        }
         verbHandler.doVerb(message, id);
     }
 }

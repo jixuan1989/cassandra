@@ -40,6 +40,7 @@ public abstract class AbstractEndpointSnitch implements IEndpointSnitch
     }
 
     /**
+     * 调用compareEndpoints对ips进行排序
      * Sorts the <tt>List</tt> of node addresses, in-place, by proximity to the given address
      * @param address the address to sort the proximity by
      * @param addresses the nodes to sort
@@ -65,12 +66,12 @@ public abstract class AbstractEndpointSnitch implements IEndpointSnitch
         // Querying remote DC is likely to be an order of magnitude slower than
         // querying locally, so 2 queries to local nodes is likely to still be
         // faster than 1 query involving remote ones
-    	// 针对多数据中心，暂不考虑
         boolean mergedHasRemote = hasRemoteNode(merged);
         return mergedHasRemote
              ? hasRemoteNode(l1) || hasRemoteNode(l2)
              : true;
     }
+
 
     /**
      * 检查其他节点是否在不同的数据中心
