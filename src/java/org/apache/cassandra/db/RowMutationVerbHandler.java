@@ -32,10 +32,14 @@ public class RowMutationVerbHandler implements IVerbHandler<RowMutation>
 {
     private static final Logger logger = LoggerFactory.getLogger(RowMutationVerbHandler.class);
 
+    /**
+     * 数据发生修改时的VerbHandler
+     */
     public void doVerb(MessageIn<RowMutation> message, String id)
     {
         try
         {
+        	//得到消息内的数据
             RowMutation rm = message.payload;
             logger.debug("Applying mutation");
 
@@ -45,6 +49,7 @@ public class RowMutationVerbHandler implements IVerbHandler<RowMutation>
             if (from == null)
             {
                 byte[] forwardBytes = message.parameters.get(RowMutation.FORWARD_TO);
+                //如果本节点为协调者，且消息版本不低于VERSION_11
                 if (forwardBytes != null && message.version >= MessagingService.VERSION_11)
                     forwardToLocalNodes(rm, message.verb, forwardBytes, message.from);
             }
@@ -55,6 +60,7 @@ public class RowMutationVerbHandler implements IVerbHandler<RowMutation>
 
             rm.apply();
             WriteResponse response = new WriteResponse();
+            System.out.println(replyTo + " " + id);
             Tracing.trace("Enqueuing response to {}", replyTo);
             MessagingService.instance().sendReply(response.createMessage(), id, replyTo);
         }
@@ -72,7 +78,6 @@ public class RowMutationVerbHandler implements IVerbHandler<RowMutation>
     {
         DataInputStream dis = new DataInputStream(new FastByteArrayInputStream(forwardBytes));
         int size = dis.readInt();
-
         // remove fwds from message to avoid infinite loop
         MessageOut<RowMutation> message = new MessageOut<RowMutation>(verb, rm, RowMutation.serializer).withParameter(RowMutation.FORWARD_FROM, from.getAddress());
         for (int i = 0; i < size; i++)
