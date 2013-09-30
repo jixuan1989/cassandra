@@ -70,8 +70,10 @@ public class LeveledManifest
         this.cfs = cfs;
         this.maxSSTableSizeInBytes = maxSSTableSizeInMB * 1024 * 1024;
 
-        // allocate enough generations for a PB of data
-        int n = (int) Math.log10(1000 * 1000 * 1000 / maxSSTableSizeInMB);
+        // allocate enough generations for a PB of data, with a 1-MB sstable size.  (Note that if maxSSTableSize is
+        // updated, we will still have sstables of the older, potentially smaller size.  So don't make this
+        // dependent on maxSSTableSize.)
+        int n = (int) Math.log10(1000 * 1000 * 1000);
         generations = new List[n];
         lastCompactedKeys = new RowPosition[n];
         for (int i = 0; i < generations.length; i++)
@@ -528,13 +530,13 @@ public class LeveledManifest
                 // if the overlapping ones are already busy in a compaction, leave it out.
                 // TODO try to find a set of L0 sstables that only overlaps with non-busy L1 sstables
                 candidates = Sets.union(candidates, overlapping(candidates, generations[1]));
-                // check overlap with L0 compacting sstables to make sure we are not generating overlap in L1.
-                Iterable<SSTableReader> compactingL0 = Iterables.filter(generations[0], Predicates.in(compacting));
-                if (!Sets.intersection(candidates, compacting).isEmpty() || !overlapping(candidates, compactingL0).isEmpty())
-                    return Collections.emptyList();
             }
-
-            return candidates.size() > 1 ? candidates : Collections.<SSTableReader>emptyList();
+            // check overlap with L0 compacting sstables to make sure we are not generating overlap in L1.
+            Iterable<SSTableReader> compactingL0 = Iterables.filter(generations[0], Predicates.in(compacting));
+            if (candidates.size() < 2 || !Sets.intersection(candidates, compacting).isEmpty() || !overlapping(candidates, compactingL0).isEmpty())
+                return Collections.emptyList();
+            else
+                return candidates;
         }
 
         // for non-L0 compactions, pick up where we left off last time

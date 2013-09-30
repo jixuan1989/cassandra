@@ -27,10 +27,7 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.cql3.statements.*;
 import org.apache.cassandra.transport.messages.ResultMessage;
-import org.apache.cassandra.config.*;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.filter.*;
-import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.exceptions.*;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.QueryState;
@@ -41,7 +38,7 @@ import org.apache.cassandra.utils.SemanticVersion;
 
 public class QueryProcessor
 {
-    public static final SemanticVersion CQL_VERSION = new SemanticVersion("3.0.3");
+    public static final SemanticVersion CQL_VERSION = new SemanticVersion("3.0.5");
 
     private static final Logger logger = LoggerFactory.getLogger(QueryProcessor.class);
 
@@ -102,38 +99,10 @@ public class QueryProcessor
         }
     }
 
-    public static void validateColumnName(ByteBuffer column)
-    throws InvalidRequestException
-    {
-        validateColumnNames(Collections.singletonList(column));
-    }
-
-    public static void validateFilter(CFMetaData metadata, IDiskAtomFilter filter)
-    throws InvalidRequestException
-    {
-        if (filter instanceof SliceQueryFilter)
-            validateSliceFilter(metadata, (SliceQueryFilter)filter);
-        else
-            validateColumnNames(((NamesQueryFilter)filter).columns);
-    }
-
-    public static void validateSliceFilter(CFMetaData metadata, SliceQueryFilter range)
-    throws InvalidRequestException
-    {
-        try
-        {
-            AbstractType<?> comparator = metadata.getComparatorFor(null);
-            ColumnSlice.validate(range.slices, comparator, range.reversed);
-        }
-        catch (IllegalArgumentException e)
-        {
-            throw new InvalidRequestException(e.getMessage());
-        }
-    }
-
     private static ResultMessage processStatement(CQLStatement statement, ConsistencyLevel cl, QueryState queryState, List<ByteBuffer> variables)
     throws RequestExecutionException, RequestValidationException
     {
+        logger.trace("Process {} @CL.{}", statement, cl);
         ClientState clientState = queryState.getClientState();
         statement.validate(clientState);
         statement.checkAccess(clientState);
@@ -144,7 +113,6 @@ public class QueryProcessor
     public static ResultMessage process(String queryString, ConsistencyLevel cl, QueryState queryState)
     throws RequestExecutionException, RequestValidationException
     {
-        logger.trace("CQL QUERY: {}", queryString);
         CQLStatement prepared = getStatement(queryString, queryState.getClientState()).statement;
         if (prepared.getBoundsTerms() > 0)
             throw new InvalidRequestException("Cannot execute query with bind variables");
@@ -210,8 +178,6 @@ public class QueryProcessor
     public static ResultMessage.Prepared prepare(String queryString, ClientState clientState, boolean forThrift)
     throws RequestValidationException
     {
-        logger.trace("CQL QUERY: {}", queryString);
-
         ParsedStatement.Prepared prepared = getStatement(queryString, clientState);
         ResultMessage.Prepared msg = storePreparedStatement(queryString, clientState.getRawKeyspace(), prepared, forThrift);
 
@@ -268,14 +234,14 @@ public class QueryProcessor
     private static ParsedStatement.Prepared getStatement(String queryStr, ClientState clientState)
     throws RequestValidationException
     {
-        Tracing.trace("Parsing statement");
+        Tracing.trace("Parsing {}", queryStr);
         ParsedStatement statement = parseStatement(queryStr);
 
         // Set keyspace for statement that require login
         if (statement instanceof CFStatement)
             ((CFStatement)statement).prepareKeyspace(clientState);
 
-        Tracing.trace("Peparing statement");
+        Tracing.trace("Preparing statement");
         return statement.prepare();
     }
 
@@ -301,13 +267,14 @@ public class QueryProcessor
         }
         catch (RuntimeException re)
         {
-            SyntaxException ire = new SyntaxException("Failed parsing statement: [" + queryStr + "] reason: " + re.getClass().getSimpleName() + " " + re.getMessage());
-            throw ire;
+            throw new SyntaxException(String.format("Failed parsing statement: [%s] reason: %s %s",
+                                                    queryStr,
+                                                    re.getClass().getSimpleName(),
+                                                    re.getMessage()));
         }
         catch (RecognitionException e)
         {
-            SyntaxException ire = new SyntaxException("Invalid or malformed CQL query string: " + e.getMessage());
-            throw ire;
+            throw new SyntaxException("Invalid or malformed CQL query string: " + e.getMessage());
         }
     }
 }

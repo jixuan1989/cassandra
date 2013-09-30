@@ -24,6 +24,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.tracing.TraceState;
 import org.apache.cassandra.utils.FBUtilities;
 
 import static org.apache.cassandra.config.DatabaseDescriptor.*;
@@ -39,7 +40,7 @@ public class StageManager
 {
     private static final Logger logger = LoggerFactory.getLogger(StageManager.class);
 
-    private static final EnumMap<Stage, ThreadPoolExecutor> stages = new EnumMap<Stage, ThreadPoolExecutor>(Stage.class);
+    private static final EnumMap<Stage, TracingAwareExecutorService> stages = new EnumMap<Stage, TracingAwareExecutorService>(Stage.class);
 
     public static final long KEEPALIVE = 60; // seconds to keep "extra" threads alive for when idle
 
@@ -64,7 +65,7 @@ public class StageManager
  * 固定大小为1的线程池，队列为1000，满了就扔掉（在MS中dropped verb度量值+1）
  * @return
  */
-    private static ThreadPoolExecutor tracingExecutor()
+    private static ExecuteOnlyExecutor tracingExecutor()
     {
         RejectedExecutionHandler reh = new RejectedExecutionHandler()
         {
@@ -87,7 +88,7 @@ public class StageManager
      * @param numThreads
      * @return
      */
-    private static ThreadPoolExecutor multiThreadedStage(Stage stage, int numThreads)
+    private static JMXEnabledThreadPoolExecutor multiThreadedStage(Stage stage, int numThreads)
     {
         return new JMXEnabledThreadPoolExecutor(numThreads,
                                                 KEEPALIVE,
@@ -102,7 +103,7 @@ public class StageManager
  * @param numThreads
  * @return
  */
-    private static ThreadPoolExecutor multiThreadedConfigurableStage(Stage stage, int numThreads)
+    private static JMXConfigurableThreadPoolExecutor multiThreadedConfigurableStage(Stage stage, int numThreads)
     {
         return new JMXConfigurableThreadPoolExecutor(numThreads,
                                                      KEEPALIVE,
@@ -119,7 +120,7 @@ public class StageManager
  * @param maxTasksBeforeBlock
  * @return
  */
-    private static ThreadPoolExecutor multiThreadedConfigurableStage(Stage stage, int numThreads, int maxTasksBeforeBlock)
+    private static JMXConfigurableThreadPoolExecutor multiThreadedConfigurableStage(Stage stage, int numThreads, int maxTasksBeforeBlock)
     {
         return new JMXConfigurableThreadPoolExecutor(numThreads,
                                                      KEEPALIVE,
@@ -132,8 +133,8 @@ public class StageManager
     /**
      * Retrieve a stage from the StageManager
      * @param stage name of the stage to be retrieved.
-    */
-    public static ThreadPoolExecutor getStage(Stage stage)
+     */
+    public static TracingAwareExecutorService getStage(Stage stage)
     {
         return stages.get(stage);
     }
@@ -150,33 +151,39 @@ public class StageManager
     }
 
     /**
-     * 目测完全没区别啊。。跟普通的TPE
+     * (1.2.5版目测完全没区别啊。。跟普通的TPE) (1.2.10版本修改成了新的类型，对submit直接抛出异常了)
      * A TPE that disallows submit so that we don't need to worry about unwrapping exceptions on the
      * tracing stage.  See CASSANDRA-1123 for background.
      */
-    private static class ExecuteOnlyExecutor extends ThreadPoolExecutor
+    private static class ExecuteOnlyExecutor extends ThreadPoolExecutor implements TracingAwareExecutorService
     {
         public ExecuteOnlyExecutor(int corePoolSize, int maximumPoolSize, long keepAliveTime, TimeUnit unit, BlockingQueue<Runnable> workQueue, ThreadFactory threadFactory, RejectedExecutionHandler handler)
         {
             super(corePoolSize, maximumPoolSize, keepAliveTime, unit, workQueue, threadFactory, handler);
         }
 
+        public void execute(Runnable command, TraceState state)
+        {
+            assert state == null;
+            super.execute(command);
+        }
+
         @Override
         public Future<?> submit(Runnable task)
         {
-            return super.submit(task);
+            throw new UnsupportedOperationException();
         }
 
         @Override
         public <T> Future<T> submit(Runnable task, T result)
         {
-            return super.submit(task, result);
+            throw new UnsupportedOperationException();
         }
 
         @Override
         public <T> Future<T> submit(Callable<T> task)
         {
-            return super.submit(task);
+            throw new UnsupportedOperationException();
         }
     }
 }

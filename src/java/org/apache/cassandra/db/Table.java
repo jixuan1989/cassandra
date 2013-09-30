@@ -369,10 +369,8 @@ public class Table
      */
     public void apply(RowMutation mutation, boolean writeCommitLog, boolean updateIndexes)
     {
-        if (!mutation.getTable().equals(Tracing.TRACE_KS))
-            Tracing.trace("Acquiring switchLock read lock");
-
         // write the mutation to the commitlog and memtables
+        Tracing.trace("Acquiring switchLock read lock");
         switchLock.readLock().lock();
         try
         {
@@ -393,7 +391,7 @@ public class Table
                 }
 
                 Tracing.trace("Adding to {} memtable", cf.metadata().cfName);
-                cfs.apply(key, cf, updateIndexes ? cfs.indexManager.updaterFor(key) : SecondaryIndexManager.nullUpdater);
+                cfs.apply(key, cf, updateIndexes ? cfs.indexManager.updaterFor(key, cf) : SecondaryIndexManager.nullUpdater);
             }
         }
         finally

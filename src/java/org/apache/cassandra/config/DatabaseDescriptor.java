@@ -51,6 +51,7 @@ import org.apache.cassandra.scheduler.IRequestScheduler;
 import org.apache.cassandra.scheduler.NoScheduler;
 import org.apache.cassandra.service.CacheService;
 import org.apache.cassandra.service.MigrationManager;
+import org.apache.cassandra.utils.Allocator;
 import org.apache.cassandra.utils.FBUtilities;
 import org.yaml.snakeyaml.Loader;
 import org.yaml.snakeyaml.TypeDescription;
@@ -90,6 +91,8 @@ public class DatabaseDescriptor
 
     private static String localDC;
     private static Comparator<InetAddress> localComparator;
+
+    private static Class<? extends Allocator> memtableAllocator;
 
     /**
      * Inspect the classpath to find storage configuration file
@@ -206,7 +209,7 @@ public class DatabaseDescriptor
 
             /* Authentication and authorization backend, implementing IAuthenticator and IAuthorizer */
             if (conf.authenticator != null)
-                authenticator = FBUtilities.construct(conf.authenticator, "authenticator");
+                authenticator = FBUtilities.newAuthenticator(conf.authenticator);
 
             if (conf.authority != null)
             {
@@ -217,7 +220,10 @@ public class DatabaseDescriptor
             }
 
             if (conf.authorizer != null)
-                authorizer = FBUtilities.construct(conf.authorizer, "authorizer");
+                authorizer = FBUtilities.newAuthorizer(conf.authorizer);
+
+            if (authenticator instanceof AllowAllAuthenticator && !(authorizer instanceof AllowAllAuthorizer))
+                throw new ConfigurationException("AllowAllAuthenticator can't be used with " +  conf.authorizer);
 
             if (conf.internode_authenticator != null)
                 internodeAuthenticator = FBUtilities.construct(conf.internode_authenticator, "internode_authenticator");
@@ -332,9 +338,6 @@ public class DatabaseDescriptor
 
             if (conf.thrift_framed_transport_size_in_mb <= 0)
                 throw new ConfigurationException("thrift_framed_transport_size_in_mb must be positive");
-
-            if (conf.thrift_max_message_length_in_mb < conf.thrift_framed_transport_size_in_mb)
-                throw new ConfigurationException("thrift_max_message_length_in_mb must be greater than thrift_framed_transport_size_in_mb");
 
             /* end point snitch */
             if (conf.endpoint_snitch == null)
@@ -467,6 +470,11 @@ public class DatabaseDescriptor
                 conf.server_encryption_options = conf.encryption_options;
             }
 
+            String allocatorClass = conf.memtable_allocator;
+            if (!allocatorClass.contains("."))
+                allocatorClass = "org.apache.cassandra.utils." + allocatorClass;
+            memtableAllocator = FBUtilities.classForName(allocatorClass, "allocator");
+
             // Hardcoded system tables
             List<KSMetaData> systemKeyspaces = Arrays.asList(KSMetaData.systemKeyspace(), KSMetaData.traceKeyspace());
             assert systemKeyspaces.size() == Schema.systemKeyspaceNames.size();
@@ -538,9 +546,9 @@ public class DatabaseDescriptor
                 logger.info("Couldn't detect any schema definitions in local storage.");
                 // peek around the data directories to see if anything is there.
                 if (hasExistingNoSystemTables())
-                    logger.info("Found table data in data directories. Consider using the CLI to define your schema.");
+                    logger.info("Found table data in data directories. Consider using cqlsh to define your schema.");
                 else
-                    logger.info("To create keyspaces and column families, see 'help create keyspace' in the CLI, or set up a schema using the thrift system_* calls.");
+                    logger.info("To create keyspaces and column families, see 'help create' in cqlsh.");
             }
             else
             {
@@ -603,11 +611,6 @@ public class DatabaseDescriptor
     public static int getPermissionsValidity()
     {
         return conf.permissions_validity_in_ms;
-    }
-
-    public static int getThriftMaxMessageLength()
-    {
-        return conf.thrift_max_message_length_in_mb * 1024 * 1024;
     }
 
     public static int getThriftFramedTransportSize()
@@ -721,6 +724,22 @@ public class DatabaseDescriptor
     public static Collection<String> getReplaceTokens()
     {
         return tokensFromString(System.getProperty("cassandra.replace_token", null));
+    }
+
+    public static UUID getReplaceNode()
+    {
+        try
+        {
+            return UUID.fromString(System.getProperty("cassandra.replace_node", null));
+        } catch (NullPointerException e)
+        {
+            return null;
+        }
+    }
+
+    public static boolean isReplacing()
+    {
+        return 0 != getReplaceTokens().size() || getReplaceNode() != null;
     }
 
     public static String getClusterName()
@@ -1028,8 +1047,14 @@ public class DatabaseDescriptor
         return conf.commitlog_sync_batch_window_in_ms;
     }
 
-    public static int getCommitLogSyncPeriod() {
+    public static int getCommitLogSyncPeriod()
+    {
         return conf.commitlog_sync_period_in_ms;
+    }
+
+    public static int getCommitLogPeriodicQueueSize()
+    {
+        return conf.commitlog_periodic_queue_size;
     }
 
     public static Config.CommitLogSync getCommitLogSync()
@@ -1274,5 +1299,21 @@ public class DatabaseDescriptor
     public static boolean getInterDCTcpNoDelay()
     {
         return conf.inter_dc_tcp_nodelay;
+    }
+
+    public static Allocator getMemtableAllocator()
+    {
+        try
+        {
+            return memtableAllocator.newInstance();
+        }
+        catch (InstantiationException e)
+        {
+            throw new RuntimeException(e);
+        }
+        catch (IllegalAccessException e)
+        {
+            throw new RuntimeException(e);
+        }
     }
 }

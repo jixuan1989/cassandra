@@ -146,7 +146,7 @@ public class OutboundTcpConnectionPool
  * 如果id跟本地的broadcast地址相同 则返回listen地址，否则若resetedEndpoint不为空返回之，否则返回id。。。
  * @return
  */
-    InetAddress endPoint()
+    public InetAddress endPoint()
     {
         if (id.equals(FBUtilities.getBroadcastAddress()))
             return FBUtilities.getLocalAddress();

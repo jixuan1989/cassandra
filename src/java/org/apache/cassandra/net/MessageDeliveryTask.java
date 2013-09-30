@@ -53,6 +53,7 @@ public class MessageDeliveryTask implements Runnable
 	public void run()
     {
         MessagingService.Verb verb = message.verb;
+        //
         if (MessagingService.DROPPABLE_VERBS.contains(verb)
             && System.currentTimeMillis() > constructionTime + message.getTimeout())//如果可扔弃并且已经超时 就在drop计数器+1
         {
@@ -61,6 +62,7 @@ public class MessageDeliveryTask implements Runnable
         }
 
         IVerbHandler verbHandler = MessagingService.instance().getVerbHandler(verb);
+      
         if (verbHandler == null)
         {
             logger.debug("Unknown verb {}", verb);

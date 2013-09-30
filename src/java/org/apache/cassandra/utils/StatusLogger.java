@@ -19,6 +19,8 @@ package org.apache.cassandra.utils;
 
 import java.lang.management.ManagementFactory;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 import javax.management.JMX;
 import javax.management.MBeanServer;
 import javax.management.MalformedObjectNameException;
@@ -36,7 +38,9 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.concurrent.JMXEnabledThreadPoolExecutorMBean;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.Memtable;
 import org.apache.cassandra.db.RowIndexEntry;
+import org.apache.cassandra.db.commitlog.CommitLog;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.service.CacheService;
@@ -50,7 +54,7 @@ public class StatusLogger
         MBeanServer server = ManagementFactory.getPlatformMBeanServer();
 
         // everything from o.a.c.concurrent
-        logger.info(String.format("%-25s%10s%10s%10s", "Pool Name", "Active", "Pending", "Blocked"));
+        logger.info(String.format("%-25s%10s%10s%15s%10s%18s", "Pool Name", "Active", "Pending", "Completed", "Blocked", "All Time Blocked"));
         Set<ObjectName> request, internal;
         try
         {
@@ -65,13 +69,19 @@ public class StatusLogger
         {
             String poolName = objectName.getKeyProperty("type");
             JMXEnabledThreadPoolExecutorMBean threadPoolProxy = JMX.newMBeanProxy(server, objectName, JMXEnabledThreadPoolExecutorMBean.class);
-            logger.info(String.format("%-25s%10s%10s%10s",
-                                      poolName, threadPoolProxy.getActiveCount(), threadPoolProxy.getPendingTasks(), threadPoolProxy.getCurrentlyBlockedTasks()));
+            logger.info(String.format("%-25s%10s%10s%15s%10s%18s",
+                                      poolName,
+                                      threadPoolProxy.getActiveCount(),
+                                      threadPoolProxy.getPendingTasks(),
+                                      threadPoolProxy.getCompletedTasks(),
+                                      threadPoolProxy.getCurrentlyBlockedTasks(),
+                                      threadPoolProxy.getTotalBlockedTasks()));
         }
         // one offs
-        CompactionManager cm = CompactionManager.instance;
         logger.info(String.format("%-25s%10s%10s",
-                                  "CompactionManager", cm.getActiveCompactions(), cm.getPendingTasks()));
+                                  "CompactionManager", CompactionManager.instance.getActiveCompactions(), CompactionManager.instance.getPendingTasks()));
+        logger.info(String.format("%-25s%10s%10s",
+                                  "Commitlog", "n/a", CommitLog.instance.getPendingTasks()));
         int pendingCommands = 0;
         for (int n : MessagingService.instance().getCommandPendingTasks().values())
         {

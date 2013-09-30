@@ -187,9 +187,9 @@ public class NodeProbe
         ssProxy.forceTableCleanup(tableName, columnFamilies);
     }
 
-    public void scrub(String tableName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
+    public void scrub(boolean disableSnapshot, String tableName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
     {
-        ssProxy.scrub(tableName, columnFamilies);
+        ssProxy.scrub(disableSnapshot, tableName, columnFamilies);
     }
 
     public void upgradeSSTables(String tableName, boolean excludeCurrentVersion, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
@@ -496,19 +496,6 @@ public class NodeProbe
     }
 
     /**
-     * Get the compaction threshold
-     *
-     * @param outs the stream to write to
-     */
-    public void getCompactionThreshold(PrintStream outs, String ks, String cf)
-    {
-        ColumnFamilyStoreMBean cfsProxy = getCfsProxy(ks, cf);
-        outs.println("Current compaction thresholds for " + ks + "/" + cf + ": \n" +
-                     " min = " + cfsProxy.getMinimumCompactionThreshold() + ", " +
-                     " max = " + cfsProxy.getMaximumCompactionThreshold());
-    }
-
-    /**
      * Set the compaction threshold
      *
      * @param minimumCompactionThreshold minimum compaction threshold
@@ -518,6 +505,10 @@ public class NodeProbe
     {
         ColumnFamilyStoreMBean cfsProxy = getCfsProxy(ks, cf);
         cfsProxy.setCompactionThresholds(minimumCompactionThreshold, maximumCompactionThreshold);
+    }
+
+    public void setIncrementalBackupsEnabled(boolean enabled){
+        ssProxy.setIncrementalBackupsEnabled(enabled);
     }
 
     public void setCacheCapacities(int keyCacheCapacity, int rowCacheCapacity)
@@ -680,6 +671,16 @@ public class NodeProbe
         return ssProxy.getKeyspaces();
     }
 
+    public String getClusterName()
+    {
+        return ssProxy.getClusterName();
+    }
+
+    public String getPartitioner()
+    {
+        return ssProxy.getPartitionerName();
+    }
+
     public void disableHintedHandoff()
     {
         spProxy.setHintedHandoffEnabled(false);
@@ -755,6 +756,11 @@ public class NodeProbe
         return ssProxy.getCompactionThroughputMbPerSec();
     }
 
+    public int getStreamThroughput()
+    {
+        return ssProxy.getStreamThroughputMbPerSec();
+    }
+
     public int getExceptionCount()
     {
         return ssProxy.getExceptionCount();
@@ -828,6 +834,21 @@ public class NodeProbe
     public boolean isFailed()
     {
         return failed;
+    }
+    
+    public long getReadRepairAttempted()
+    {
+        return spProxy.getReadRepairAttempted();
+    }
+    
+    public long getReadRepairRepairedBlocking()
+    {
+        return spProxy.getReadRepairRepairedBlocking();
+    }
+    
+    public long getReadRepairRepairedBackground()
+    {
+        return spProxy.getReadRepairRepairedBackground();
     }
 }
 

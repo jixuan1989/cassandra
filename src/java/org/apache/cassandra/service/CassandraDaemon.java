@@ -19,12 +19,17 @@ package org.apache.cassandra.service;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
 import java.net.InetAddress;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import javax.management.MBeanServer;
+import javax.management.ObjectName;
+import javax.management.StandardMBean;
 
 import com.google.common.collect.Iterables;
 import org.apache.log4j.PropertyConfigurator;
@@ -40,6 +45,7 @@ import org.apache.cassandra.db.commitlog.CommitLog;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.io.FSError;
 import org.apache.cassandra.io.util.FileUtils;
+import org.apache.cassandra.metrics.StorageMetrics;
 import org.apache.cassandra.thrift.ThriftServer;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.CLibrary;
@@ -53,10 +59,22 @@ import org.apache.cassandra.utils.Mx4jTool;
  */
 public class CassandraDaemon
 {
+    public static final String MBEAN_NAME = "org.apache.cassandra.db:type=NativeAccess";
+    
     static
     {
         initLog4j();
     }
+
+    // Have a dedicated thread to call exit to avoid deadlock in the case where the thread that wants to invoke exit
+    // belongs to an executor that our shutdown hook wants to wait to exit gracefully. See CASSANDRA-5273.
+    private static final Thread exitThread = new Thread(new Runnable()
+    {
+        public void run()
+        {
+            System.exit(100);
+        }
+    }, "Exit invoker");
 
     /**
      * Initialize logging in such a way that it checks for config changes every 10 seconds.
@@ -105,8 +123,6 @@ public class CassandraDaemon
     private static final Logger logger = LoggerFactory.getLogger(CassandraDaemon.class);
 
     private static final CassandraDaemon instance = new CassandraDaemon();
-
-    static final AtomicInteger exceptions = new AtomicInteger();
 
     public Server thriftServer;
     public Server nativeServer;
@@ -171,14 +187,20 @@ public class CassandraDaemon
         {
             public void uncaughtException(Thread t, Throwable e)
             {
-                exceptions.incrementAndGet();
+                StorageMetrics.exceptions.inc();
                 logger.error("Exception in thread " + t, e);
                 Tracing.trace("Exception in thread " + t, e);
                 for (Throwable e2 = e; e2 != null; e2 = e2.getCause())
                 {
                     // some code, like FileChannel.map, will wrap an OutOfMemoryError in another exception
                     if (e2 instanceof OutOfMemoryError)
-                        System.exit(100);
+                    {
+                        synchronized (exitThread)
+                        {
+                            if (!exitThread.isAlive())
+                                exitThread.start();
+                        }
+                    }
 
                     if (e2 instanceof FSError)
                     {
@@ -410,6 +432,17 @@ public class CassandraDaemon
 
         try
         {
+            try
+            {
+                MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+                mbs.registerMBean(new StandardMBean(new NativeAccess(), NativeAccessMBean.class), new ObjectName(MBEAN_NAME));
+            }
+            catch (Exception e)
+            {
+                logger.error("error registering MBean " + MBEAN_NAME, e);
+                //Allow the server to start even if the bean can't be registered
+            }
+            
             setup();
 
             if (pidFile != null)
@@ -455,6 +488,19 @@ public class CassandraDaemon
     public static void main(String[] args)
     {
         instance.activate();
+    }
+    
+    static class NativeAccess implements NativeAccessMBean
+    {
+        public boolean isAvailable()
+        {
+            return CLibrary.jnaAvailable();
+        }
+        
+        public boolean isMemoryLockable() 
+        {
+            return CLibrary.jnaMemoryLockable();
+        }
     }
 
     public interface Server
