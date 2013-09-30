@@ -71,11 +71,13 @@ public abstract class AbstractEndpointSnitch implements IEndpointSnitch
              ? hasRemoteNode(l1) || hasRemoteNode(l2)
              : true;
     }
-/**
- * 查看l中是否有ip不在本地datacenter中
- * @param l
- * @return
- */
+
+
+    /**
+     * 检查其他节点是否在不同的数据中心
+     * @param l 其他节点的IP地址列表
+     * @return 如果有不同数据中心的节点返回<code>true</code>,否则返回<code>false</code>
+     */
     private boolean hasRemoteNode(List<InetAddress> l)
     {
         String localDc = DatabaseDescriptor.getLocalDataCenter();
