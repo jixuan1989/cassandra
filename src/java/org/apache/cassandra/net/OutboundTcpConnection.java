@@ -45,16 +45,16 @@ import org.xerial.snappy.SnappyOutputStream;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
 /**
- * ¸ÃÀàÊÇÒ»¸öÏß³ÌÀà¡£Î¬»¤ÁËÁ½¸ömessageµÄÅÅ¶ÓÁĞ±í£ºactiveºÍbacklog¡£<br>
- * Ïß³ÌµÄÈÎÎñÊÇ£º´ÓactiveÖĞ¶ÁÈ¡ÏûÏ¢£¬Ğ´³öÈ¥£¬Èç¹ûactvieÖĞ¶ÁÍêµÄ»°£¬¾Í´ÓbacklogÖĞ¶Á¡££¨»áÊ¹backlog±ä³Éactive£¬active±ä³Ébacklog£©<br>
+ * è¯¥ç±»æ˜¯ä¸€ä¸ªçº¿ç¨‹ç±»ã€‚ç»´æŠ¤äº†ä¸¤ä¸ªmessageçš„æ’é˜Ÿåˆ—è¡¨ï¼šactiveå’Œbacklogã€‚<br>
+ * çº¿ç¨‹çš„ä»»åŠ¡æ˜¯ï¼šä»activeä¸­è¯»å–æ¶ˆæ¯ï¼Œå†™å‡ºå»ï¼Œå¦‚æœactvieä¸­è¯»å®Œçš„è¯ï¼Œå°±ä»backlogä¸­è¯»ã€‚ï¼ˆä¼šä½¿backlogå˜æˆactiveï¼Œactiveå˜æˆbacklogï¼‰<br>
  * <hr>
- * ¸ÃÀà»¹×öÁËÆäËûµÄÊÂÇé£º
- * <br>1¡¢enquence():½«ÏûÏ¢¼ÓÈëbacklog¶ÓÁĞÖĞ£¨ÆÚ¼ä»ádropµôÒÑ¾­³¬Ê±µÄÏûÏ¢£©¡£
- * <br>2¡¢connect():¸ù¾İpoolÖĞµÄendpointµØÖ·´´½¨Á¬½Ó£¬²¢±È½Ï°æ±¾ºÅ£¬¸üĞÂMessageServiceÖĞµÄversionsÀï¶ÔÓ¦ipµÄ°æ±¾ºÅ¡£
+ * è¯¥ç±»è¿˜åšäº†å…¶ä»–çš„äº‹æƒ…ï¼š
+ * <br>1ã€enquence():å°†æ¶ˆæ¯åŠ å…¥backlogé˜Ÿåˆ—ä¸­ï¼ˆæœŸé—´ä¼šdropæ‰å·²ç»è¶…æ—¶çš„æ¶ˆæ¯ï¼‰ã€‚
+ * <br>2ã€connect():æ ¹æ®poolä¸­çš„endpointåœ°å€åˆ›å»ºè¿æ¥ï¼Œå¹¶æ¯”è¾ƒç‰ˆæœ¬å·ï¼Œæ›´æ–°MessageServiceä¸­çš„versionsé‡Œå¯¹åº”ipçš„ç‰ˆæœ¬å·ã€‚
  * <hr>
- * »¹ÓĞÒ»Ğ©Òª×¢ÒâµÄÊÇ£º¸ÃÀàÊÂÊµÉÏ»á¶à´Î½øĞĞconnect£¬Ò²»á¶à´Îdisconnect¡£µ«ÊÇdisconnect²¢²»ÒâÎ¶×ÅÏß³ÌµÄÖÕ½áºÍÏûÏ¢²»ÔÙ·¢³ö£¬¶øÊÇ¸ù¾İisStopped×Ö¶Î¾ö¶¨ÊÇ·ñ¼ÌĞørunµÄ¡£<br>
- * isStoppedÊÇÔÚpoolµÄclose»òÕßresetµÄÊ±ºò²Å»á¿ÉÄÜ±»ĞŞ¸ÄµÄ£¨±¾ÀàÖĞµÄcloseSocket·½·¨¿ÉÑ¡ÊÇ·ñÉèÖÃstopped£©¡£
- * @author hxd×¢ÊÍ
+ * è¿˜æœ‰ä¸€äº›è¦æ³¨æ„çš„æ˜¯ï¼šè¯¥ç±»äº‹å®ä¸Šä¼šå¤šæ¬¡è¿›è¡Œconnectï¼Œä¹Ÿä¼šå¤šæ¬¡disconnectã€‚ä½†æ˜¯disconnectå¹¶ä¸æ„å‘³ç€çº¿ç¨‹çš„ç»ˆç»“å’Œæ¶ˆæ¯ä¸å†å‘å‡ºï¼Œè€Œæ˜¯æ ¹æ®isStoppedå­—æ®µå†³å®šæ˜¯å¦ç»§ç»­runçš„ã€‚<br>
+ * isStoppedæ˜¯åœ¨poolçš„closeæˆ–è€…resetçš„æ—¶å€™æ‰ä¼šå¯èƒ½è¢«ä¿®æ”¹çš„ï¼ˆæœ¬ç±»ä¸­çš„closeSocketæ–¹æ³•å¯é€‰æ˜¯å¦è®¾ç½®stoppedï¼‰ã€‚
+ * @author hxdæ³¨é‡Š
  *
  */
 public class OutboundTcpConnection extends Thread
@@ -88,7 +88,7 @@ public class OutboundTcpConnection extends Thread
     }
 
     /**
-     * ²é¿´targetHostÓë±¾»úÊÇ·ñÔÚÍ¬Ò»¸öDCÏÂ¡£
+     * æŸ¥çœ‹targetHostä¸æœ¬æœºæ˜¯å¦åœ¨åŒä¸€ä¸ªDCä¸‹ã€‚
      * @param targetHost
      * @return
      */
@@ -99,14 +99,14 @@ public class OutboundTcpConnection extends Thread
         return remoteDC.equals(localDC);
     }
 /**
- * ½«message¼ÓÈëµ½backlog¶ÓÁĞÖĞ£¬Ê×ÏÈµ÷ÓÃ{@link expireMessages() }¡£È»ºóÔÚ¼ÓÈëbacklog¶ÓÁĞ¡£<br>
- * ×¢Òâ£¬¸Ã·½·¨±»messageServiceµÄsendOneWay£¬ÒÔ¼°±¾ÀàµÄ[soft]closeSocketµ÷ÓÃÁË¡£
+ * å°†messageåŠ å…¥åˆ°backlogé˜Ÿåˆ—ä¸­ï¼Œé¦–å…ˆè°ƒç”¨{@link expireMessages() }ã€‚ç„¶ååœ¨åŠ å…¥backlogé˜Ÿåˆ—ã€‚<br>
+ * æ³¨æ„ï¼Œè¯¥æ–¹æ³•è¢«messageServiceçš„sendOneWayï¼Œä»¥åŠæœ¬ç±»çš„[soft]closeSocketè°ƒç”¨äº†ã€‚
  * @param message
  * @param id
  */
     public void enqueue(MessageOut<?> message, String id)
     {
-        expireMessages();//´óÒâÊÇ¿´¿´ÒÀ´Î²é¿´backlogµÄÏûÏ¢ÊÇ·ñ³¬Ê±£¬³¬Ê±¾ÍÈÓÁË£¬Óöµ½Ã»³¬Ê±µÄ£¬¾Í²»ÔÙÍùÏÂ²é¿´ÁË£¨ÔÙ¿´ÀË·ÑÊ±¼ä£¬¶øÇÒÒ²²»ºÃ´ÓÖĞ¼äremove£©£¬¸öÈË¸Ğ¾õÕâÑùÊÇÎªÁË½µµÍbacklogµÄ³¤¶È¡£
+        expireMessages();//å¤§æ„æ˜¯çœ‹çœ‹ä¾æ¬¡æŸ¥çœ‹backlogçš„æ¶ˆæ¯æ˜¯å¦è¶…æ—¶ï¼Œè¶…æ—¶å°±æ‰”äº†ï¼Œé‡åˆ°æ²¡è¶…æ—¶çš„ï¼Œå°±ä¸å†å¾€ä¸‹æŸ¥çœ‹äº†ï¼ˆå†çœ‹æµªè´¹æ—¶é—´ï¼Œè€Œä¸”ä¹Ÿä¸å¥½ä»ä¸­é—´removeï¼‰ï¼Œä¸ªäººæ„Ÿè§‰è¿™æ ·æ˜¯ä¸ºäº†é™ä½backlogçš„é•¿åº¦ã€‚
         try
         {
             backlog.put(new QueuedMessage(message, id));
@@ -117,7 +117,7 @@ public class OutboundTcpConnection extends Thread
         }
     }
 /**
- * Çå¿Õ¶ÓÁĞÀïµÄmessage¡£È»ºó¼ÓÈëÒ»¸öclose_sentinelÏûÏ¢µ½¶ÓÁĞ
+ * æ¸…ç©ºé˜Ÿåˆ—é‡Œçš„messageã€‚ç„¶ååŠ å…¥ä¸€ä¸ªclose_sentinelæ¶ˆæ¯åˆ°é˜Ÿåˆ—
  * @param destroyThread
  */
     void closeSocket(boolean destroyThread)
@@ -128,7 +128,7 @@ public class OutboundTcpConnection extends Thread
         enqueue(CLOSE_SENTINEL, null);
     }
 /**
- * ²»Çå¿Õ¶ÓÁĞÀïµÄmessage£¬È»ºó¼ÓÈëÒ»¸öclose_sentinelÏûÏ¢µ½¶ÓÁĞ
+ * ä¸æ¸…ç©ºé˜Ÿåˆ—é‡Œçš„messageï¼Œç„¶ååŠ å…¥ä¸€ä¸ªclose_sentinelæ¶ˆæ¯åˆ°é˜Ÿåˆ—
  */
     void softCloseSocket()
     {
@@ -140,10 +140,10 @@ public class OutboundTcpConnection extends Thread
         return targetVersion;
     }
 /**
- * ²»¶ÏµØ´ÓactiveÖĞÈ¡³öÏûÏ¢<br>
- * Èç¹ûactiveÖĞÃ»ÁË£¬¾Í´ÓbacklogÖĞÈ¡£¨×èÈûµÄ£©£¬È»ºó½»»»backlogºÍactive¡£<br>
- * ÈôÏûÏ¢ÊÇclose_sentinel£¬¾Í¹Ø±ÕÁ¬½Ó¡£×¢Òâ£¬²¢²»Ò»¶¨ÍË³örun¡£¶øÊÇ¿´isStopped,¼ÌĞøÏÂÒ»´ÎÑ­»·»òÕßÌø³öÑ­»·¡£<br>
- * Èç¹ûÏûÏ¢ÒÑ¾­³¬Ê±£¬¾Ídropµô¡£·ñÔò£ºÈôÁ¬½Ó¿ª×ÅµÄ»òÕßÖØĞÂÁ¬½ÓÉÏÁË£¬¾Í·¢ËÍÏûÏ¢£»·ñÔòactive.clear£¨ÕâÃ´ºİ£¿£©<br>
+ * ä¸æ–­åœ°ä»activeä¸­å–å‡ºæ¶ˆæ¯<br>
+ * å¦‚æœactiveä¸­æ²¡äº†ï¼Œå°±ä»backlogä¸­å–ï¼ˆé˜»å¡çš„ï¼‰ï¼Œç„¶åäº¤æ¢backlogå’Œactiveã€‚<br>
+ * è‹¥æ¶ˆæ¯æ˜¯close_sentinelï¼Œå°±å…³é—­è¿æ¥ã€‚æ³¨æ„ï¼Œå¹¶ä¸ä¸€å®šé€€å‡ºrunã€‚è€Œæ˜¯çœ‹isStopped,ç»§ç»­ä¸‹ä¸€æ¬¡å¾ªç¯æˆ–è€…è·³å‡ºå¾ªç¯ã€‚<br>
+ * å¦‚æœæ¶ˆæ¯å·²ç»è¶…æ—¶ï¼Œå°±dropæ‰ã€‚å¦åˆ™ï¼šè‹¥è¿æ¥å¼€ç€çš„æˆ–è€…é‡æ–°è¿æ¥ä¸Šäº†ï¼Œå°±å‘é€æ¶ˆæ¯ï¼›å¦åˆ™active.clearï¼ˆè¿™ä¹ˆç‹ ï¼Ÿï¼‰<br>
  * 
  */
     public void run()
@@ -188,7 +188,7 @@ public class OutboundTcpConnection extends Thread
         }
     }
 /**
- * µÃµ½Òª×öµÄÊıÁ¿£¬ÊÇactiveºÍbacklogµÄºÍ
+ * å¾—åˆ°è¦åšçš„æ•°é‡ï¼Œæ˜¯activeå’Œbacklogçš„å’Œ
  * @return
  */
     public int getPendingMessages()
@@ -196,7 +196,7 @@ public class OutboundTcpConnection extends Thread
         return active.size() + backlog.size();
     }
 /**
- * µÃµ½Íê³ÉµÄÊıÁ¿
+ * å¾—åˆ°å®Œæˆçš„æ•°é‡
  * @return
  */
     public long getCompletedMesssages()
@@ -204,7 +204,7 @@ public class OutboundTcpConnection extends Thread
         return completed;
     }
 /**
- * µÃµ½dropµôµÄÊıÁ¿
+ * å¾—åˆ°dropæ‰çš„æ•°é‡
  * @return
  */
     public long getDroppedMessages()
@@ -213,7 +213,7 @@ public class OutboundTcpConnection extends Thread
     }
 
     /**
-     * ÅäÖÃÎÄ¼şÉèÖÃÁËÈ«Ñ¹Ëõ£¬»òÕß£¨ÉèÖÃÁËdc¼äÑ¹Ëõ£¬ÇÒpool.endPointÓë±¾»ú²»ÊÇÍ¬Ò»¸öDC£© Ôò·µ»Øtrue
+     * é…ç½®æ–‡ä»¶è®¾ç½®äº†å…¨å‹ç¼©ï¼Œæˆ–è€…ï¼ˆè®¾ç½®äº†dcé—´å‹ç¼©ï¼Œä¸”pool.endPointä¸æœ¬æœºä¸æ˜¯åŒä¸€ä¸ªDCï¼‰ åˆ™è¿”å›true
      * @return
      */
     private boolean shouldCompressConnection()
@@ -223,9 +223,9 @@ public class OutboundTcpConnection extends Thread
                || (DatabaseDescriptor.internodeCompression() == Config.InternodeCompression.dc && !isLocalDC(poolReference.endPoint()));
     }
 /**
- * Ê×ÏÈ»ñÈ¡ÏûÏ¢ÖĞµÄtraceSession,È»ºó¼ÇÂ¼µ½traceÖĞ²¢ÓĞ¿ÉÄÜÒÆ³ıtracession£¨£¿£©<br>
- * ·¢ËÍÏûÏ¢²¢½«Íê³ÉµÄ¼ÆÊıÆ÷+1¡£×¢Òâ£¬µ±ÇÒ½öµ±µ±Ç°»î¶¯¶ÓÁĞÎª¿ÕÊ±£¬²Å¶ÔÊä³öÁ÷flush..<br>
- * Èç¹û·¢ËÍÖĞ³öÏÖIOException£¬ÇÒ¸ÃÏûÏ¢ÊÇÖØÒªÏûÏ¢£¨require retry£©£¬Ôò·â×°³ÉretryMessage²¢ÖØĞÂ·ÅÈëbacklog¶ÓÁĞÖĞ<br>
+ * é¦–å…ˆè·å–æ¶ˆæ¯ä¸­çš„traceSession,ç„¶åè®°å½•åˆ°traceä¸­å¹¶æœ‰å¯èƒ½ç§»é™¤tracessionï¼ˆï¼Ÿï¼‰<br>
+ * å‘é€æ¶ˆæ¯å¹¶å°†å®Œæˆçš„è®¡æ•°å™¨+1ã€‚æ³¨æ„ï¼Œå½“ä¸”ä»…å½“å½“å‰æ´»åŠ¨é˜Ÿåˆ—ä¸ºç©ºæ—¶ï¼Œæ‰å¯¹è¾“å‡ºæµflush..<br>
+ * å¦‚æœå‘é€ä¸­å‡ºç°IOExceptionï¼Œä¸”è¯¥æ¶ˆæ¯æ˜¯é‡è¦æ¶ˆæ¯ï¼ˆrequire retryï¼‰ï¼Œåˆ™å°è£…æˆretryMessageå¹¶é‡æ–°æ”¾å…¥backlogé˜Ÿåˆ—ä¸­<br>
  * @param qm
  */
     private void writeConnected(QueuedMessage qm)
@@ -288,8 +288,8 @@ public class OutboundTcpConnection extends Thread
         }
     }
 /**
- * ½«ÏûÏ¢ĞòÁĞ»¯Ğ´³ö£¬
- * TODO ¾ßÌåĞ­ÒéÔİÂÔ
+ * å°†æ¶ˆæ¯åºåˆ—åŒ–å†™å‡ºï¼Œ
+ * TODO å…·ä½“åè®®æš‚ç•¥
  * @param message
  * @param id
  * @param timestamp
@@ -338,7 +338,7 @@ public class OutboundTcpConnection extends Thread
         out.writeInt(header);
     }
 /**
- * ¹Ø±Õsocket
+ * å…³é—­socket
  */
     private void disconnect()
     {
@@ -358,11 +358,11 @@ public class OutboundTcpConnection extends Thread
         }
     }
 /**
- * ´ÓmessageServiceÖĞ»ñÈ¡endPointµÄversion¡£<br>
- * È»ºó´ÓpoolÖĞ»ñÈ¡Ò»¸öĞÂsocket£¬¸ù¾İÓëendPointµÄÎ»ÖÃ¾ö¶¨ÊÇ·ñÊ¹ÓÃtcpNoDelayËã·¨£¬<br>
- * ½ÓÏÂÀ´½øĞĞÒ»´ÎÍ¨ĞÅ£¬½«»ñÈ¡µÄ°æ±¾ºÅ·¢ËÍ¹ıÈ¥£¬²¢»ñµÃ·´À¡µÄ°æ±¾ºÅ£¬½øĞĞ¶Ô±È£¬ÈôÇ°ÕßĞÂ£¬Ôò¸üĞÂmessageServiceÖĞµÄversion¼ÇÂ¼²¢¹Ø±ÕÁ¬½Ó£¬·µ»Øfasle¡£ ÈôºóÕßĞÂ£¬Ôò¸üĞÂmessageServiceÖĞversion¼ÇÂ¼£¬²¢Ìí¼Ó¹Ø±ÕÏûÏ¢µ½¶ÓÁĞÖĞ¡£<br>
- * È»ºó¸æÖª¶Ô·½×Ô¼ºµÄ°æ±¾ºÅ£¬Ö®ºó¸ù¾İÅäÖÃÎÄ¼şÖĞÊÇ·ñĞèÒªcompress£¬ÈôĞèÒª£¬Ôò½«outÁ÷ÓÃSnappyOutputStream·â×°¡£<br>
- * ÒÔÉÏ¹ı³ÌÈç¹û³öÎÊÌâ£¬¾Ísleep 100ms Ñ­»·ÖØÊÔ¡£<br>
+ * ä»messageServiceä¸­è·å–endPointçš„versionã€‚<br>
+ * ç„¶åä»poolä¸­è·å–ä¸€ä¸ªæ–°socketï¼Œæ ¹æ®ä¸endPointçš„ä½ç½®å†³å®šæ˜¯å¦ä½¿ç”¨tcpNoDelayç®—æ³•ï¼Œ<br>
+ * æ¥ä¸‹æ¥è¿›è¡Œä¸€æ¬¡é€šä¿¡ï¼Œå°†è·å–çš„ç‰ˆæœ¬å·å‘é€è¿‡å»ï¼Œå¹¶è·å¾—åé¦ˆçš„ç‰ˆæœ¬å·ï¼Œè¿›è¡Œå¯¹æ¯”ï¼Œè‹¥å‰è€…æ–°ï¼Œåˆ™æ›´æ–°messageServiceä¸­çš„versionè®°å½•å¹¶å…³é—­è¿æ¥ï¼Œè¿”å›fasleã€‚ è‹¥åè€…æ–°ï¼Œåˆ™æ›´æ–°messageServiceä¸­versionè®°å½•ï¼Œå¹¶æ·»åŠ å…³é—­æ¶ˆæ¯åˆ°é˜Ÿåˆ—ä¸­ã€‚<br>
+ * ç„¶åå‘ŠçŸ¥å¯¹æ–¹è‡ªå·±çš„ç‰ˆæœ¬å·ï¼Œä¹‹åæ ¹æ®é…ç½®æ–‡ä»¶ä¸­æ˜¯å¦éœ€è¦compressï¼Œè‹¥éœ€è¦ï¼Œåˆ™å°†outæµç”¨SnappyOutputStreamå°è£…ã€‚<br>
+ * ä»¥ä¸Šè¿‡ç¨‹å¦‚æœå‡ºé—®é¢˜ï¼Œå°±sleep 100ms å¾ªç¯é‡è¯•ã€‚<br>
  * @return
  */
     private boolean connect()
@@ -380,11 +380,11 @@ public class OutboundTcpConnection extends Thread
                 socket.setKeepAlive(true);
                 if (isLocalDC(poolReference.endPoint()))
                 {
-                    socket.setTcpNoDelay(true);//NagleËã·¨ÓÃÓÚ¶Ô»º³åÇøÄÚµÄÒ»¶¨ÊıÁ¿µÄÏûÏ¢½øĞĞ×Ô¶¯Á¬½Ó¡£¸Ã´¦Àí¹ı³Ì(³ÆÎªNagling)£¬Í¨¹ı¼õÉÙ±ØĞë·¢ËÍµÄ·â°üµÄÊıÁ¿£¬Ìá¸ßÁËÍøÂçÓ¦ÓÃ ³ÌĞòÏµÍ³µÄĞ§ÂÊ¡££¨NagleËäÈ»½â¾öÁËĞ¡·â°üÎÊÌâ£¬µ«Ò²µ¼ÖÂÁË½Ï¸ßµÄ²»¿ÉÔ¤²âµÄÑÓ³Ù£¬Í¬Ê±½µµÍÁËÍÌÍÂÁ¿¡££©
+                    socket.setTcpNoDelay(true);//Nagleç®—æ³•ç”¨äºå¯¹ç¼“å†²åŒºå†…çš„ä¸€å®šæ•°é‡çš„æ¶ˆæ¯è¿›è¡Œè‡ªåŠ¨è¿æ¥ã€‚è¯¥å¤„ç†è¿‡ç¨‹(ç§°ä¸ºNagling)ï¼Œé€šè¿‡å‡å°‘å¿…é¡»å‘é€çš„å°åŒ…çš„æ•°é‡ï¼Œæé«˜äº†ç½‘ç»œåº”ç”¨ ç¨‹åºç³»ç»Ÿçš„æ•ˆç‡ã€‚ï¼ˆNagleè™½ç„¶è§£å†³äº†å°å°åŒ…é—®é¢˜ï¼Œä½†ä¹Ÿå¯¼è‡´äº†è¾ƒé«˜çš„ä¸å¯é¢„æµ‹çš„å»¶è¿Ÿï¼ŒåŒæ—¶é™ä½äº†ååé‡ã€‚ï¼‰
                 }
                 else
                 {
-                    socket.setTcpNoDelay(DatabaseDescriptor.getInterDCTcpNoDelay());//¶ÔÓÚ¶àdc£¬¿´ÅäÖÃÀ´¾ö¶¨ÊÇ·ñ¿ªÆôtcpNoDelay
+                    socket.setTcpNoDelay(DatabaseDescriptor.getInterDCTcpNoDelay());//å¯¹äºå¤šdcï¼Œçœ‹é…ç½®æ¥å†³å®šæ˜¯å¦å¼€å¯tcpNoDelay
                 }
                 if (DatabaseDescriptor.getInternodeSendBufferSize() != null)
                 {
@@ -430,7 +430,7 @@ public class OutboundTcpConnection extends Thread
                                      maxTargetVersion, targetVersion);
                         MessagingService.instance().setVersion(poolReference.endPoint(), Math.min(MessagingService.current_version, maxTargetVersion));
                         softCloseSocket();
-                    }//ÕâÃ´¿´Õâ¶Î´úÂë£¬Èç¹ûcurrent_version±ÈmaxTargetVersionĞ¡£¬ÔòÃ¿´ÎnewSocket¶¼»áÖ´ĞĞÕâ¶Î¡£
+                    }//è¿™ä¹ˆçœ‹è¿™æ®µä»£ç ï¼Œå¦‚æœcurrent_versionæ¯”maxTargetVersionå°ï¼Œåˆ™æ¯æ¬¡newSocketéƒ½ä¼šæ‰§è¡Œè¿™æ®µã€‚
 
                     out.writeInt(MessagingService.current_version);
                     CompactEndpointSerializationHelper.serialize(FBUtilities.getBroadcastAddress(), out);
@@ -504,12 +504,12 @@ public class OutboundTcpConnection extends Thread
     }
 
 /**
- * Ñ­»·×öÒÔÏÂÊÂÇé<br>{<br>
- * 	Èç¹ûbacklogÎª¿Õ£¬É¶¶¼²»ËµÁË¡£ Èç¹ûµÚÒ»¸ö»¹Ã»³¬Ê±£¬ÄÇÒ²É¶¶¼²»ËµÁË¡£Èç¹ûµÚÒ»¸öÒÑ¾­³¬Ê±ÁË£¬½«Ö®´ÓbacklogÖĞÇå³ı<br>}<br>
- * 	Çå¿ÕµÄÊ±ºò£¬Ê×ÏÈÅĞ¶ÏÏÂºÍ¸Õ²ÅÅĞ¶ÏµÄÊ±ºòÊÇ·ñ·¢Éú±ä»¯ÁË£¬Èç¹ûÃ»±ä£¬ÈÓÁË¡£¡£dropped¼ÆÊı+1¡£<br>
- *     Èç¹û±äÁË£¬ËµÃ÷ÔÚactiveºÍbacklog½»»»ÁË£¨runº¯ÊıÖĞ¸ÉµÄºÃÊÂ£¬·¢ÏÖactive¿ÕÁË£¬¾Í½»»»ÏÂactiveºÍbacklog£©£¬ÄÇÃ´Õâ¸öÏûÏ¢Ó¦¸ÃÊÇ¸Õ¸Õ½»»»ÍêºóÂíÉÏ¼Ó½øÀ´µÄ£¬ÎªÁË²»ÈÃËûÍ¬ÆäËûµÄclient£¨ÆäËûµÄclientÖ¸µÄÊÇ£¿£©¾ºÕùbacklogµÄheadËø£¨backlogÊÇÏß³Ì°²È«µÄ£©£¬Òò´Ë½«Ö®¼ÓÈëµ½activeµÄÄ©Î²È¥£¬È»ºóÍË³öÑ­»·£¨¿ÉÄÜÊÇ¿¼ÂÇÕâÑùµÄ»°£¬¶¥¶à¾ÍÕâÒ»¸öÏûÏ¢ÔÚbacklogÖĞ£¿»¹ÊÇ¹ÊÒâÌø³öµÄ£¿£©¡£<br>
- * ¸Ã·½·¨Ä¿Ç°½öÔÚenquenceÖĞµ÷ÓÃÁË¡£<br>
- * TODO ¸Ğ¾õºÜÓĞÎÊÌâ°¡¡£»á²»»á³öÏÖactive.addÖ®Ç° backlogºÍactiveÓÖ½»»»Î»ÖÃÁËÄØ¡£¡£´ËÍâ»¹ĞèÒª¸ãÃ÷°×ÎªºÎ¼ÓÈëµ½activeºó¾ÍÍË³öÑ­»·ÁË¡£ÒÔ¼°ÆäËûµÄclientÖ¸µÄÊÇÊ²Ã´£¿<br>
+ * å¾ªç¯åšä»¥ä¸‹äº‹æƒ…<br>{<br>
+ * 	å¦‚æœbacklogä¸ºç©ºï¼Œå•¥éƒ½ä¸è¯´äº†ã€‚ å¦‚æœç¬¬ä¸€ä¸ªè¿˜æ²¡è¶…æ—¶ï¼Œé‚£ä¹Ÿå•¥éƒ½ä¸è¯´äº†ã€‚å¦‚æœç¬¬ä¸€ä¸ªå·²ç»è¶…æ—¶äº†ï¼Œå°†ä¹‹ä»backlogä¸­æ¸…é™¤<br>}<br>
+ * 	æ¸…ç©ºçš„æ—¶å€™ï¼Œé¦–å…ˆåˆ¤æ–­ä¸‹å’Œåˆšæ‰åˆ¤æ–­çš„æ—¶å€™æ˜¯å¦å‘ç”Ÿå˜åŒ–äº†ï¼Œå¦‚æœæ²¡å˜ï¼Œæ‰”äº†ã€‚ã€‚droppedè®¡æ•°+1ã€‚<br>
+ *     å¦‚æœå˜äº†ï¼Œè¯´æ˜åœ¨activeå’Œbacklogäº¤æ¢äº†ï¼ˆrunå‡½æ•°ä¸­å¹²çš„å¥½äº‹ï¼Œå‘ç°activeç©ºäº†ï¼Œå°±äº¤æ¢ä¸‹activeå’Œbacklogï¼‰ï¼Œé‚£ä¹ˆè¿™ä¸ªæ¶ˆæ¯åº”è¯¥æ˜¯åˆšåˆšäº¤æ¢å®Œåé©¬ä¸ŠåŠ è¿›æ¥çš„ï¼Œä¸ºäº†ä¸è®©ä»–åŒå…¶ä»–çš„clientï¼ˆå…¶ä»–çš„clientæŒ‡çš„æ˜¯ï¼Ÿï¼‰ç«äº‰backlogçš„headé”ï¼ˆbacklogæ˜¯çº¿ç¨‹å®‰å…¨çš„ï¼‰ï¼Œå› æ­¤å°†ä¹‹åŠ å…¥åˆ°activeçš„æœ«å°¾å»ï¼Œç„¶åé€€å‡ºå¾ªç¯ï¼ˆå¯èƒ½æ˜¯è€ƒè™‘è¿™æ ·çš„è¯ï¼Œé¡¶å¤šå°±è¿™ä¸€ä¸ªæ¶ˆæ¯åœ¨backlogä¸­ï¼Ÿè¿˜æ˜¯æ•…æ„è·³å‡ºçš„ï¼Ÿï¼‰ã€‚<br>
+ * è¯¥æ–¹æ³•ç›®å‰ä»…åœ¨enquenceä¸­è°ƒç”¨äº†ã€‚<br>
+ * TODO æ„Ÿè§‰å¾ˆæœ‰é—®é¢˜å•Šã€‚ä¼šä¸ä¼šå‡ºç°active.addä¹‹å‰ backlogå’Œactiveåˆäº¤æ¢ä½ç½®äº†å‘¢ã€‚ã€‚æ­¤å¤–è¿˜éœ€è¦ææ˜ç™½ä¸ºä½•åŠ å…¥åˆ°activeåå°±é€€å‡ºå¾ªç¯äº†ã€‚ä»¥åŠå…¶ä»–çš„clientæŒ‡çš„æ˜¯ä»€ä¹ˆï¼Ÿ<br>
  * 
  */
     private void expireMessages()

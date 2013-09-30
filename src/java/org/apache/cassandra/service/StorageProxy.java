@@ -882,8 +882,8 @@ public class StorageProxy implements StorageProxyMBean
                 Table table = Table.open(command.getKeyspace());
                 assert !command.isDigestQuery();
 
-                List<InetAddress> endpoints = getLiveSortedEndpoints(table, command.key);//²éÕÒËùÓĞ»î×ÅµÄ½Úµã£¨Òª¸ù¾İkeyspaceµÄreplicationStrategyÕÒ£¬±ÈÈçLocalStrategyµÄ»°£¬¾ÍÖ±½Ó·µ»Ø±¾»ú£©£¬È»ºó½øĞĞÅÅĞò
-                CFMetaData cfm = Schema.instance.getCFMetaData(command.getKeyspace(), command.getColumnFamilyName());//´Ó±¾»ú»ñÈ¡cfm¶¨Òå
+                List<InetAddress> endpoints = getLiveSortedEndpoints(table, command.key);//æŸ¥æ‰¾æ‰€æœ‰æ´»ç€çš„èŠ‚ç‚¹ï¼ˆè¦æ ¹æ®keyspaceçš„replicationStrategyæ‰¾ï¼Œæ¯”å¦‚LocalStrategyçš„è¯ï¼Œå°±ç›´æ¥è¿”å›æœ¬æœºï¼‰ï¼Œç„¶åè¿›è¡Œæ’åº
+                CFMetaData cfm = Schema.instance.getCFMetaData(command.getKeyspace(), command.getColumnFamilyName());//ä»æœ¬æœºè·å–cfmå®šä¹‰
 
                 ReadRepairDecision rrDecision = cfm.newReadRepairDecision();
                 endpoints = consistency_level.filterForQuery(table, endpoints, rrDecision);
@@ -894,7 +894,7 @@ public class StorageProxy implements StorageProxyMBean
 
                 RowDigestResolver resolver = new RowDigestResolver(command.table, command.key);
                 ReadCallback<ReadResponse, Row> handler = new ReadCallback(resolver, consistency_level, command, endpoints);
-                handler.assureSufficientLiveNodes();//ÔÙ´ÎÈ·±£endpoints´ïµ½ÁËÒ»ÖÂĞÔ¼¶±ğ
+                handler.assureSufficientLiveNodes();//å†æ¬¡ç¡®ä¿endpointsè¾¾åˆ°äº†ä¸€è‡´æ€§çº§åˆ«
                 assert !endpoints.isEmpty();
                 readCallbacks[i] = handler;
 
@@ -1261,7 +1261,7 @@ public class StorageProxy implements StorageProxyMBean
 
                 try
                 {
-                	//ÊÇ²»ÊÇÓĞ¸üºÃµÄµØ·½¿ÉÒÔÅĞ¶Ï£¿
+                	//æ˜¯ä¸æ˜¯æœ‰æ›´å¥½çš„åœ°æ–¹å¯ä»¥åˆ¤æ–­ï¼Ÿ
                 	//added by xuhao
                     for (Row row : handler.get())
                     {
@@ -1397,7 +1397,7 @@ public class StorageProxy implements StorageProxyMBean
 	    					//resultCf.addColumn(column)
 	    					row.cf.addColumn(resultColumn);
 	    					
-	    					//È¥ÖØ
+	    					//å»é‡
 	    					/*
 	    					if(!resultkeyList.contains(keyvalue))
 	    					{
@@ -1744,7 +1744,7 @@ public class StorageProxy implements StorageProxyMBean
 	    	for (IMutation imutation : rowMutations)
 	    	{
 	    		for(UUID iUuid : imutation.getColumnFamilyIds()) { 
-	    				//valuetomodify ÔÚÏÂÎÄÖĞÖØĞÂÉú³É
+	    				//valuetomodify åœ¨ä¸‹æ–‡ä¸­é‡æ–°ç”Ÿæˆ
 	    				/*
 	            		ColumnFamily tempcf = null;
 	    			    tempcf = imutation.getModifications().get(iUuid);
@@ -1784,7 +1784,7 @@ public class StorageProxy implements StorageProxyMBean
 	        		}
 	        	}
 	        	*/
-	        	//ÕâÀïÒ»¶¨ÊÇÒª±éÀúËùÓĞµÄÁĞµÄ
+	        	//è¿™é‡Œä¸€å®šæ˜¯è¦éå†æ‰€æœ‰çš„åˆ—çš„
 	        	traversal = true;
 	            
 	            RangeSliceCommand nodeCmd = new RangeSliceCommand(command.keyspace,
@@ -1875,7 +1875,7 @@ public class StorageProxy implements StorageProxyMBean
 		                    				}
 		                    			}
 		                    		}
-		                    		//Õâ¸öelseÈ¥µôÊÇÒòÎªÈç¹ûĞèÒªclear»¹Ö¸¶¨¸öjbµÄvalue°¡..
+		                    		//è¿™ä¸ªelseå»æ‰æ˜¯å› ä¸ºå¦‚æœéœ€è¦clearè¿˜æŒ‡å®šä¸ªjbçš„valueå•Š..
 		                    		/*
 		                    		else if(nodeCmdbackup.row_filter.get(i).column_name.equals(valueBuffer))
 		                    		{	
@@ -2554,7 +2554,7 @@ public class StorageProxy implements StorageProxyMBean
         return trim(command, rows);
     }
 
-    //Çå³ıvalueÖĞµÄ·Ç·¨×Ö·û
+    //æ¸…é™¤valueä¸­çš„éæ³•å­—ç¬¦
     public static List<Row> getRangeSliceForClear(RangeSliceCommand command, ConsistencyLevel consistency_level, 
     		List<IMutation> rowMutations, org.apache.cassandra.cql.UpdateStatement update, 
     		ThriftClientState clientstate, char invalidChar)

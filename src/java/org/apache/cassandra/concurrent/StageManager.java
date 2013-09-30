@@ -31,7 +31,7 @@ import static org.apache.cassandra.config.DatabaseDescriptor.*;
 
 
 /**
- * ¸øÃ¿ÖÖstage´´½¨ÁËÒ»¸öÏß³Ì³Ø¡£ ·ÅÔÚmapÖĞ¡£
+ * ç»™æ¯ç§stageåˆ›å»ºäº†ä¸€ä¸ªçº¿ç¨‹æ± ã€‚ æ”¾åœ¨mapä¸­ã€‚
  * This class manages executor services for Messages recieved: each Message requests
  * running on a specific "stage" for concurrency control; hence the Map approach,
  * even though stages (executors) are not created dynamically.
@@ -62,7 +62,7 @@ public class StageManager
         stages.put(Stage.TRACING, tracingExecutor());
     }
 /**
- * ¹Ì¶¨´óĞ¡Îª1µÄÏß³Ì³Ø£¬¶ÓÁĞÎª1000£¬ÂúÁË¾ÍÈÓµô£¨ÔÚMSÖĞdropped verb¶ÈÁ¿Öµ+1£©
+ * å›ºå®šå¤§å°ä¸º1çš„çº¿ç¨‹æ± ï¼Œé˜Ÿåˆ—ä¸º1000ï¼Œæ»¡äº†å°±æ‰”æ‰ï¼ˆåœ¨MSä¸­dropped verbåº¦é‡å€¼+1ï¼‰
  * @return
  */
     private static ExecuteOnlyExecutor tracingExecutor()
@@ -83,7 +83,7 @@ public class StageManager
                                        reh);
     }
     /**
-     * ¹Ì¶¨´óĞ¡Ïß³Ì³Ø£¬¶ÓÁĞÎŞÏŞ
+     * å›ºå®šå¤§å°çº¿ç¨‹æ± ï¼Œé˜Ÿåˆ—æ— é™
      * @param stage
      * @param numThreads
      * @return
@@ -98,7 +98,7 @@ public class StageManager
                                                 stage.getJmxType());
     }
 /**
- * ¹Ì¶¨´óĞ¡Ïß³Ì³Ø£¬¶ÓÁĞÎŞÏŞ
+ * å›ºå®šå¤§å°çº¿ç¨‹æ± ï¼Œé˜Ÿåˆ—æ— é™
  * @param stage
  * @param numThreads
  * @return
@@ -113,8 +113,8 @@ public class StageManager
                                                      stage.getJmxType());
     }
 /**
- * ¹Ì¶¨´óĞ¡Ïß³Ì³Ø
- * ¶ÓÁĞ²»ÊÇÎŞÏŞµÄ
+ * å›ºå®šå¤§å°çº¿ç¨‹æ± 
+ * é˜Ÿåˆ—ä¸æ˜¯æ— é™çš„
  * @param stage
  * @param numThreads
  * @param maxTasksBeforeBlock
@@ -151,7 +151,7 @@ public class StageManager
     }
 
     /**
-     * (1.2.5°æÄ¿²âÍêÈ«Ã»Çø±ğ°¡¡£¡£¸úÆÕÍ¨µÄTPE) (1.2.10°æ±¾ĞŞ¸Ä³ÉÁËĞÂµÄÀàĞÍ£¬¶ÔsubmitÖ±½ÓÅ×³öÒì³£ÁË)
+     * (1.2.5ç‰ˆç›®æµ‹å®Œå…¨æ²¡åŒºåˆ«å•Šã€‚ã€‚è·Ÿæ™®é€šçš„TPE) (1.2.10ç‰ˆæœ¬ä¿®æ”¹æˆäº†æ–°çš„ç±»å‹ï¼Œå¯¹submitç›´æ¥æŠ›å‡ºå¼‚å¸¸äº†)
      * A TPE that disallows submit so that we don't need to worry about unwrapping exceptions on the
      * tracing stage.  See CASSANDRA-1123 for background.
      */

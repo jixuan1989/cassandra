@@ -79,7 +79,7 @@ public class TraceState
         trace(MessageFormatter.arrayFormat(format, args).getMessage());
     }
 /**
- * ±£´æ source thread source_elapsed activity(¼´message) ĞÅÏ¢µ½system_traces.eventsÖĞ
+ * ä¿å­˜ source thread source_elapsed activity(å³message) ä¿¡æ¯åˆ°system_traces.eventsä¸­
  * @param message
  */
     public void trace(String message)

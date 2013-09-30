@@ -31,7 +31,7 @@ import org.apache.cassandra.metrics.ConnectionMetrics;
 import org.apache.cassandra.security.SSLFactory;
 import org.apache.cassandra.utils.FBUtilities;
 /**
- * °üº¬Á½¸öOutboundTcpConnection¡£ Ò»¸öÊÇcmd£¬Ò»¸öÊÇack¡£¼ÇÂ¼ÁËÒªÁ¬½ÓµÄip¡£¸ÃÀà¸ºÔğÕâÁ½¸öconnectionµÄÖØĞÂÁ¬½Ó£¬¹Ø±ÕµÈÊÂÇé¡£
+ * åŒ…å«ä¸¤ä¸ªOutboundTcpConnectionã€‚ ä¸€ä¸ªæ˜¯cmdï¼Œä¸€ä¸ªæ˜¯ackã€‚è®°å½•äº†è¦è¿æ¥çš„ipã€‚è¯¥ç±»è´Ÿè´£è¿™ä¸¤ä¸ªconnectionçš„é‡æ–°è¿æ¥ï¼Œå…³é—­ç­‰äº‹æƒ…ã€‚
  * @author hxd
  *
  */
@@ -69,7 +69,7 @@ public class OutboundTcpConnectionPool
                : cmdCon;
     }
 /**
- * ¹Ø±ÕackconºÍcmdcon£¬½öÇå¿Õmessage²¢Ìí¼Óclose_sentinel¶ø²»stopËûÃÇ¡£
+ * å…³é—­ackconå’Œcmdconï¼Œä»…æ¸…ç©ºmessageå¹¶æ·»åŠ close_sentinelè€Œä¸stopä»–ä»¬ã€‚
  */
     void reset()
     {
@@ -77,7 +77,7 @@ public class OutboundTcpConnectionPool
             conn.closeSocket(false);
     }
     /**
-     * ¶ÔÓÚackComºÍcmdCon£¬Èç¹ûversion´óÓÚËûÃÇµÄtargetVersion£¬¾ÍÌí¼Óclose_sentinelÏûÏ¢¸øËûÃÇ£¬
+     * å¯¹äºackComå’ŒcmdConï¼Œå¦‚æœversionå¤§äºä»–ä»¬çš„targetVersionï¼Œå°±æ·»åŠ close_sentinelæ¶ˆæ¯ç»™ä»–ä»¬ï¼Œ
      * @param version
      */
     public void resetToNewerVersion(int version)
@@ -120,7 +120,7 @@ public class OutboundTcpConnectionPool
         metrics.timeouts.mark();
     }
 /**
- * Èç¹ûÓĞ·â×°ÒªÇóµÄ»° ¾Í·â×°³ÉSSLÁ¬½Ó£¨ÔİÊ±Ã»¿´£©£¬·ñÔòµÃµ½Ò»¸ösocket£¬ÓÃlisten addressµÃµ½Ò»¸öÓëendPointµÄÁ¬½Ó£¬¶Ë¿ÚÊÇ7000
+ * å¦‚æœæœ‰å°è£…è¦æ±‚çš„è¯ å°±å°è£…æˆSSLè¿æ¥ï¼ˆæš‚æ—¶æ²¡çœ‹ï¼‰ï¼Œå¦åˆ™å¾—åˆ°ä¸€ä¸ªsocketï¼Œç”¨listen addresså¾—åˆ°ä¸€ä¸ªä¸endPointçš„è¿æ¥ï¼Œç«¯å£æ˜¯7000
  * @return
  * @throws IOException
  */
@@ -143,7 +143,7 @@ public class OutboundTcpConnectionPool
         }
     }
 /**
- * Èç¹ûid¸ú±¾µØµÄbroadcastµØÖ·ÏàÍ¬ Ôò·µ»ØlistenµØÖ·£¬·ñÔòÈôresetedEndpoint²»Îª¿Õ·µ»ØÖ®£¬·ñÔò·µ»Øid¡£¡£¡£
+ * å¦‚æœidè·Ÿæœ¬åœ°çš„broadcaståœ°å€ç›¸åŒ åˆ™è¿”å›listenåœ°å€ï¼Œå¦åˆ™è‹¥resetedEndpointä¸ä¸ºç©ºè¿”å›ä¹‹ï¼Œå¦åˆ™è¿”å›idã€‚ã€‚ã€‚
  * @return
  */
     public InetAddress endPoint()
@@ -153,7 +153,7 @@ public class OutboundTcpConnectionPool
         return resetedEndpoint == null ? id : resetedEndpoint;
     }
 /**
- * ¸ù¾İÅäÖÃÎÄ¼ş¾ö¶¨ÊÇ·ñÒª·â×°
+ * æ ¹æ®é…ç½®æ–‡ä»¶å†³å®šæ˜¯å¦è¦å°è£…
  * @return
  */
     boolean isEncryptedChannel()
