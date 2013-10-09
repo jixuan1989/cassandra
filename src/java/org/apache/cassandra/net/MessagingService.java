@@ -739,7 +739,7 @@ public final class MessagingService implements MessagingServiceMBean
         Runnable runnable = new MessageDeliveryTask(message, id, timestamp);
         TracingAwareExecutorService stage = StageManager.getStage(message.getMessageType());
         assert stage != null : "No stage for message type " + message.verb;
-
+        logger.debug("Message info: " + message.verb);
         if (message.verb == Verb.REQUEST_RESPONSE && PBSPredictor.instance().isLoggingEnabled())
         {
             IMessageCallback cb = MessagingService.instance().getRegisteredCallback(id).callback;

@@ -6,3 +6,5 @@ src/gen-java/
 .classpath
 .project
 *.class
+test/conf/cassandra.yaml
+.settings/*
