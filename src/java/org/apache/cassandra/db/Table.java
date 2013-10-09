@@ -381,6 +381,7 @@ public class Table
             }
 
             DecoratedKey key = StorageService.getPartitioner().decorateKey(mutation.key());
+            
             for (ColumnFamily cf : mutation.getColumnFamilies())
             {
                 ColumnFamilyStore cfs = columnFamilyStores.get(cf.id());

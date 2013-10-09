@@ -49,7 +49,7 @@ public class RowMutationVerbHandler implements IVerbHandler<RowMutation>
             {
                 replyTo = message.from;
                 byte[] forwardBytes = message.parameters.get(RowMutation.FORWARD_TO);
-                //如果本节点为协调者，且消息版本不低于VERSION_11
+                //如果本节点为本数据中心的代理节点，且消息版本不低于VERSION_11
                 if (forwardBytes != null && message.version >= MessagingService.VERSION_11)
                     forwardToLocalNodes(rm, message.verb, forwardBytes, message.from);
             }
