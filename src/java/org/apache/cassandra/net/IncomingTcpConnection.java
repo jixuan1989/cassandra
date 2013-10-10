@@ -201,7 +201,7 @@ public class IncomingTcpConnection extends Thread
         String id = input.readUTF();
         long timestamp = System.currentTimeMillis();;
         if (version >= MessagingService.VERSION_12)
-        {
+        {//TODO 需要读一下 时间戳怎么计算的
             // make sure to readInt, even if cross_node_to is not enabled
             int partial = input.readInt();
             if (DatabaseDescriptor.hasCrossNodeTimeout())

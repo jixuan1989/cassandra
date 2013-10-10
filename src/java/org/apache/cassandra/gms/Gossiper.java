@@ -121,7 +121,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
                 if (logger.isTraceEnabled())
                     logger.trace("My heartbeat is now " + endpointStateMap.get(FBUtilities.getBroadcastAddress()).getHeartBeatState().getHeartBeatVersion());
                 final List<GossipDigest> gDigests = new ArrayList<GossipDigest>();
-                Gossiper.instance.makeRandomGossipDigest(gDigests);
+                Gossiper.instance.makeRandomGossipDigest(gDigests);//TODO 为何要打乱顺序？
 
                 if ( gDigests.size() > 0 )
                 {
@@ -135,7 +135,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
                     boolean gossipedToSeed = doGossipToLiveMember(message);
 
                     /* Gossip to some unreachable member with some probability to check if he is back up */
-                    doGossipToUnreachableMember(message);
+                    doGossipToUnreachableMember(message);//按照一定几率的发送给unreachable 中的某一台。当机的越多 发送几率越大
 
                     /* Gossip to a seed if we did not do so above, or we have seen less nodes
                        than there are seeds.  This prevents partitions where each group of nodes
@@ -501,7 +501,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
         return endpointStateMap.get(endpoint).getHeartBeatState().getGeneration();
     }
 
-    /**
+    /**随便从ip集合中选一个 ，发送出去消息
      * Returns true if the chosen target was also a seed. False otherwise
      *
      *
@@ -525,7 +525,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
         return seeds.contains(to);
     }
 
-    /* Sends a Gossip message to a live member and returns true if the recipient was a seed */
+    /** Sends a Gossip message to a live member and returns true if the recipient was a seed */
     private boolean doGossipToLiveMember(MessageOut<GossipDigestSyn> message)
     {
         int size = liveEndpoints.size();
@@ -534,7 +534,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
         return sendGossip(message, liveEndpoints);
     }
 
-    /* Sends a Gossip message to an unreachable member */
+    /** Sends a Gossip message to an unreachable member based on some probability*/
     private void doGossipToUnreachableMember(MessageOut<GossipDigestSyn> message)
     {
         double liveEndpointCount = liveEndpoints.size();
@@ -675,7 +675,12 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
             throw new RuntimeException("Host " + endpoint + " does not use new-style tokens!");
         return UUID.fromString(getEndpointStateForEndpoint(endpoint).getApplicationState(ApplicationState.HOST_ID).value);
     }
-
+    /**
+     * 得到比给定版本大的所有信息。心跳版本也算（但是传回的信息中， 不管本地记录的心跳是否大于该版本，生成的EndpointState中都是本地记录的心跳版本）
+     * @param forEndpoint
+     * @param version
+     * @return
+     */
     EndpointState getStateForVersionBiggerThan(InetAddress forEndpoint, int version)
     {
         EndpointState epState = endpointStateMap.get(forEndpoint);
@@ -713,7 +718,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
                         logger.trace("Adding state " + key + ": " + value.value);
                     reqdEndpointState.addApplicationState(key, value);
                 }
-            }
+            }//这段代码执行完，岂不是不管localHbVersion是否大于version，生成的EndpointState的心跳版本都是本地版本。。 第一个if仅在for循环不执行室才有效..
         }
         return reqdEndpointState;
     }
@@ -726,7 +731,10 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
         assert ep1 != null && ep2 != null;
         return ep1.getHeartBeatState().getGeneration() - ep2.getHeartBeatState().getGeneration();
     }
-
+    /**
+     * 遍历每一个map中的ip。如果远程的心跳信息新，则更新，并report给FD。
+     * @param remoteEpStateMap
+     */
     void notifyFailureDetector(Map<InetAddress, EndpointState> remoteEpStateMap)
     {
         for (Entry<InetAddress, EndpointState> entry : remoteEpStateMap.entrySet())
@@ -808,6 +816,9 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
     }
 
     /**
+     * 直接用epState代替map中的value值。
+     * <br>然后该方法通知所有的subscribers onRestart事件。
+     * <br>然后确定该节点是死是活，修改其状态。最后通知所有subscribersonJoin事件。
      * This method is called whenever there is a "big" change in ep state (a generation change for a known node).
      *
      * @param ep endpoint
@@ -856,7 +867,12 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
         }
         return false;
     }
-
+/**
+ * 如果接收的信息代数比本地保存的新，则全替换，并进行onRestart、onAlive/onDead、onJoin的通知。
+ * <br>如果代数相同，则替换部分，并对每一个被修改的key-valu 进行onChange通知
+ * <br>如果本地根本没有该信息，则全替换并报告给FailureDetector说有一个新节点加入了AND it's not alive。 然后全替换，并进行onRestart、onAlive/onDead、onJoin的通知。
+ * @param epStateMap
+ */
     void applyStateLocally(Map<InetAddress, EndpointState> epStateMap)
     {
         for (Entry<InetAddress, EndpointState> entry : epStateMap.entrySet())
@@ -904,7 +920,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
                     else if (logger.isTraceEnabled())
                             logger.trace("Ignoring remote version " + remoteMaxVersion + " <= " + localMaxVersion + " for " + ep);
                     if (!localEpStatePtr.isAlive() && !isDeadState(localEpStatePtr)) // unless of course, it was dead
-                        markAlive(ep, localEpStatePtr);
+                        markAlive(ep, localEpStatePtr);//标活节点，但是信息都没传进去啊。。
                 }
                 else
                 {
@@ -920,7 +936,12 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
             }
         }
     }
-
+    /**
+     * 修改本地的记录信息，并将每个被修改的key-value 通知给subscribers
+     * @param addr
+     * @param localState
+     * @param remoteState
+     */
     private void applyNewStates(InetAddress addr, EndpointState localState, EndpointState remoteState)
     {
         // don't assert here, since if the node restarts the version will go back to zero
@@ -971,7 +992,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
             deltaEpStateMap.put(gDigest.getEndpoint(), localEpStatePtr);
     }
 
-    /*
+    /**
         This method is used to figure the state that the Gossiper has but Gossipee doesn't. The delta digests
         and the delta state are built up.
     */
@@ -993,7 +1014,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
                 int localGeneration = epStatePtr.getHeartBeatState().getGeneration();
                 /* get the max version of all keys in the state associated with this endpoint */
                 int maxLocalVersion = getMaxEndpointStateVersion(epStatePtr);
-                if ( remoteGeneration == localGeneration && maxRemoteVersion == maxLocalVersion )
+                if ( remoteGeneration == localGeneration && maxRemoteVersion == maxLocalVersion )//信息一致，没什么可说的了，跳过
                     continue;
 
                 if ( remoteGeneration > localGeneration )

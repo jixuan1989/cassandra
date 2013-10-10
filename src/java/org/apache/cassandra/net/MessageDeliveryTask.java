@@ -64,7 +64,7 @@ public class MessageDeliveryTask implements Runnable
         if (verbHandler == null)
         {
             logger.debug("Unknown verb {}", verb);
-            return;
+            return;		
         }
         if(verb!=Verb.GOSSIP_DIGEST_ACK &&verb!=Verb.GOSSIP_DIGEST_ACK2&& verb!=Verb.GOSSIP_DIGEST_SYN){
         	logger.debug("----------verbHandler type："+verbHandler.getClass().toString());

@@ -541,7 +541,7 @@ public final class MessagingService implements MessagingServiceMBean
     {
         String messageId = nextId();
         CallbackInfo previous;
-
+        logger.debug("------put callback:||{}",cb);
         // If HH is enabled and this is a mutation message => store the message to track for potential hints.
         if (DatabaseDescriptor.hintedHandoffEnabled() && message.verb == Verb.MUTATION)
             previous = callbacks.put(messageId, new CallbackInfo(to, cb, message, callbackDeserializers.get(message.verb)), timeout);
@@ -762,7 +762,7 @@ public final class MessagingService implements MessagingServiceMBean
      * @return
      */
     public void setCallbackForTests(String messageId, CallbackInfo callback)
-    {
+    {	logger.debug("------put callback:{}||{}",callback,callback.callback);
         callbacks.put(messageId, callback);
     }
 /**

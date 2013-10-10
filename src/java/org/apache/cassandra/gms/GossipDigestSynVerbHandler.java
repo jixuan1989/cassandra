@@ -82,11 +82,11 @@ public class GossipDigestSynVerbHandler implements IVerbHandler<GossipDigestSyn>
                                                                                                       GossipDigestAck.serializer);
         if (logger.isTraceEnabled())
             logger.trace("Sending a GossipDigestAckMessage to {}", from);
-        Gossiper.instance.checkSeedContact(from);
+        Gossiper.instance.checkSeedContact(from);//check完有什么用？
         MessagingService.instance().sendOneWay(gDigestAckMessage, from);
     }
 
-    /*
+    /**
      * First construct a map whose key is the endpoint in the GossipDigest and the value is the
      * GossipDigest itself. Then build a list of version differences i.e difference between the
      * version in the GossipDigest and the version in the local state for a given InetAddress.
@@ -117,7 +117,7 @@ public class GossipDigestSynVerbHandler implements IVerbHandler<GossipDigestSyn>
         }
 
         gDigestList.clear();
-        Collections.sort(diffDigests);
+        Collections.sort(diffDigests);//优先比较代数，其次比较版本号
         int size = diffDigests.size();
         /*
          * Report the digests in descending order. This takes care of the endpoints

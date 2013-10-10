@@ -37,8 +37,13 @@ import org.apache.cassandra.net.MessagingService;
 public class GossipDigestAck
 {
     public static final IVersionedSerializer<GossipDigestAck> serializer = new GossipDigestAckSerializer();
-
+    /**
+     * 自己比对方版本低的那些摘要（自己发现自己比较陈旧的信息，想从对方获取新的）
+     */
     final List<GossipDigest> gDigestList;
+    /**
+     * 自己比对方版本高的那些信息，想发给对方的
+     */
     final Map<InetAddress, EndpointState> epStateMap;
 
     GossipDigestAck(List<GossipDigest> gDigestList, Map<InetAddress, EndpointState> epStateMap)
