@@ -20,12 +20,11 @@ package org.apache.cassandra.db;
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.util.UUID;
+import java.util.logging.Logger;
 
 import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.utils.*;
-
 import org.apache.commons.lang.builder.HashCodeBuilder;
-
 import org.apache.cassandra.cache.IRowCacheEntry;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Schema;

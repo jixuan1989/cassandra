@@ -32,10 +32,14 @@ public class RowMutationVerbHandler implements IVerbHandler<RowMutation>
 {
     private static final Logger logger = LoggerFactory.getLogger(RowMutationVerbHandler.class);
 
+    /**
+     * 数据发生修改时的VerbHandler
+     */
     public void doVerb(MessageIn<RowMutation> message, String id)
     {
         try
         {
+        	//得到消息内的数据
             RowMutation rm = message.payload;
 
             // Check if there were any forwarding headers in this message
@@ -45,6 +49,7 @@ public class RowMutationVerbHandler implements IVerbHandler<RowMutation>
             {
                 replyTo = message.from;
                 byte[] forwardBytes = message.parameters.get(RowMutation.FORWARD_TO);
+                //如果本节点为本数据中心的代理节点，且消息版本不低于VERSION_11
                 if (forwardBytes != null && message.version >= MessagingService.VERSION_11)
                     forwardToLocalNodes(rm, message.verb, forwardBytes, message.from);
             }
