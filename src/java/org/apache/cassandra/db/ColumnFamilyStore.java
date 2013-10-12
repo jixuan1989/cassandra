@@ -772,11 +772,11 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         return removeDeleted(cf, gcBefore, SecondaryIndexManager.nullUpdater);
     }
 
-    /*
-     This is complicated because we need to preserve deleted columns, supercolumns, and columnfamilies
-     until they have been deleted for at least GC_GRACE_IN_SECONDS.  But, we do not need to preserve
-     their contents; just the object itself as a "tombstone" that can be used to repair other
-     replicas that do not know about the deletion.
+    /**
+     * This is complicated because we need to preserve deleted columns, supercolumns, and columnfamilies
+     * until they have been deleted for at least GC_GRACE_IN_SECONDS.  But, we do not need to preserve
+     * their contents; just the object itself as a "tombstone" that can be used to repair other
+     * replicas that do not know about the deletion.
      */
     public static ColumnFamily removeDeleted(ColumnFamily cf, int gcBefore, SecondaryIndexManager.Updater indexer)
     {

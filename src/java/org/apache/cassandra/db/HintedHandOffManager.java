@@ -203,7 +203,18 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
         return hintColumnFamily == null
                || (hintColumnFamily.getSortedColumns().size() == 1 && hintColumnFamily.getColumn(startColumn) != null);
     }
-
+    
+    /**
+     * 等待目的IP的schema和本地的schema状态一致
+     * 1. 首先等待节点schema状态的恢复，每1s询问gossiper一次，当等待时间超过RING_DELAY的2倍时抛出超时异常
+     * 2. 当节点schema状态的恢复后，重置等待时间。继续等待节点schema状态和本地schema状态达成一致，每1s询问gossiper一次，
+     * 当等待时间超过RING_DELAY的2倍时抛出超时异常
+     * 3. 达到一致后，返回等待的毫秒数
+     * @param endpoint 目的地址的IP
+     * @return 等待的毫秒数
+     * 
+     * @throws TimeoutException 当等待时间超过<code>2 * StorageService.<i>RING_DELAY</i></code>时抛出
+     */
     private int waitForSchemaAgreement(InetAddress endpoint) throws TimeoutException
     {
         Gossiper gossiper = Gossiper.instance;
@@ -278,7 +289,7 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
         doDeliverHintsToEndpoint(endpoint);
     }
 
-    /*
+    /**
      * 1. Get the key of the endpoint we need to handoff
      * 2. For each column, deserialize the mutation and send it to the endpoint
      * 3. Delete the subcolumn if the write was successful
@@ -332,6 +343,7 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
 
             for (final IColumn hint : hintsPage.getSortedColumns())
             {
+
                 // check if hints delivery has been paused during the process
                 if (hintedHandOffPaused)
                 {
@@ -419,7 +431,7 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
                     return;
                 }
             }
-        }
+        } //While循环
 
         logger.info("Finished hinted handoff of {} rows to endpoint {}", rowsReplayed, endpoint);
 
