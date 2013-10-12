@@ -33,7 +33,9 @@ import org.apache.cassandra.net.CompactEndpointSerializationHelper;
 public class GossipDigestAck2
 {
     public static final IVersionedSerializer<GossipDigestAck2> serializer = new GossipDigestAck2Serializer();
-
+    /**
+     * 对方索要的信息
+     */
     final Map<InetAddress, EndpointState> epStateMap;
 
     GossipDigestAck2(Map<InetAddress, EndpointState> epStateMap)

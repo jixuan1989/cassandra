@@ -81,7 +81,10 @@ public class VersionedValue implements Comparable<VersionedValue>
         this.value = value;
         this.version = version;
     }
-
+    /**
+     * value=value. version=VersionGenerator.getNextVersion()
+     * @param value
+     */
     private VersionedValue(String value)
     {
         this(value, VersionGenerator.getNextVersion());
@@ -97,7 +100,11 @@ public class VersionedValue implements Comparable<VersionedValue>
     {
         return "Value(" + value + "," + version + ")";
     }
-
+    /**
+     * 将参数数组用分隔符(,)连接成一个字符串
+     * @param args
+     * @return
+     */
     private static String versionString(String...args)
     {
         return StringUtils.join(args, VersionedValue.DELIMITER);
@@ -111,19 +118,31 @@ public class VersionedValue implements Comparable<VersionedValue>
         {
             this.partitioner = partitioner;
         }
-
+        /**
+         * 返回一个versionValue对象， value="boot,*****" 其中****表示tokens的字符串编码形式
+         * @param tokens
+         * @return
+         */
         public VersionedValue bootstrapping(Collection<Token> tokens)
         {
             return new VersionedValue(versionString(VersionedValue.STATUS_BOOTSTRAPPING,
                                                     makeTokenString(tokens)));
         }
-
+        /**
+         * 返回一个versionValue对象， value="normal,*****" 其中****表示tokens的字符串编码形式
+         * @param tokens
+         * @return
+         */
         public VersionedValue normal(Collection<Token> tokens)
         {
             return new VersionedValue(versionString(VersionedValue.STATUS_NORMAL,
                                                     makeTokenString(tokens)));
         }
-
+        /**
+         * 将token列表变成一个字符串（通过partitioner来编译）
+         * @param tokens
+         * @return
+         */
         @SuppressWarnings("unchecked")
 		private String makeTokenString(Collection<Token> tokens)
         {
@@ -139,25 +158,41 @@ public class VersionedValue implements Comparable<VersionedValue>
         {
             return new VersionedValue(newVersion.toString());
         }
-
+        /**
+         * 返回一个versionValue对象， value="leaving,*****" 其中****表示tokens的字符串编码形式
+         * @param tokens
+         * @return
+         */
         public VersionedValue leaving(Collection<Token> tokens)
         {
             return new VersionedValue(versionString(VersionedValue.STATUS_LEAVING,
                     makeTokenString(tokens)));
         }
-
+        /**
+         * 返回一个versionValue对象， value="left,*****,[expireTime]" 其中****表示tokens的字符串编码形式
+         * @param tokens
+         * @return
+         */
         public VersionedValue left(Collection<Token> tokens, long expireTime)
         {
             return new VersionedValue(versionString(VersionedValue.STATUS_LEFT,
                     makeTokenString(tokens),
                     Long.toString(expireTime)));
         }
-
+        /**
+         * 返回一个versionValue对象， value="moving,*" 其中*表示被移动的token的字符串编码形式
+         * @param token
+         * @return
+         */
         public VersionedValue moving(Token token)
         {
             return new VersionedValue(VersionedValue.STATUS_MOVING + VersionedValue.DELIMITER + partitioner.getTokenFactory().toString(token));
         }
-
+        /**
+         * 返回一个versionValue对象， value="relocating,******" 其中******表示被移动的tokens的字符串编码形式
+         * @param token
+         * @return
+         */
         public VersionedValue relocating(Collection<Token> srcTokens)
         {
             return new VersionedValue(
@@ -168,7 +203,11 @@ public class VersionedValue implements Comparable<VersionedValue>
         {
             return new VersionedValue(hostId.toString());
         }
-
+        /**
+         * 将tokens编码成二进制形式，然后用iso8859-1编码成字符串生成VersionValue
+         * @param tokens
+         * @return
+         */
         public VersionedValue tokens(Collection<Token> tokens)
         {
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
@@ -183,57 +222,100 @@ public class VersionedValue implements Comparable<VersionedValue>
             }
             return new VersionedValue(new String(bos.toByteArray(), ISO_8859_1));
         }
-
+        /**
+         * 返回一个versionValue对象， value="removing,*" 其中*表示host对应的uuid（不是token了..）
+         * @param hostId
+         * @return
+         */
         public VersionedValue removingNonlocal(UUID hostId)
         {
             return new VersionedValue(versionString(VersionedValue.REMOVING_TOKEN, hostId.toString()));
         }
-
+        /**
+         * 返回一个versionValue对象， value="removed,*,*,[expireTime]" 其中*表示host对应的uuid（不是token了..）
+         * @param hostId
+         * @param expireTime
+         * @return
+         */
         public VersionedValue removedNonlocal(UUID hostId, long expireTime)
         {
             return new VersionedValue(versionString(VersionedValue.REMOVED_TOKEN, hostId.toString(), Long.toString(expireTime)));
         }
-
+        /**
+         * 返回一个versionValue对象， value="remover,*" 其中*表示host对应的uuid（不是token了..）
+         * @param hostId
+         * @return
+         */
         public VersionedValue removalCoordinator(UUID hostId)
         {
             return new VersionedValue(versionString(VersionedValue.REMOVAL_COORDINATOR, hostId.toString()));
         }
-
+        /**
+         * 返回一个versionValue对象， value="hibernate,[true/false]"
+         * @param value
+         * @return
+         */
         public VersionedValue hibernate(boolean value)
         {
             return new VersionedValue(VersionedValue.HIBERNATE + VersionedValue.DELIMITER + value);
         }
-
+        /**
+         * 返回一个versionValue对象， value="[datacenter]"
+         * @param dcId
+         * @return
+         */
         public VersionedValue datacenter(String dcId)
         {
             return new VersionedValue(dcId);
         }
-
+        /**
+         * 返回一个versionValue对象， value="[rack]"
+         * @param rackId
+         * @return
+         */
         public VersionedValue rack(String rackId)
         {
             return new VersionedValue(rackId);
         }
-
+       /**
+        * 返回一个versionValue对象， value="[endpoint.ip]" 
+        * @param endpoint
+        * @return
+        */
         public VersionedValue rpcaddress(InetAddress endpoint)
         {
             return new VersionedValue(endpoint.getHostAddress());
         }
-
+        /**
+         * 返回一个versionValue对象， value="[本机的cassandra版本号]"
+         * @return
+         */
         public VersionedValue releaseVersion()
         {
             return new VersionedValue(FBUtilities.getReleaseVersionString());
         }
-
+        /**
+         * 返回一个versionValue对象， value="[MS记录的当前版本号]"
+         * @return
+         */
         public VersionedValue networkVersion()
         {
             return new VersionedValue(String.valueOf(MessagingService.current_version));
         }
-
+        /**
+         * 返回一个versionValue对象， value="[ip]"
+         * @param private_ip
+         * @return
+         */
         public VersionedValue internalIP(String private_ip)
         {
             return new VersionedValue(private_ip);
         }
-
+        /**
+         * 返回一个versionValue对象， value="[value]"
+         * @param value
+         * @return
+         */
         public VersionedValue severity(double value)
         {
             return new VersionedValue(String.valueOf(value));

@@ -27,7 +27,7 @@ import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.IVersionedSerializer;
 import org.cliffc.high_scale_lib.NonBlockingHashMap;
 
-/**
+/**心跳信息和程序状态信息
  * This abstraction represents both the HeartBeatState and the ApplicationState in an EndpointState
  * instance. Any state for a given endpoint can be retrieved from this instance.
  */
