@@ -248,7 +248,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
     {
         EndpointState epState = endpointStateMap.get(endpoint);
         if (epState.isAlive() && !isDeadState(epState))
-        {
+        {//TODO 
             markDead(endpoint, epState);
         }
         else
@@ -270,7 +270,9 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
 
     /**
      * Removes the endpoint from gossip completely
-     *
+     * <br>从unreachableEndpoints、endpointStateMap、expireTimeEndpointMap中移除
+     * <br>标记为刚刚删除
+     * 
      * @param endpoint endpoint to be removed from the current membership.
     */
     private void evictFromMembership(InetAddress endpoint)
@@ -285,6 +287,12 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
 
     /**
      * Removes the endpoint from Gossip but retains endpoint state
+     * <br>通知subscriber 移除该消息
+     * 从gossiper的seeds列表中移除节点。
+     * <br>从live、 unreachable列表中移除。
+     * <br>从failureDetector中移除这个节点
+     * <br>标记节点为刚刚移除的
+     * <br>从MS中将节点移除（移除节点的版本信息，移除节点的连接池）
      */
     public void removeEndpoint(InetAddress endpoint)
     {
@@ -304,7 +312,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
         // do not remove endpointState until the quarantine expires
         FailureDetector.instance.remove(endpoint);
         MessagingService.instance().resetVersion(endpoint);
-        quarantineEndpoint(endpoint);
+        quarantineEndpoint(endpoint);//标记节点为刚刚移除的
         MessagingService.instance().destroyConnectionPool(endpoint);
         if (logger.isDebugEnabled())
             logger.debug("removing endpoint " + endpoint);

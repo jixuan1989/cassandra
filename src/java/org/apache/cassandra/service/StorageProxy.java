@@ -359,6 +359,7 @@ public class StorageProxy implements StorageProxyMBean
     }
 
     /**
+     * 传入的callbcak： 当mutate方法调用时，传的为null
      * Perform the write of a mutation given a WritePerformer.
      * Gather the list of write endpoints, apply locally and/or forward the mutation to
      * said write endpoint (deletaged to the actual WritePerformer) and wait for the
@@ -369,7 +370,7 @@ public class StorageProxy implements StorageProxyMBean
      * @param performer the WritePerformer in charge of appliying the mutation
      * given the list of write endpoints (either standardWritePerformer for
      * standard writes or counterWritePerformer for counter writes).
-     * @param callback an optional callback to be run if and when the write is
+     * @param callback an optional callback to be run if and when the write is 
      * successful.
      */
     public static AbstractWriteResponseHandler performWrite(IMutation mutation,

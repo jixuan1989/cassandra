@@ -479,7 +479,11 @@ public final class MessagingService implements MessagingServiceMBean
             logger.debug("await interrupted");
         }
     }
-
+    /**
+     * 向两个OutboundConnection中添加一个关闭消息。然后移除pool。 
+     * <br>会在失效检测中 需要remove节点时调用。
+     * @param to
+     */
     public void destroyConnectionPool(InetAddress to)
     {
         OutboundTcpConnectionPool cp = connectionManagers.get(to);
