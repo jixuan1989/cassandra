@@ -568,7 +568,12 @@ public class StorageProxy implements StorageProxyMBean
     {
         // local write that time out should be handled by LocalMutationRunnable
         assert !target.equals(FBUtilities.getBroadcastAddress()) : target;
-
+        
+        /**
+         * 处理提示移交工作的线程，主要包括如下工作
+         * 1. 计算提示移交的生命周期TTL（实际上是所有被修改的CF中的定义里gc_grace_seconds的最小值）
+         * 2. 如果TTL等于0，则不进行提示移交；否则执行提示移交，并且如果一致性级别为ANY的话，调用WriteResponseHandler的response()
+         */
         HintRunnable runnable = new HintRunnable(target)
         {
             public void runMayThrow() throws IOException
@@ -599,6 +604,12 @@ public class StorageProxy implements StorageProxyMBean
         return (Future<Void>) StageManager.getStage(Stage.MUTATION).submit(runnable);
     }
 
+    /**
+     * 准备执行提示移交的方法
+     * @param mutation RowMutation对象
+     * @param ttl 提示移交的生命周期
+     * @param target 目的IP地址
+     */
     public static void writeHintForMutation(RowMutation mutation, int ttl, InetAddress target) throws IOException
     {
         assert ttl > 0;
@@ -3787,6 +3798,12 @@ public class StorageProxy implements StorageProxyMBean
         DatabaseDescriptor.setMaxHintWindow(ms);
     }
 
+    /**
+	 * 当配置文件中hinted_handoff_enabled为true
+	 * 并且当前时间-宕机时间大于配置文件中的max_hint_window_in_ms(默认3小时)时才执行提示移交
+	 * @param ep 目的IP
+	 * @return 当需要执行提示移交时返回true，否则false
+	 */
     public static boolean shouldHint(InetAddress ep)
     {
         if (!DatabaseDescriptor.hintedHandoffEnabled())
