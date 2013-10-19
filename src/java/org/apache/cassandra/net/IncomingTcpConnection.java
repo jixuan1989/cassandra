@@ -34,6 +34,8 @@ import org.apache.cassandra.streaming.StreamHeader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xerial.snappy.SnappyInputStream;
+
+import cn.edu.thu.thss.log.StalenessLogger;
 /**
  * 接入的连接
  * @author hxd
@@ -197,9 +199,9 @@ public class IncomingTcpConnection extends Thread
     {
         if (version < MessagingService.VERSION_12)
             input.readInt(); // size of entire message. in 1.0+ this is just a placeholder
-
+        long startRecvTs = System.currentTimeMillis();
         String id = input.readUTF();
-        long timestamp = System.currentTimeMillis();;
+        long timestamp = System.currentTimeMillis();
         if (version >= MessagingService.VERSION_12)
         {//TODO 需要读一下 时间戳怎么计算的
             // make sure to readInt, even if cross_node_to is not enabled
@@ -216,6 +218,8 @@ public class IncomingTcpConnection extends Thread
         }
         if (version <= MessagingService.current_version)
         {
+        	//向日志中记录开始接收的时间
+        	StalenessLogger.messageInToLog(message, id, startRecvTs, StalenessLogger.SUB_NODE_RECEIVE);
             MessagingService.instance().receive(message, id, timestamp);
         }
         else

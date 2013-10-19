@@ -35,15 +35,16 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+import org.apache.cassandra.net.MessagingService.Verb;
 import org.apache.cassandra.tracing.TraceState;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.UUIDGen;
 import org.xerial.snappy.SnappyOutputStream;
-
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
+
+import cn.edu.thu.thss.log.StalenessLogger;
 /**
  * 该类是一个线程类。维护了两个message的排队列表：active和backlog。<br>
  * 线程的任务是：从active中读取消息，写出去，如果actvie中读完的话，就从backlog中读。（会使backlog变成active，active变成backlog）<br>
@@ -222,12 +223,13 @@ public class OutboundTcpConnection extends Thread
         return DatabaseDescriptor.internodeCompression() == Config.InternodeCompression.all
                || (DatabaseDescriptor.internodeCompression() == Config.InternodeCompression.dc && !isLocalDC(poolReference.endPoint()));
     }
-/**
- * 首先获取消息中的traceSession,然后记录到trace中并有可能移除tracession（？）<br>
- * 发送消息并将完成的计数器+1。注意，当且仅当当前活动队列为空时，才对输出流flush..<br>
- * 如果发送中出现IOException，且该消息是重要消息（require retry），则封装成retryMessage并重新放入backlog队列中<br>
- * @param qm
- */
+    
+	/**
+	 * 首先获取消息中的traceSession,然后记录到trace中并有可能移除tracession（？）<br>
+	 * 发送消息并将完成的计数器+1。注意，当且仅当当前活动队列为空时，才对输出流flush..<br>
+	 * 如果发送中出现IOException，且该消息是重要消息（require retry），则封装成retryMessage并重新放入backlog队列中<br>
+	 * @param qm
+	 */
     private void writeConnected(QueuedMessage qm)
     {
         try
@@ -250,8 +252,11 @@ public class OutboundTcpConnection extends Thread
                         Tracing.instance().stopNonLocal(state);
                 }
             }
-
+            //向日志中记录入队时间
+            StalenessLogger.messageOutToLog(qm.message, qm.id, qm.timestamp, socket.getInetAddress(), StalenessLogger.CDR_NODE_ENQUEUE);
             write(qm.message, qm.id, qm.timestamp, out, targetVersion);
+            //向日志中记录发送完毕的时间
+            StalenessLogger.messageOutToLog(qm.message, qm.id, System.currentTimeMillis(), socket.getInetAddress(), StalenessLogger.CDR_NODE_SEND);
             completed++;
             if (active.peek() == null)
             {
@@ -287,16 +292,17 @@ public class OutboundTcpConnection extends Thread
             }
         }
     }
-/**
- * 将消息序列化写出，
- * TODO 具体协议暂略
- * @param message
- * @param id
- * @param timestamp
- * @param out
- * @param version
- * @throws IOException
- */
+    
+	/**
+	 * 将消息序列化写出，
+	 * TODO 具体协议暂略
+	 * @param message
+	 * @param id
+	 * @param timestamp
+	 * @param out
+	 * @param version
+	 * @throws IOException
+	 */
     public static void write(MessageOut message, String id, long timestamp, DataOutputStream out, int version) throws IOException
     {
         out.writeInt(MessagingService.PROTOCOL_MAGIC);

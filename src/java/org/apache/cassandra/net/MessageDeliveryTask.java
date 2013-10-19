@@ -20,6 +20,8 @@ package org.apache.cassandra.net;
 import org.apache.cassandra.net.MessagingService.Verb;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import cn.edu.thu.thss.log.StalenessLogger;
 /**
  * 该类是verb的执行线程类。从MessageService中获取某个verb的handler，然后调用其doVerb函数<br>
  * 如果verb可以抛弃并已经超时，那么给对应的drop计数器+1.
@@ -52,6 +54,7 @@ public class MessageDeliveryTask implements Runnable
     @SuppressWarnings({ "unchecked"})
 	public void run()
     {
+    	
         MessagingService.Verb verb = message.verb;
         //
         if (MessagingService.DROPPABLE_VERBS.contains(verb)
@@ -72,6 +75,10 @@ public class MessageDeliveryTask implements Runnable
         	logger.debug("----------verbHandler type："+verbHandler.getClass().toString());
         	logger.debug("----------verbHandler："+verbHandler.toString());
         }
+        //向日志中记录开始执行的时间
+    	StalenessLogger.messageInToLog(message, id, System.currentTimeMillis(), StalenessLogger.SUB_NODE_APPLY);
         verbHandler.doVerb(message, id);
+        //向日志中记录执行完毕的时间
+    	StalenessLogger.messageInToLog(message, id, System.currentTimeMillis(), StalenessLogger.SUB_NODE_FINISH);
     }
 }

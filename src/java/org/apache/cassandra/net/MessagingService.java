@@ -31,15 +31,18 @@ import java.util.*;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
 
+import cn.edu.thu.thss.log.StalenessLogger;
+
 import com.google.common.base.Function;
 import com.google.common.collect.Lists;
+
 import org.cliffc.high_scale_lib.NonBlockingHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.cassandra.concurrent.DebuggableThreadPoolExecutor;
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
@@ -535,7 +538,7 @@ public final class MessagingService implements MessagingServiceMBean
  * @param message
  * @param to
  * @param timeout
- * @return
+ * @return 消息的Id
  */
     public String addCallback(IMessageCallback cb, MessageOut message, InetAddress to, long timeout)
     {
@@ -752,7 +755,8 @@ public final class MessagingService implements MessagingServiceMBean
                 PBSPredictor.instance().logReadResponse(id, timestamp);
             }
         }
-
+        //向日志中记录入队的时间
+    	StalenessLogger.messageInToLog(message, id, System.currentTimeMillis(), StalenessLogger.SUB_NODE_ENQUEUE);
         stage.execute(runnable, state);
     }
     /**
