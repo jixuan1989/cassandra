@@ -50,7 +50,7 @@ public class StalenessLogger {
 			StringBuffer sb = new StringBuffer();
 			sb.append(rm.getRowMutationId() + "\t");
 			sb.append(mid + "\t");
-			sb.append(mi.from + "\t");
+			sb.append(mi.from.getHostAddress() + "\t");
 			sb.append(timeType + "\t");
 			sb.append(timeStamp + "\t");
 			sb.append(rm.getTable() + "\t");
