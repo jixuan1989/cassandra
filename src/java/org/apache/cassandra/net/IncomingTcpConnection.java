@@ -211,6 +211,8 @@ public class IncomingTcpConnection extends Thread
         }
 
         MessageIn message = MessageIn.read(input, version, id);
+        //向日志中记录开始接收的时间
+        StalenessLogger.messageInToLog(message, id, startRecvTs, StalenessLogger.SUB_NODE_RECEIVE);
         if (message == null)
         {
             // callback expired; nothing to do
@@ -218,8 +220,6 @@ public class IncomingTcpConnection extends Thread
         }
         if (version <= MessagingService.current_version)
         {
-        	//向日志中记录开始接收的时间
-        	StalenessLogger.messageInToLog(message, id, startRecvTs, StalenessLogger.SUB_NODE_RECEIVE);
             MessagingService.instance().receive(message, id, timestamp);
         }
         else

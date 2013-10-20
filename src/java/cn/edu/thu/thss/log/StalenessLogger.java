@@ -12,7 +12,7 @@ import org.slf4j.LoggerFactory;
 
 public class StalenessLogger {
 	private static final Logger logger = LoggerFactory.getLogger(StalenessLogger.class);
-	private static final String TEST_KEYSPACE = "bj_test1";
+	private static final String TEST_KEYSPACE = "test_metrics";
 	
 	public static final String CDR_NODE_ENQUEUE = "coordinatorNodeEnqueue";
 	public static final String CDR_NODE_SEND = "coordinatorNodeSend";
@@ -34,10 +34,6 @@ public class StalenessLogger {
 			sb.append(timeStamp + "\t");
 			sb.append(rm.getTable() + "\t");
 			sb.append(ByteBufferUtil.bytesToHex(rm.key()));
-			//row key
-			// CF name
-			// col1 name
-			//col2 name
 			logger.info(sb.toString());
 		}
 	}
@@ -55,10 +51,6 @@ public class StalenessLogger {
 			sb.append(timeStamp + "\t");
 			sb.append(rm.getTable() + "\t");
 			sb.append(ByteBufferUtil.bytesToHex(rm.key()));
-			//row key
-			// CF name
-			// col1 name
-			//col2 name
 			logger.info(sb.toString());
 		}
 	}
