@@ -20,11 +20,14 @@ public class StalenessLogger {
 	public static final String SUB_NODE_ENQUEUE = "subNodeEnqueue";
 	public static final String SUB_NODE_APPLY = "subNodeApply";
 	public static final String SUB_NODE_FINISH = "subNodeFinish";
+	public static final String CDR_NODE_APPLY_ENQUEUE = "coordinatorNodeApplyEnqueue";
+	public static final String CDR_NODE_APPLY_START = "coordinatorNodeApplyStart";
+	public static final String CDR_NODE_APPLY_FINISH = "coordinatorNodeApply";
 	
 	public static void messageOutToLog(MessageOut mo, String mid, long timeStamp, InetAddress dest, String timeType) {
 		if (mo.verb == Verb.MUTATION && 
 			mo.payload instanceof RowMutation && 
-			((RowMutation)mo.payload).getTable().equals(TEST_KEYSPACE)) {
+			((RowMutation)mo.payload).getTable().startsWith(TEST_KEYSPACE)) {
 			RowMutation rm = (RowMutation)mo.payload;
 			StringBuffer sb = new StringBuffer();
 			sb.append(rm.getRowMutationId() + "\t");
@@ -41,7 +44,7 @@ public class StalenessLogger {
 	public static void messageInToLog(MessageIn mi, String mid, long timeStamp, String timeType) {
 		if (mi.verb == Verb.MUTATION && 
 			mi.payload instanceof RowMutation && 
-			((RowMutation)mi.payload).getTable().equals(TEST_KEYSPACE)) {
+			((RowMutation)mi.payload).getTable().startsWith(TEST_KEYSPACE)) {
 			RowMutation rm = (RowMutation)mi.payload;
 			StringBuffer sb = new StringBuffer();
 			sb.append(rm.getRowMutationId() + "\t");
@@ -55,5 +58,18 @@ public class StalenessLogger {
 		}
 	}
 	
+	public static void coordinatorLocalApplyToLog(RowMutation rm, long timeStamp, InetAddress localAddr, String timeType) {
+		if (rm.getTable().startsWith(TEST_KEYSPACE)) {
+				StringBuffer sb = new StringBuffer();
+				sb.append(rm.getRowMutationId() + "\t");
+				sb.append("0\t");
+				sb.append(localAddr.getHostAddress() + "\t");
+				sb.append(timeType + "\t");
+				sb.append(timeStamp + "\t");
+				sb.append(rm.getTable() + "\t");
+				sb.append(ByteBufferUtil.bytesToHex(rm.key()));
+				logger.info(sb.toString());
+		}
+	}
 	
 }

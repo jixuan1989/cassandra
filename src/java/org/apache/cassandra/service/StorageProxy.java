@@ -30,8 +30,11 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
+
+import cn.edu.thu.thss.log.StalenessLogger;
 
 import com.google.common.cache.CacheLoader;
 import com.google.common.collect.*;
@@ -39,7 +42,6 @@ import com.google.common.collect.*;
 import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.CFMetaData;
@@ -677,10 +679,15 @@ public class StorageProxy implements StorageProxyMBean
         {
             public void runMayThrow() throws IOException
             {
-                rm.apply();
+            	long ts = System.currentTimeMillis();
+            	InetAddress localAddress = FBUtilities.getBroadcastAddress();
+            	StalenessLogger.coordinatorLocalApplyToLog(rm, ts, localAddress, StalenessLogger.CDR_NODE_APPLY_START);
+            	rm.apply();
+                StalenessLogger.coordinatorLocalApplyToLog(rm, System.currentTimeMillis(), localAddress, StalenessLogger.CDR_NODE_APPLY_FINISH);
                 responseHandler.response(null);
             }
         };
+        StalenessLogger.coordinatorLocalApplyToLog(rm, System.currentTimeMillis(), FBUtilities.getBroadcastAddress(), StalenessLogger.CDR_NODE_APPLY_ENQUEUE);
         StageManager.getStage(Stage.MUTATION).execute(runnable);
     }
 
