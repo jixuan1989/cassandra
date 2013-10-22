@@ -22,7 +22,7 @@ public class StalenessLogger {
 	public static final String SUB_NODE_FINISH = "subNodeFinish";
 	public static final String CDR_NODE_APPLY_ENQUEUE = "coordinatorNodeApplyEnqueue";
 	public static final String CDR_NODE_APPLY_START = "coordinatorNodeApplyStart";
-	public static final String CDR_NODE_APPLY_FINISH = "coordinatorNodeApply";
+	public static final String CDR_NODE_APPLY_FINISH = "coordinatorNodeApplyFinish";
 	
 	public static void messageOutToLog(MessageOut mo, String mid, long timeStamp, InetAddress dest, String timeType) {
 		if (mo.verb == Verb.MUTATION && 
