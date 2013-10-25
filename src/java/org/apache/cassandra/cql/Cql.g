@@ -157,6 +157,13 @@ selectStatement returns [SelectStatement expr]
           ( s1=selectExpression                 { expression = s1; }
           | K_COUNT '(' s2=selectExpression ')' { expression = s2; isCountOp = true; }
           | K_MAX '(' s3=selectExpression ')' {expression = s3; aggregateType = 1;}
+          | K_MIN '(' s4=selectExpression ')' {expression = s4; aggregateType = 2;}
+          | K_SUM '(' s5=selectExpression ')' {expression = s5; aggregateType = 3;}
+          | K_CNT '(' s6=selectExpression ')' {expression = s6; aggregateType = 4;}
+          | K_AVG '(' s7=selectExpression ')' {expression = s7; aggregateType = 5;}
+          | K_VAR '(' s8=selectExpression ')' {expression = s8; aggregateType = 6;}
+          | K_TER25 '(' s9=selectExpression ')' {expression = s9; aggregateType = 7;}
+          | K_TER75 '(' s10=selectExpression ')' {expression = s10; aggregateType = 8;}
           )
           K_FROM (keyspace=(IDENT | STRING_LITERAL | INTEGER) '.')? columnFamily=( IDENT | STRING_LITERAL | INTEGER )
           ( K_USING K_CONSISTENCY K_LEVEL { cLevel = ConsistencyLevel.valueOf($K_LEVEL.text.toUpperCase()); } )?
@@ -563,7 +570,12 @@ K_TYPE:        T Y P E;
 
 K_MAX	:	M A X;
 K_MIN	:	M I N;
-K_SUN	:	S U M;
+K_SUM	:	S U M;
+K_AVG	:	A V G;
+K_CNT	:	C N T;
+K_VAR	:	V A R;
+K_TER25 :	T E R '2' '5';
+K_TER75 :	T E R '7' '5';
 //K_COLUMN:	C O L U M N;
 //K_VALUE	:	V A L U E;
 K_WITHCOUNT
