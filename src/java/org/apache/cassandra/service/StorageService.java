@@ -390,7 +390,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     {
         return initialized;
     }
-<<<<<<< HEAD
+
 /**
  * 首先启动goosiper，messagingService。<br>
  * 然后休息直到有其他节点isFatClient()(暂不明白)<br>
@@ -398,7 +398,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
  * @throws IOException
  * @throws ConfigurationException
  */
-=======
+
 
     public synchronized Collection<Token> prepareReplacementInfo() throws ConfigurationException
     {
@@ -430,7 +430,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         }
     }
 
->>>>>>> remotes/upstream/cassandra-1.2
+
     public synchronized void initClient() throws IOException, ConfigurationException
     {
         // We don't wait, because we're going to actually try to work on

@@ -105,18 +105,12 @@ public class QueryProcessor
                                               " is longer than maximum of " + FBUtilities.MAX_UNSIGNED_SHORT);
         }
     }
-<<<<<<< HEAD
 /**
  * 判断列名是否大于最大长度 或者长度为0...
  * @param columns
  * @throws InvalidRequestException
  */
-    public static void validateColumnNames(Iterable<ByteBuffer> columns)
-    throws InvalidRequestException
-=======
-
     public static void validateColumnNames(Iterable<ByteBuffer> columnNames) throws InvalidRequestException
->>>>>>> remotes/upstream/cassandra-1.2
     {
         for (ByteBuffer name : columnNames)
             validateColumnName(name);
