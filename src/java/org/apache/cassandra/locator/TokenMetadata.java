@@ -1137,11 +1137,22 @@ public class TokenMetadata
      */
     public static class Topology
     {
-        /** multi-map of DC to endpoints in that DC */
+        /** 
+         * multi-map of DC to endpoints in that DC 
+         * e.g.{datacenter1=[/192.168.118.129, /192.168.118.130]} 
+         */
         private final Multimap<String, InetAddress> dcEndpoints;
-        /** map of DC to multi-map of rack to endpoints in that rack */
+        
+        /** 
+         * map of DC to multi-map of rack to endpoints in that rack 
+         * e.g.{datacenter1={rack1=[/192.168.118.129, /192.168.118.130]}}
+         */
         private final Map<String, Multimap<String, InetAddress>> dcRacks;
-        /** reverse-lookup map for endpoint to current known dc/rack assignment */
+        
+        /** 
+         * reverse-lookup map for endpoint to current known dc/rack assignment
+         * e.g. {/192.168.118.129=(datacenter1,rack1), /192.168.118.130=(datacenter1,rack1)}
+         */
         private final Map<InetAddress, Pair<String, String>> currentLocations;
 
         protected Topology()
