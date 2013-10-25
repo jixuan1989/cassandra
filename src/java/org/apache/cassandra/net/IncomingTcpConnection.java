@@ -37,7 +37,7 @@ import org.apache.cassandra.streaming.IncomingStreamReader;
 import org.apache.cassandra.streaming.StreamHeader;
 import org.apache.cassandra.db.UnknownColumnFamilyException;
 /**
- * ½ÓÈëµÄÁ¬½Ó
+ * æ¥å…¥çš„è¿æ¥
  * @author hxd
  *
  */
@@ -69,7 +69,7 @@ public class IncomingTcpConnection extends Thread
      * A new connection will either stream or message for its entire lifetime: because streaming
      * bypasses the InputStream implementations to use sendFile, we cannot begin buffering until
      * we've determined the type of the connection.
-     * ÖØµãÊÇ×îºóµÄrecevieMessage().
+     * é‡ç‚¹æ˜¯æœ€åçš„recevieMessage().
      */
     @Override
     public void run()
@@ -80,7 +80,7 @@ public class IncomingTcpConnection extends Thread
             DataInputStream in = new DataInputStream(socket.getInputStream());
             MessagingService.validateMagic(in.readInt());
             int header = in.readInt();
-            boolean isStream = MessagingService.getBits(header, 3, 1) == 1;//Ïàµ±ÓÚ¿´headerµÄµÚËÄÎ»ÊÇ·ñÎª1
+            boolean isStream = MessagingService.getBits(header, 3, 1) == 1;//ç›¸å½“äºçœ‹headerçš„ç¬¬å››ä½æ˜¯å¦ä¸º1
             int version = MessagingService.getBits(header, 15, 8);
             logger.debug("Connection version {} from {}", version, socket.getInetAddress());
 
@@ -207,7 +207,7 @@ public class IncomingTcpConnection extends Thread
         String id = input.readUTF();
         long timestamp = System.currentTimeMillis();;
         if (version >= MessagingService.VERSION_12)
-        {//TODO ĞèÒª¶ÁÒ»ÏÂ Ê±¼ä´ÁÔõÃ´¼ÆËãµÄ
+        {//TODO éœ€è¦è¯»ä¸€ä¸‹ æ—¶é—´æˆ³æ€ä¹ˆè®¡ç®—çš„
             // make sure to readInt, even if cross_node_to is not enabled
             int partial = input.readInt();
             if (DatabaseDescriptor.hasCrossNodeTimeout())
