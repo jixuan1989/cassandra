@@ -78,6 +78,9 @@ public class CommitLogAllocator
     private final Thread allocationThread;
     private volatile boolean run = true;
 
+    /**
+     * CommitLogAllocator的构造方法，主要是启动了一个CommitLogSegment申请任务的调度线程
+     */
     public CommitLogAllocator()
     {
         // The run loop for the allocation thread
@@ -114,7 +117,7 @@ public class CommitLogAllocator
 
     /**
      * Fetches an empty segment file.
-     *
+     * 从可用的segment队列中获取一个可用的segment返回，如果无可用队列，则阻塞
      * @return the next writable segment
      */
     public CommitLogSegment fetchSegment()

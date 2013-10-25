@@ -43,7 +43,13 @@ public class DecoratedKey extends RowPosition
         }
     };
 
+    /**
+     * key对应的token
+     */
     public final Token token;
+    /**
+     * key的值
+     */
     public final ByteBuffer key;
 
     public DecoratedKey(Token token, ByteBuffer key)

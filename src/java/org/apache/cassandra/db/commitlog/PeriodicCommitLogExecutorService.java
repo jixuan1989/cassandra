@@ -24,9 +24,14 @@ import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.WrappedRunnable;
 
+/**
+ * 周期性的CommitLog的执行任务类，主要包含两部分工作
+ * <br>1.启动了一个内部的常驻的CommitLog写入操作的调度线程，每100ms调度一次
+ * <br>2.commitLog的同步线程的控制线程，每隔commitlog_sync_period_in_ms(配置文件中定义)时常将内存中的commitLog刷入磁盘的文件中
+ */
 class PeriodicCommitLogExecutorService implements ICommitLogExecutorService
 {
-    private final BlockingQueue<Runnable> queue;
+    private final BlockingQueue<Runnable> queue; //commitLog写入线程以及同步线程的的执行队列
     protected volatile long completedTaskCount = 0;
     private final Thread appendingThread;
     private volatile boolean run = true;
@@ -34,6 +39,7 @@ class PeriodicCommitLogExecutorService implements ICommitLogExecutorService
     public PeriodicCommitLogExecutorService(final CommitLog commitLog)
     {
         queue = new LinkedBlockingQueue<Runnable>(DatabaseDescriptor.getCommitLogPeriodicQueueSize());
+        //作为后台常驻线程运行，每100ms执行一次
         Runnable runnable = new WrappedRunnable()
         {
             public void runMayThrow() throws Exception
@@ -52,6 +58,9 @@ class PeriodicCommitLogExecutorService implements ICommitLogExecutorService
         appendingThread = new Thread(runnable, "COMMIT-LOG-WRITER");
         appendingThread.start();
 
+        /**
+         * commitLog的同步线程
+         */
         final Callable syncer = new Callable()
         {
             public Object call() throws Exception
@@ -61,6 +70,9 @@ class PeriodicCommitLogExecutorService implements ICommitLogExecutorService
             }
         };
 
+        /**
+         * commitLog的同步线程的控制线程，每隔commitlog_sync_period_in_ms毫秒向线程队列中提交一次commitLog的同步任务
+         */
         new Thread(new Runnable()
         {
             public void run()
@@ -86,6 +98,10 @@ class PeriodicCommitLogExecutorService implements ICommitLogExecutorService
 
     }
 
+    /**
+     * 将该操作加入到周期性CommitLog服务的执行队列中
+     * @param adder 要加入的CommitLog写入操作
+     */
     public void add(CommitLog.LogRecordAdder adder)
     {
         try

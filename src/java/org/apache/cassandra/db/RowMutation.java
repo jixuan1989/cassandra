@@ -296,6 +296,9 @@ public class RowMutation implements IMutation
     public void apply()
     {
         KSMetaData ksm = Schema.instance.getTableDefinition(table);
+        if (table.equals("test_metrics")) {
+        	System.out.println("DEBUG");
+        }
         assert ksm != null : "Attempting to mutate non-existant keyspace " + table;
         Table.open(table).apply(this, ksm.durableWrites);
     }

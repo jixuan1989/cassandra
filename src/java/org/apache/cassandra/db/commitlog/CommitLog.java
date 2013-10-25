@@ -47,10 +47,19 @@ public class CommitLog implements CommitLogMBean
 
     public static final CommitLog instance = new CommitLog();
 
+    /**
+     * 负责写入CommitLogSegment线程的调度
+     */
     private final ICommitLogExecutorService executor;
 
+    /**
+     * 负责CommitLogSegment的申请
+     */
     public final CommitLogAllocator allocator;
 
+    /**
+     * 负责CommitLogSegment的压缩
+     */
     public final CommitLogArchiver archiver = new CommitLogArchiver();
 
     public static final int END_OF_SEGMENT_MARKER = 0;          // this is written out at the end of a segment
@@ -262,6 +271,7 @@ public class CommitLog implements CommitLogMBean
 
     /**
      * Forces a disk flush on the commit log files that need it.
+     * <br/>对allocator中每一个激活状态的Segment,调用其sync()方法,将其强制写入硬盘文件中
      */
     public void sync()
     {
@@ -332,6 +342,12 @@ public class CommitLog implements CommitLogMBean
 
     // TODO this should be a Runnable since it doesn't actually return anything, but it's difficult to do that
     // without breaking the fragile CheaterFutureTask in BatchCLES.
+    /**
+     * 这个线程的主要工作就是将rowMutation写入到当前申请到的CommitLogSegment中
+     * </br>首先检查RowMutation的大小是否超过了配置文件中定义的commitlog_segment_size_in_mb(默认32MB),
+     * 如果超过说明任意一个Segment都无法保存该RowMutation,只好结束
+     * </br>然后检查已申请到的Segment的空余大小是否足够写入该RowMutation,如果不能的话则激活一个新的Segment
+     * */
     class LogRecordAdder implements Callable, Runnable
     {
         final RowMutation rowMutation;
