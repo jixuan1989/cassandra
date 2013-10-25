@@ -107,6 +107,8 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
     // have we ever in our lifetime reached a seed?
     private boolean seedContacted = false;
 
+    private boolean inShadowRound = false;
+
     private class GossipTask implements Runnable
     {
         public void run()
@@ -218,10 +220,22 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
 
     public Set<InetAddress> getLiveMembers()
     {
-        Set<InetAddress> liveMbrs = new HashSet<InetAddress>(liveEndpoints);
-        if (!liveMbrs.contains(FBUtilities.getBroadcastAddress()))
-            liveMbrs.add(FBUtilities.getBroadcastAddress());
-        return liveMbrs;
+        Set<InetAddress> liveMembers = new HashSet<InetAddress>(liveEndpoints);
+        if (!liveMembers.contains(FBUtilities.getBroadcastAddress()))
+            liveMembers.add(FBUtilities.getBroadcastAddress());
+        return liveMembers;
+    }
+
+    public Set<InetAddress> getLiveTokenOwners()
+    {
+        Set<InetAddress> tokenOwners = new HashSet<InetAddress>();
+        for (InetAddress member : getLiveMembers())
+        {
+            EndpointState epState = endpointStateMap.get(member);
+            if (epState != null && !isDeadState(epState) && StorageService.instance.getTokenMetadata().isMember(member))
+                tokenOwners.add(member);
+        }
+        return tokenOwners;
     }
 
     public Set<InetAddress> getUnreachableMembers()
@@ -248,7 +262,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
     {
         EndpointState epState = endpointStateMap.get(endpoint);
         if (epState.isAlive() && !isDeadState(epState))
-        {
+        {//TODO 
             markDead(endpoint, epState);
         }
         else
@@ -270,7 +284,9 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
 
     /**
      * Removes the endpoint from gossip completely
-     *
+     * <br>从unreachableEndpoints、endpointStateMap、expireTimeEndpointMap中移除
+     * <br>标记为刚刚删除
+     * 
      * @param endpoint endpoint to be removed from the current membership.
     */
     private void evictFromMembership(InetAddress endpoint)
@@ -285,6 +301,12 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
 
     /**
      * Removes the endpoint from Gossip but retains endpoint state
+     * <br>通知subscriber 移除该消息
+     * 从gossiper的seeds列表中移除节点。
+     * <br>从live、 unreachable列表中移除。
+     * <br>从failureDetector中移除这个节点
+     * <br>标记节点为刚刚移除的
+     * <br>从MS中将节点移除（移除节点的版本信息，移除节点的连接池）
      */
     public void removeEndpoint(InetAddress endpoint)
     {
@@ -304,7 +326,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
         // do not remove endpointState until the quarantine expires
         FailureDetector.instance.remove(endpoint);
         MessagingService.instance().resetVersion(endpoint);
-        quarantineEndpoint(endpoint);
+        quarantineEndpoint(endpoint);//标记节点为刚刚移除的
         MessagingService.instance().destroyConnectionPool(endpoint);
         if (logger.isDebugEnabled())
             logger.debug("removing endpoint " + endpoint);
@@ -650,6 +672,12 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
         return endpointStateMap.get(ep);
     }
 
+    // removes ALL endpoint states; should only be called after shadow gossip
+    public void resetEndpointStateMap()
+    {
+        endpointStateMap.clear();
+    }
+
     public Set<Entry<InetAddress, EndpointState>> getEndpointStates()
     {
         return endpointStateMap.entrySet();
@@ -878,7 +906,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
         for (Entry<InetAddress, EndpointState> entry : epStateMap.entrySet())
         {
             InetAddress ep = entry.getKey();
-            if ( ep.equals(FBUtilities.getBroadcastAddress()))
+            if ( ep.equals(FBUtilities.getBroadcastAddress()) && !isInShadowRound())
                 continue;
             if (justRemovedEndpoints.containsKey(ep))
             {
@@ -998,6 +1026,17 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
     */
     void examineGossiper(List<GossipDigest> gDigestList, List<GossipDigest> deltaGossipDigestList, Map<InetAddress, EndpointState> deltaEpStateMap)
     {
+        if (gDigestList.size() == 0)
+        {
+           /* we've been sent a *completely* empty syn, which should normally never happen since an endpoint will at least send a syn with itself.
+              If this is happening then the node is attempting shadow gossip, and we should reply with everything we know.
+            */
+            logger.debug("Shadow request received, adding all states");
+            for (Map.Entry<InetAddress, EndpointState> entry : endpointStateMap.entrySet())
+            {
+                gDigestList.add(new GossipDigest(entry.getKey(), 0, 0));
+            }
+        }
         for ( GossipDigest gDigest : gDigestList )
         {
             int remoteGeneration = gDigest.getGeneration();
@@ -1083,6 +1122,43 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
                                                               TimeUnit.MILLISECONDS);
     }
 
+    /**
+     *  Do a single 'shadow' round of gossip, where we do not modify any state
+     *  Only used when replacing a node, to get and assume its states
+     */
+    public void doShadowRound()
+    {
+        buildSeedsList();
+        // send a completely empty syn
+        List<GossipDigest> gDigests = new ArrayList<GossipDigest>();
+        GossipDigestSyn digestSynMessage = new GossipDigestSyn(DatabaseDescriptor.getClusterName(),
+                DatabaseDescriptor.getPartitionerName(),
+                gDigests);
+        MessageOut<GossipDigestSyn> message = new MessageOut<GossipDigestSyn>(MessagingService.Verb.GOSSIP_DIGEST_SYN,
+                digestSynMessage,
+                GossipDigestSyn.serializer);
+        inShadowRound = true;
+        for (InetAddress seed : seeds)
+            MessagingService.instance().sendOneWay(message, seed);
+        int slept = 0;
+        try
+        {
+            while (true)
+            {
+                Thread.sleep(1000);
+                if (!inShadowRound)
+                    break;
+                slept += 1000;
+                if (slept > StorageService.RING_DELAY)
+                    throw new RuntimeException("Unable to gossip with any seeds");
+            }
+        }
+        catch (InterruptedException wtf)
+        {
+            throw new RuntimeException(wtf);
+        }
+    }
+
     private void buildSeedsList()
     {
         for (InetAddress seed : DatabaseDescriptor.getSeeds())
@@ -1161,6 +1237,17 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
     public boolean isEnabled()
     {
         return (scheduledGossipTask != null) && (!scheduledGossipTask.isCancelled());
+    }
+
+    protected void finishShadowRound()
+    {
+        if (inShadowRound)
+            inShadowRound = false;
+    }
+
+    protected boolean isInShadowRound()
+    {
+        return inShadowRound;
     }
 
     @VisibleForTesting

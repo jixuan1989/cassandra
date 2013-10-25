@@ -291,6 +291,9 @@ public class DatabaseDescriptor
             /* Local IP or hostname to bind services to */
             if (conf.listen_address != null)
             {
+                if (conf.listen_address.equals("0.0.0.0"))
+                    throw new ConfigurationException("listen_address cannot be 0.0.0.0!");
+
                 try
                 {
                     listenAddress = InetAddress.getByName(conf.listen_address);
@@ -721,6 +724,21 @@ public class DatabaseDescriptor
         return conf.num_tokens;
     }
 
+    public static InetAddress getReplaceAddress()
+    {
+        try
+        {
+            if (System.getProperty("cassandra.replace_address", null) != null)
+                return InetAddress.getByName(System.getProperty("cassandra.replace_address", null));
+            else
+                return null;
+        }
+        catch (UnknownHostException e)
+        {
+            return null;
+        }
+    }
+
     public static Collection<String> getReplaceTokens()
     {
         return tokensFromString(System.getProperty("cassandra.replace_token", null));
@@ -739,7 +757,7 @@ public class DatabaseDescriptor
 
     public static boolean isReplacing()
     {
-        return 0 != getReplaceTokens().size() || getReplaceNode() != null;
+        return getReplaceAddress() != null;
     }
 
     public static String getClusterName()
@@ -927,6 +945,20 @@ public class DatabaseDescriptor
     public static String getCommitLogLocation()
     {
         return conf.commitlog_directory;
+    }
+
+    /**
+     * How many tombstones need to be scanned before we log a
+     * debug message
+     */
+    public static int getTombstoneDebugThreshold()
+    {
+        return conf.tombstone_debug_threshold;
+    }
+
+    public static void setTombstoneDebugThreshold(int tombstoneDebugThreshold)
+    {
+        conf.tombstone_debug_threshold = tombstoneDebugThreshold;
     }
 
     /**
@@ -1251,6 +1283,11 @@ public class DatabaseDescriptor
         return conf.key_cache_keys_to_save;
     }
 
+    public static void setKeyCacheKeysToSave(int keyCacheKeysToSave)
+    {
+        conf.key_cache_keys_to_save = keyCacheKeysToSave;
+    }
+
     public static long getRowCacheSizeInMB()
     {
         return conf.row_cache_size_in_mb;
@@ -1269,6 +1306,11 @@ public class DatabaseDescriptor
     public static int getRowCacheKeysToSave()
     {
         return conf.row_cache_keys_to_save;
+    }
+
+    public static void setRowCacheKeysToSave(int rowCacheKeysToSave)
+    {
+        conf.row_cache_keys_to_save = rowCacheKeysToSave;
     }
 
     public static IRowCacheProvider getRowCacheProvider()

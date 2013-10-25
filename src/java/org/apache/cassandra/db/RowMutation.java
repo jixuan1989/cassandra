@@ -24,6 +24,7 @@ import java.nio.ByteBuffer;
 import java.util.*;
 
 import org.apache.commons.lang.StringUtils;
+
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.KSMetaData;
 import org.apache.cassandra.config.Schema;
@@ -38,8 +39,6 @@ import org.apache.cassandra.thrift.Deletion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.UUIDGen;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 public class RowMutation implements IMutation
 {
@@ -48,15 +47,19 @@ public class RowMutation implements IMutation
     public static final String FORWARD_FROM = "FWD_FRM";
 
     private String rowMutationId; //RowMutation实例的唯一标识符，用于之后一致性度量时区分Mutation使用
-    private static final Logger logger = LoggerFactory.getLogger(RowMutation.class);
-    private final String table; //要修改的KS
-    private ByteBuffer key; //要修改的行键值
+    private final String table;//要修改的KS
+    private final ByteBuffer key;//要修改的行键值
     // map of column family id to mutations for that column family.
     private final Map<UUID, ColumnFamily> modifications; //要修改的表
 
     public RowMutation(String table, ByteBuffer key)
     {
         this(table, key, new HashMap<UUID, ColumnFamily>());
+    }
+
+    public RowMutation(String keyspaceName, ByteBuffer key, ColumnFamily cf)
+    {
+        this(keyspaceName, key, Collections.singletonMap(cf.id(), cf));
     }
 
     public RowMutation(String table, Row row)
@@ -75,25 +78,13 @@ public class RowMutation implements IMutation
     }
 
     public String getRowMutationId() {
-    	return rowMutationId;
-    }
-    
-    public void setRowMutationId(String rowMutationId) {
-    	this.rowMutationId = rowMutationId;
-    }
-    
-    //added by xuhao
-    public void setKey(ByteBuffer key)
-    {
-    	this.key = key;
-    }
-    
-    //added by xuhao
-    public Map<UUID, ColumnFamily> getModifications()
-    {
-    	return modifications;
-    }
-    
+        return rowMutationId;
+	}
+	
+	public void setRowMutationId(String rowMutationId) {
+	        this.rowMutationId = rowMutationId;
+	}
+	
     public String getTable()
     {
         return table;
@@ -326,7 +317,6 @@ public class RowMutation implements IMutation
     public String toString(boolean shallow)
     {
         StringBuilder buff = new StringBuilder("RowMutation(");
-        buff.append("rowMutationId='").append(rowMutationId).append("', ");
         buff.append("keyspace='").append(table).append('\'');
         buff.append(", key='").append(ByteBufferUtil.bytesToHex(key)).append('\'');
         buff.append(", modifications=[");
@@ -421,7 +411,7 @@ public class RowMutation implements IMutation
         public RowMutation deserialize(DataInput dis, int version, IColumnSerializer.Flag flag) throws IOException
         {
         	String rmUUid = dis.readUTF(); //按照新的序列化协议，先反序列化rowMutationId
-        	String table = dis.readUTF();
+            String table = dis.readUTF();
             ByteBuffer key = ByteBufferUtil.readWithShortLength(dis);
             Map<UUID, ColumnFamily> modifications = new HashMap<UUID, ColumnFamily>();
             int size = dis.readInt();
