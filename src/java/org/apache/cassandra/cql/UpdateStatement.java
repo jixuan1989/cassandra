@@ -46,7 +46,6 @@ public class UpdateStatement extends AbstractModification
     private Map<Term, Operation> columns;
     private List<Term> columnNames, columnValues;
     private final List<Term> keys;
-    public boolean withoutKey;
 
     /**
      * Creates a new UpdateStatement from a column family name, columns map, consistency
@@ -100,8 +99,6 @@ public class UpdateStatement extends AbstractModification
         this.keys = keys;
     }
 
-    //added by xuhao:
-    
     /**
      * Returns the consistency level of this <code>UPDATE</code> statement, either
      * one parsed from the CQL statement, or the default level otherwise.
@@ -149,8 +146,8 @@ public class UpdateStatement extends AbstractModification
         if (hasCommutativeOperation)
             getConsistencyLevel().validateCounterForWrite(metadata);
 
-        withoutKey = !QueryProcessor.validateKeyAlias(metadata, keyName);
-       
+        QueryProcessor.validateKeyAlias(metadata, keyName);
+
         clientState.hasColumnFamilyAccess(keyspace, columnFamily, Permission.MODIFY);
 
         List<IMutation> rowMutations = new LinkedList<IMutation>();

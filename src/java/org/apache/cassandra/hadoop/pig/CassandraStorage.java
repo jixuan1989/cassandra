@@ -101,7 +101,8 @@ public class CassandraStorage extends AbstractCassandraStorage
     /** read wide row*/
     public Tuple getNextWide() throws IOException
     {
-        CfDef cfDef = getCfDef(loadSignature);
+        CfInfo cfInfo = getCfInfo(loadSignature);
+        CfDef cfDef = cfInfo.cfDef;
         ByteBuffer key = null;
         Tuple tuple = null; 
         DefaultDataBag bag = new DefaultDataBag();
@@ -124,7 +125,7 @@ public class CassandraStorage extends AbstractCassandraStorage
                         }
                         for (Map.Entry<ByteBuffer, IColumn> entry : lastRow.entrySet())
                         {
-                            bag.add(columnToTuple(entry.getValue(), cfDef, parseType(cfDef.getComparator_type())));
+                            bag.add(columnToTuple(entry.getValue(), cfInfo, parseType(cfDef.getComparator_type())));
                         }
                         lastKey = null;
                         lastRow = null;
@@ -162,7 +163,7 @@ public class CassandraStorage extends AbstractCassandraStorage
                             addKeyToTuple(tuple, lastKey, cfDef, parseType(cfDef.getKey_validation_class()));
                         for (Map.Entry<ByteBuffer, IColumn> entry : lastRow.entrySet())
                         {
-                            bag.add(columnToTuple(entry.getValue(), cfDef, parseType(cfDef.getComparator_type())));
+                            bag.add(columnToTuple(entry.getValue(), cfInfo, parseType(cfDef.getComparator_type())));
                         }
                         tuple.append(bag);
                         lastKey = key;
@@ -179,14 +180,14 @@ public class CassandraStorage extends AbstractCassandraStorage
                 {
                     for (Map.Entry<ByteBuffer, IColumn> entry : lastRow.entrySet())
                     {
-                        bag.add(columnToTuple(entry.getValue(), cfDef, parseType(cfDef.getComparator_type())));
+                        bag.add(columnToTuple(entry.getValue(), cfInfo, parseType(cfDef.getComparator_type())));
                     }
                     lastKey = null;
                     lastRow = null;
                 }
                 for (Map.Entry<ByteBuffer, IColumn> entry : row.entrySet())
                 {
-                    bag.add(columnToTuple(entry.getValue(), cfDef, parseType(cfDef.getComparator_type())));
+                    bag.add(columnToTuple(entry.getValue(), cfInfo, parseType(cfDef.getComparator_type())));
                 }
             }
         }
@@ -208,7 +209,8 @@ public class CassandraStorage extends AbstractCassandraStorage
             if (!reader.nextKeyValue())
                 return null;
 
-            CfDef cfDef = getCfDef(loadSignature);
+            CfInfo cfInfo = getCfInfo(loadSignature);
+            CfDef cfDef = cfInfo.cfDef;
             ByteBuffer key = reader.getCurrentKey();
             Map<ByteBuffer, IColumn> cf = reader.getCurrentValue();
             assert key != null && cf != null;
@@ -224,11 +226,21 @@ public class CassandraStorage extends AbstractCassandraStorage
             // take care to iterate these in the same order as the schema does
             for (ColumnDef cdef : cfDef.column_metadata)
             {
-                if (cf.containsKey(cdef.name))
+                boolean hasColumn = false;
+                boolean cql3Table = false;
+                try
                 {
-                    tuple.append(columnToTuple(cf.get(cdef.name), cfDef, parseType(cfDef.getComparator_type())));
+                    hasColumn = cf.containsKey(cdef.name);
                 }
-                else
+                catch (Exception e)
+                {
+                    cql3Table = true;                  
+                }
+                if (hasColumn)
+                {
+                    tuple.append(columnToTuple(cf.get(cdef.name), cfInfo, parseType(cfDef.getComparator_type())));
+                }
+                else if (!cql3Table)
                 {   // otherwise, we need to add an empty tuple to take its place
                     tuple.append(TupleFactory.getInstance().newTuple());
                 }
@@ -238,7 +250,7 @@ public class CassandraStorage extends AbstractCassandraStorage
             for (Map.Entry<ByteBuffer, IColumn> entry : cf.entrySet())
             {
                 if (!added.containsKey(entry.getKey()))
-                    bag.add(columnToTuple(entry.getValue(), cfDef, parseType(cfDef.getComparator_type())));
+                    bag.add(columnToTuple(entry.getValue(), cfInfo, parseType(cfDef.getComparator_type())));
             }
             tuple.append(bag);
             // finally, special top-level indexes if needed
@@ -246,7 +258,7 @@ public class CassandraStorage extends AbstractCassandraStorage
             {
                 for (ColumnDef cdef : getIndexes())
                 {
-                    Tuple throwaway = columnToTuple(cf.get(cdef.name), cfDef, parseType(cfDef.getComparator_type()));
+                    Tuple throwaway = columnToTuple(cf.get(cdef.name), cfInfo, parseType(cfDef.getComparator_type()));
                     tuple.append(throwaway.get(1));
                 }
             }
@@ -290,7 +302,7 @@ public class CassandraStorage extends AbstractCassandraStorage
             }
             catch (NumberFormatException e)
             {
-                throw new RuntimeException("PIG_INPUT_SPLIT_SIZE is not a number", e);
+                throw new IOException("PIG_INPUT_SPLIT_SIZE is not a number", e);
             }           
         } 
 
@@ -304,6 +316,10 @@ public class CassandraStorage extends AbstractCassandraStorage
             ConfigHelper.setInputSplitSize(conf, splitSize);
         if (partitionerClass!= null)
             ConfigHelper.setInputPartitioner(conf, partitionerClass);
+        if (rpcPort != null)
+            ConfigHelper.setInputRpcPort(conf, rpcPort);
+        if (initHostAddress != null)
+            ConfigHelper.setInputInitialAddress(conf, initHostAddress);
 
         ConfigHelper.setInputColumnFamily(conf, keyspace, column_family, widerows);
         setConnectionInformation();
@@ -334,6 +350,16 @@ public class CassandraStorage extends AbstractCassandraStorage
             ConfigHelper.setInputSplitSize(conf, splitSize);
         if (partitionerClass!= null)
             ConfigHelper.setOutputPartitioner(conf, partitionerClass);
+        if (rpcPort != null)
+        {
+            ConfigHelper.setOutputRpcPort(conf, rpcPort);
+            ConfigHelper.setInputRpcPort(conf, rpcPort);
+        }
+        if (initHostAddress != null)
+        {
+            ConfigHelper.setOutputInitialAddress(conf, initHostAddress);
+            ConfigHelper.setInputInitialAddress(conf, initHostAddress);
+        }
 
         ConfigHelper.setOutputColumnFamily(conf, keyspace, column_family);
         setConnectionInformation();
@@ -356,7 +382,8 @@ public class CassandraStorage extends AbstractCassandraStorage
     public ResourceSchema getSchema(String location, Job job) throws IOException
     {
         setLocation(location, job);
-        CfDef cfDef = getCfDef(loadSignature);
+        CfInfo cfInfo = getCfInfo(loadSignature);
+        CfDef cfDef = cfInfo.cfDef;
 
         if (cfDef.column_type.equals("Super"))
             return null;
@@ -403,7 +430,7 @@ public class CassandraStorage extends AbstractCassandraStorage
         // add the key first, then the indexed columns, and finally the bag
         allSchemaFields.add(keyFieldSchema);
 
-        if (!widerows)
+        if (!widerows && (cfInfo.compactCqlTable || !cfInfo.cql3Table))
         {
             // defined validators/indexes
             for (ColumnDef cdef : cfDef.column_metadata)
@@ -454,7 +481,7 @@ public class CassandraStorage extends AbstractCassandraStorage
     }
 
     /** set partition filter */
-    public void setPartitionFilter(Expression partitionFilter)
+    public void setPartitionFilter(Expression partitionFilter) throws IOException
     {
         UDFContext context = UDFContext.getUDFContext();
         Properties property = context.getUDFProperties(AbstractCassandraStorage.class);
@@ -616,7 +643,7 @@ public class CassandraStorage extends AbstractCassandraStorage
     }
 
     /** get a list of Cassandra IndexExpression from Pig expression */
-    private List<IndexExpression> filterToIndexExpressions(Expression expression)
+    private List<IndexExpression> filterToIndexExpressions(Expression expression) throws IOException
     {
         List<IndexExpression> indexExpressions = new ArrayList<IndexExpression>();
         Expression.BinaryExpression be = (Expression.BinaryExpression)expression;
@@ -644,13 +671,13 @@ public class CassandraStorage extends AbstractCassandraStorage
                 indexExpressions.addAll(filterToIndexExpressions(be.getRhs()));
                 break;
             default:
-                throw new RuntimeException("Unsupported expression type: " + expression.getOpType().name());
+                throw new IOException("Unsupported expression type: " + expression.getOpType().name());
         }
         return indexExpressions;
     }
 
     /** convert a list of index expression to string */
-    private static String indexExpressionsToString(List<IndexExpression> indexExpressions)
+    private static String indexExpressionsToString(List<IndexExpression> indexExpressions) throws IOException
     {
         assert indexExpressions != null;
         // oh, you thought cfdefToString was awful?
@@ -664,12 +691,12 @@ public class CassandraStorage extends AbstractCassandraStorage
         }
         catch (TException e)
         {
-            throw new RuntimeException(e);
+            throw new IOException(e);
         }
     }
 
     /** convert string to a list of index expression */
-    private static List<IndexExpression> indexExpressionsFromString(String ie)
+    private static List<IndexExpression> indexExpressionsFromString(String ie) throws IOException
     {
         assert ie != null;
         TDeserializer deserializer = new TDeserializer(new TBinaryProtocol.Factory());
@@ -680,13 +707,13 @@ public class CassandraStorage extends AbstractCassandraStorage
         }
         catch (TException e)
         {
-            throw new RuntimeException(e);
+            throw new IOException(e);
         }
         return indexClause.getExpressions();
     }
 
     /** get a list of index expression */
-    private List<IndexExpression> getIndexExpressions()
+    private List<IndexExpression> getIndexExpressions() throws IOException
     {
         UDFContext context = UDFContext.getUDFContext();
         Properties property = context.getUDFProperties(AbstractCassandraStorage.class);
@@ -697,7 +724,7 @@ public class CassandraStorage extends AbstractCassandraStorage
     }
 
     /** get a list of column for the column family */
-    protected List<ColumnDef> getColumnMetadata(Cassandra.Client client, boolean cql3Table) 
+    protected List<ColumnDef> getColumnMetadata(Cassandra.Client client) 
             throws InvalidRequestException, 
             UnavailableException, 
             TimedOutException, 
@@ -708,10 +735,7 @@ public class CassandraStorage extends AbstractCassandraStorage
             ConfigurationException,
             NotFoundException
     {
-        if (cql3Table)
-            return new ArrayList<ColumnDef>();
-        
-        return getColumnMeta(client, true);
+        return getColumnMeta(client, true, true);
     }
 
     /** convert key to a tuple */
@@ -731,7 +755,7 @@ public class CassandraStorage extends AbstractCassandraStorage
         }
         else
         {
-            setTupleValue(tuple, 0, getDefaultMarshallers(cfDef).get(MarshallerType.KEY_VALIDATOR).compose(key));
+            setTupleValue(tuple, 0, cassandraToObj(getDefaultMarshallers(cfDef).get(MarshallerType.KEY_VALIDATOR), key));
         }
 
     }
@@ -771,6 +795,10 @@ public class CassandraStorage extends AbstractCassandraStorage
                     splitSize = Integer.parseInt(urlQuery.get("split_size"));
                 if (urlQuery.containsKey("partitioner"))
                     partitionerClass = urlQuery.get("partitioner");
+                if (urlQuery.containsKey("init_address"))
+                    initHostAddress = urlQuery.get("init_address");
+                if (urlQuery.containsKey("rpc_port"))
+                    rpcPort = urlQuery.get("rpc_port");
             }
             String[] parts = urlParts[0].split("/+");
             String[] credentialsAndKeyspace = parts[1].split("@");
@@ -790,11 +818,11 @@ public class CassandraStorage extends AbstractCassandraStorage
         catch (Exception e)
         {
             throw new IOException("Expected 'cassandra://[username:password@]<keyspace>/<columnfamily>" +
-            		                        "[?slice_start=<start>&slice_end=<end>[&reversed=true][&limit=1]" +
-            		                        "[&allow_deletes=true][&widerows=true][&use_secondary=true]" +
-            		                        "[&comparator=<comparator>][&split_size=<size>][&partitioner=<partitioner>]]': " + e.getMessage());
+                    "[?slice_start=<start>&slice_end=<end>[&reversed=true][&limit=1]" +
+                    "[&allow_deletes=true][&widerows=true][&use_secondary=true]" +
+                    "[&comparator=<comparator>][&split_size=<size>][&partitioner=<partitioner>]" +
+                    "[&init_address=<host>][&rpc_port=<port>]]': " + e.getMessage());
         }
     }
-
 }
 
