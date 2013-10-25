@@ -43,15 +43,7 @@ public class DeleteStatement extends AbstractModification
 {
     private List<Term> columns;
     private List<Term> keys;
-    
-    //xuhao
-    public boolean withoutKey;
 
-    public void setWithOutKey(boolean b)
-    {
-    	this.withoutKey = b;
-    }
-    
     public DeleteStatement(List<Term> columns, String keyspace, String columnFamily, String keyName, List<Term> keys, Attributes attrs)
     {
         super(keyspace, columnFamily, keyName, attrs);
@@ -86,8 +78,6 @@ public class DeleteStatement extends AbstractModification
 
         List<IMutation> rowMutations = new ArrayList<IMutation>(keys.size());
 
-        withoutKey = !QueryProcessor.validateKeyAlias(metadata, keyName);
-        
         for (Term key : keys)
         {
             rowMutations.add(mutationForKey(key.getByteBuffer(keyType, variables), keyspace, timestamp, clientState, variables, metadata));
@@ -96,13 +86,12 @@ public class DeleteStatement extends AbstractModification
         return rowMutations;
     }
 
-    //static?
     public RowMutation mutationForKey(ByteBuffer key, String keyspace, Long timestamp, ThriftClientState clientState, List<ByteBuffer> variables, CFMetaData metadata)
     throws InvalidRequestException
     {
         RowMutation rm = new RowMutation(keyspace, key);
 
-        withoutKey = !QueryProcessor.validateKeyAlias(metadata, keyName);
+        QueryProcessor.validateKeyAlias(metadata, keyName);
 
         AbstractType<?> comparator = metadata.getComparatorFor(null);
 

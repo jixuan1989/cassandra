@@ -38,8 +38,6 @@ public class SelectExpression
     private final boolean wildcard;
     private final Term start, finish;
     private final List<Term> columns;
-    
-    private boolean withCount;
 
     /**
      * Create a new SelectExpression for a range (slice) of columns.
@@ -51,7 +49,7 @@ public class SelectExpression
      * @param wildcard determines weather this statement is wildcard
      * @param firstSet determines weather "FIRST" keyword was set
      */
-    public SelectExpression(Term start, Term finish, int count, boolean reverse, boolean wildcard, boolean firstSet, boolean withCount)
+    public SelectExpression(Term start, Term finish, int count, boolean reverse, boolean wildcard, boolean firstSet)
     {
         this.start = start;
         this.finish = finish;
@@ -60,7 +58,6 @@ public class SelectExpression
         this.wildcard = wildcard;
         hasFirstSet = firstSet;
         this.columns = null;
-        this.withCount = withCount;
     }
 
     /**
@@ -71,7 +68,7 @@ public class SelectExpression
      * @param reverse true to reverse column order
      * @param firstSet determines weather "FIRST" keyword was set
      */
-    public SelectExpression(Term first, int count, boolean reverse, boolean firstSet, boolean withCount)
+    public SelectExpression(Term first, int count, boolean reverse, boolean firstSet)
     {
         wildcard = false;
         columns = new ArrayList<Term>();
@@ -81,21 +78,8 @@ public class SelectExpression
         hasFirstSet = firstSet;
         start = null;
         finish = null;
-        this.withCount = withCount;
     }
 
-    //added by xuhao 
-    public boolean getWithCount()
-    {
-    	return this.withCount;
-    }
-    
-    //added by xuhao 
-    public void setWithCount(boolean withCount)
-    {
-    	this.withCount = withCount;
-    }
-    
     /**
      * Add an additional column name to a SelectExpression.
      *
@@ -111,7 +95,7 @@ public class SelectExpression
     {
         return (start != null);
     }
-    
+
     public boolean isColumnList()
     {
         return !isColumnRange();

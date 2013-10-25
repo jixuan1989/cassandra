@@ -24,6 +24,7 @@ import java.nio.ByteBuffer;
 import java.util.*;
 
 import org.apache.commons.lang.StringUtils;
+
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.KSMetaData;
 import org.apache.cassandra.config.Schema;
@@ -38,8 +39,6 @@ import org.apache.cassandra.thrift.Deletion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.UUIDGen;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 public class RowMutation implements IMutation
 {
@@ -47,9 +46,8 @@ public class RowMutation implements IMutation
     public static final String FORWARD_TO = "FWD_TO";
     public static final String FORWARD_FROM = "FWD_FRM";
 
-    private static final Logger logger = LoggerFactory.getLogger(RowMutation.class);
-    private final String table; //要修改的KS
-    private ByteBuffer key; //要修改的行键值
+    private final String table;//要修改的KS
+    private final ByteBuffer key;//要修改的行键值
     // map of column family id to mutations for that column family.
     private final Map<UUID, ColumnFamily> modifications; //要修改的表
 
@@ -76,18 +74,6 @@ public class RowMutation implements IMutation
         this.modifications = modifications;
     }
 
-    //added by xuhao
-    public void setKey(ByteBuffer key)
-    {
-    	this.key = key;
-    }
-    
-    //added by xuhao
-    public Map<UUID, ColumnFamily> getModifications()
-    {
-    	return modifications;
-    }
-    
     public String getTable()
     {
         return table;
