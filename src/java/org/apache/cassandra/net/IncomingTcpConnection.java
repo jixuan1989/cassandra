@@ -26,16 +26,18 @@ import java.net.InetAddress;
 import java.net.Socket;
 import java.net.SocketException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.xerial.snappy.SnappyInputStream;
+
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.io.util.FastByteArrayInputStream;
 import org.apache.cassandra.streaming.IncomingStreamReader;
 import org.apache.cassandra.streaming.StreamHeader;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.xerial.snappy.SnappyInputStream;
+import org.apache.cassandra.db.UnknownColumnFamilyException;
 /**
- * æ¥å…¥çš„è¿æ¥
+ * ½ÓÈëµÄÁ¬½Ó
  * @author hxd
  *
  */
@@ -67,7 +69,7 @@ public class IncomingTcpConnection extends Thread
      * A new connection will either stream or message for its entire lifetime: because streaming
      * bypasses the InputStream implementations to use sendFile, we cannot begin buffering until
      * we've determined the type of the connection.
-     * é‡ç‚¹æ˜¯æœ€åçš„recevieMessage().
+     * ÖØµãÊÇ×îºóµÄrecevieMessage().
      */
     @Override
     public void run()
@@ -78,7 +80,7 @@ public class IncomingTcpConnection extends Thread
             DataInputStream in = new DataInputStream(socket.getInputStream());
             MessagingService.validateMagic(in.readInt());
             int header = in.readInt();
-            boolean isStream = MessagingService.getBits(header, 3, 1) == 1;//ç›¸å½“äºçœ‹headerçš„ç¬¬å››ä½æ˜¯å¦ä¸º1
+            boolean isStream = MessagingService.getBits(header, 3, 1) == 1;//Ïàµ±ÓÚ¿´headerµÄµÚËÄÎ»ÊÇ·ñÎª1
             int version = MessagingService.getBits(header, 15, 8);
             logger.debug("Connection version {} from {}", version, socket.getInetAddress());
 
@@ -93,6 +95,10 @@ public class IncomingTcpConnection extends Thread
         {
             logger.trace("eof reading from socket; closing", e);
             // connection will be reset so no need to throw an exception.
+        }
+        catch (UnknownColumnFamilyException e)
+        {
+            logger.warn("UnknownColumnFamilyException reading from socket; closing", e);
         }
         catch (IOException e)
         {
@@ -201,7 +207,7 @@ public class IncomingTcpConnection extends Thread
         String id = input.readUTF();
         long timestamp = System.currentTimeMillis();;
         if (version >= MessagingService.VERSION_12)
-        {//TODO éœ€è¦è¯»ä¸€ä¸‹ æ—¶é—´æˆ³æ€ä¹ˆè®¡ç®—çš„
+        {//TODO ĞèÒª¶ÁÒ»ÏÂ Ê±¼ä´ÁÔõÃ´¼ÆËãµÄ
             // make sure to readInt, even if cross_node_to is not enabled
             int partial = input.readInt();
             if (DatabaseDescriptor.hasCrossNodeTimeout())
