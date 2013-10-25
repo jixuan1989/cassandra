@@ -47,7 +47,6 @@ public class RowMutation implements IMutation
     public static final String FORWARD_TO = "FWD_TO";
     public static final String FORWARD_FROM = "FWD_FRM";
 
-    private String rowMutationId; //RowMutation实例的唯一标识符，用于之后一致性度量时区分Mutation使用
     private static final Logger logger = LoggerFactory.getLogger(RowMutation.class);
     private final String table; //要修改的KS
     private ByteBuffer key; //要修改的行键值
@@ -70,18 +69,8 @@ public class RowMutation implements IMutation
         this.table = table;
         this.key = key;
         this.modifications = modifications;
-        //通过UUID生成的方式生成该rowMutationId
-        rowMutationId = UUIDGen.getTimeUUID().toString();
     }
 
-    public String getRowMutationId() {
-    	return rowMutationId;
-    }
-    
-    public void setRowMutationId(String rowMutationId) {
-    	this.rowMutationId = rowMutationId;
-    }
-    
     //added by xuhao
     public void setKey(ByteBuffer key)
     {
@@ -323,7 +312,6 @@ public class RowMutation implements IMutation
     public String toString(boolean shallow)
     {
         StringBuilder buff = new StringBuilder("RowMutation(");
-        buff.append("rowMutationId='").append(rowMutationId).append("', ");
         buff.append("keyspace='").append(table).append('\'');
         buff.append(", key='").append(ByteBufferUtil.bytesToHex(key)).append('\'');
         buff.append(", modifications=[");
@@ -399,7 +387,6 @@ public class RowMutation implements IMutation
     {
         public void serialize(RowMutation rm, DataOutput dos, int version) throws IOException
         {
-        	dos.writeUTF(rm.getRowMutationId().toString()); //按照新的序列化协议，先序列化rowMutationId
             dos.writeUTF(rm.getTable());
             ByteBufferUtil.writeWithShortLength(rm.key(), dos);
 
@@ -417,8 +404,7 @@ public class RowMutation implements IMutation
 
         public RowMutation deserialize(DataInput dis, int version, IColumnSerializer.Flag flag) throws IOException
         {
-        	String rmUUid = dis.readUTF(); //按照新的序列化协议，先反序列化rowMutationId
-        	String table = dis.readUTF();
+            String table = dis.readUTF();
             ByteBuffer key = ByteBufferUtil.readWithShortLength(dis);
             Map<UUID, ColumnFamily> modifications = new HashMap<UUID, ColumnFamily>();
             int size = dis.readInt();
@@ -432,9 +418,7 @@ public class RowMutation implements IMutation
                 assert cf != null;
                 modifications.put(cf.id(), cf);
             }
-            RowMutation rm = new RowMutation(table, key, modifications);
-            rm.setRowMutationId(rmUUid); //设置rowMutationId
-            return rm;
+            return new RowMutation(table, key, modifications);
         }
 
         public RowMutation deserialize(DataInput dis, int version) throws IOException
@@ -445,7 +429,7 @@ public class RowMutation implements IMutation
         public long serializedSize(RowMutation rm, int version)
         {
             TypeSizes sizes = TypeSizes.NATIVE;
-            int size = sizes.sizeof(rm.getTable()) + sizes.sizeof(rm.getRowMutationId());
+            int size = sizes.sizeof(rm.getTable());
             int keySize = rm.key().remaining();
             size += sizes.sizeof((short) keySize) + keySize;
 
