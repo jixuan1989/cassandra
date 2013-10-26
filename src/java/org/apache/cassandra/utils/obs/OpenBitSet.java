@@ -65,7 +65,7 @@ public class OpenBitSet implements IBitSet
    */
   public OpenBitSet(long numBits)
   {
-      wlen = (int) bits2words(numBits);
+      wlen = (int) bits2words(numBits);//除以64+1
       int lastPageSize = wlen % PAGE_SIZE;
       int fullPageCount = wlen / PAGE_SIZE;
       pageCount = fullPageCount + (lastPageSize == 0 ? 0 : 1);
@@ -101,7 +101,7 @@ public class OpenBitSet implements IBitSet
       return bits[pageIdx];
   }
 
-  /** Returns the current capacity in bits (1 greater than the index of the last bit) */
+  /** Returns the current capacity in bits (1 greater than the index of the last bit) 这里为何不先把wlen-1 然后左移，然后+1？ */
   public long capacity() { return ((long)wlen) << 6; }
 
  /**
@@ -152,6 +152,7 @@ public class OpenBitSet implements IBitSet
   }
 
   /**
+   * //TODO 如果index mod 64 =63.设index /64= k. 那么(k*64+1,k*64+63)的get都为true了啊、、、
    * Sets the bit at the specified index.
    * The index should be less than the OpenBitSet size.
    */

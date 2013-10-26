@@ -66,7 +66,7 @@ public class KSPropDefs extends PropertyDefinitions
     {
         return strategyClass;
     }
-
+    /**封装成一个KSMetaDate对象，没有做任何特殊的事情，就是对各个字段赋了值（也就是说，strategy依旧是个字符串，而非实例化出实例了）*/
     public KSMetaData asKSMetadata(String ksName) throws RequestValidationException
     {
         return KSMetaData.newKeyspace(ksName, getReplicationStrategyClass(), getReplicationOptions(), getBoolean(KW_DURABLE_WRITES, true));

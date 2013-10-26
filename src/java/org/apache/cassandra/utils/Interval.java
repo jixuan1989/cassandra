@@ -18,7 +18,7 @@
 package org.apache.cassandra.utils;
 
 import com.google.common.base.Objects;
-
+/**（最小，最大，数据值）三元组*/
 public class Interval<C, D>
 {
     public final C min;

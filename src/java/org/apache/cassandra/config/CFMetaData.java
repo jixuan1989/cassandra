@@ -332,7 +332,7 @@ public final class CFMetaData
         try
         {
         	//hxd: 增加一个输出 打印出创建的系统表
-        	logger.info(cql);
+        	logger.debug(cql);
             CreateColumnFamilyStatement statement = (CreateColumnFamilyStatement) QueryProcessor.parseStatement(cql).prepare().statement;
             CFMetaData cfmd = newSystemMetadata(keyspace, statement.columnFamily(), id, "", statement.comparator, null);
             statement.applyPropertiesTo(cfmd);
@@ -1097,7 +1097,7 @@ public final class CFMetaData
             return Column.onDiskSerializer();
         return SuperColumn.onDiskSerializer(subcolumnComparator);
     }
-
+    /**名字不为空，是字符串（\w）,长度小于最大值（目前是48 常量）*/
     public static boolean isNameValid(String name)
     {
         return name != null && !name.isEmpty() && name.length() <= Schema.NAME_LENGTH && name.matches("\\w+");

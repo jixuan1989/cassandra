@@ -209,7 +209,7 @@ public class Column implements IColumn
     {
         return reconcile(column, HeapAllocator.instance);
     }
-
+    /**如果自身被标记删除了或者如果column被标记删除了，则谁的timestamp新用谁；如果时间戳相同，则谁的value大用谁。否则谁的时间大用谁*/
     public IColumn reconcile(IColumn column, Allocator allocator)
     {
         // tombstones take precedence.  (if both are tombstones, then it doesn't matter which one we use.)
@@ -336,7 +336,7 @@ public class Column implements IColumn
     {
         return new Column(decomposeName(names), InetAddressType.instance.decompose(value), timestamp);
     }
-
+    /** TODO （难道column name只有string类型？？） 这个方法中，通过UTF8类型将之转化为bytes。 如果是多个字符串，则用composite类型 用多个utf8转化器。 本方法注释中说 效率不高，应该很少调用。*/
     static ByteBuffer decomposeName(String... names)
     {
         assert names.length > 0;

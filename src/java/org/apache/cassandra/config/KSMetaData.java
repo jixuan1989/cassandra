@@ -40,7 +40,7 @@ public final class KSMetaData
 {
     public final String name;
     public final Class<? extends AbstractReplicationStrategy> strategyClass;
-    public final Map<String, String> strategyOptions;
+    public final Map<String, String> strategyOptions;//e.g. {replication_factor=4}
     private final Map<String, CFMetaData> cfMetaData;
     public final boolean durableWrites;
 
@@ -197,7 +197,7 @@ public final class KSMetaData
     {
         return newState.toSchema(modificationTimestamp);
     }
-
+    /**先验证备份策略以及参数是否正确（会在tokenMetadata中注册一个临时的监听者）<br>然后对ks中的而每个定义的cf 进行验证（还没看）*/
     public KSMetaData validate() throws ConfigurationException
     {
         if (!CFMetaData.isNameValid(name))
@@ -234,7 +234,7 @@ public final class KSMetaData
 
         return rm;
     }
-
+   
     public RowMutation toSchema(long timestamp)
     {
         RowMutation rm = new RowMutation(Table.SYSTEM_KS, SystemTable.getSchemaKSKey(name));

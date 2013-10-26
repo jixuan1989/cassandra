@@ -96,7 +96,7 @@ public class CreateKeyspaceStatement extends SchemaAlteringStatement
                                                                 DatabaseDescriptor.getEndpointSnitch(),
                                                                 attrs.getReplicationOptions());
     }
-
+    
     public void announceMigration() throws RequestValidationException
     {
         MigrationManager.announceNewKeyspace(attrs.asKSMetadata(name));

@@ -46,8 +46,10 @@ public class Component
         // 0-length file that is created when an sstable is ready to be deleted
         // @deprecated: deletion of compacted file is based on the lineag information stored in the compacted sstabl
         // metadata. This ensure we can guarantee never using a sstable and some of its parents, even in case of failure.
-        COMPACTED_MARKER("Compacted"),
+        /**不懂..*/
+        COMPACTED_MARKER("Compacted"),//TODO 不懂.
         // file to hold information about uncompressed data length, chunk offsets etc.
+        /**保存没有压缩的数据大小，块位置等等的信息的文件*/
         COMPRESSION_INFO("CompressionInfo.db"),
         // statistical metadata about the content of the sstable
         STATS("Statistics.db"),

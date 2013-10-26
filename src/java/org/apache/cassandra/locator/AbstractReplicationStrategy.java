@@ -354,7 +354,7 @@ public abstract class AbstractReplicationStrategy
         strategy.validateOptions();
     }
 /**
- * 创建一个实例，然后验证之，忽略检查是否有不可识别的参数 
+ * 创建一个实例，然后验证之，忽略检查是否有不可识别的参数 。这个方法略变态的地方在于，每生成一个实例，就会在tokenMetaData中注册一个strategy。。 而这个函数又不将这个strategy返回..
  * For backward compatibility sake on the thrift side
  * @param table
  * @param strategyClass

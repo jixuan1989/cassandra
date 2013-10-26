@@ -20,7 +20,7 @@ package org.apache.cassandra.utils;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.utils.obs.IBitSet;
-
+/**使用murmur3哈希算法对key进行哈希*/
 public class Murmur3BloomFilter extends BloomFilter
 {
     public static final Murmur3BloomFilterSerializer serializer = new Murmur3BloomFilterSerializer();

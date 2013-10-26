@@ -117,7 +117,7 @@ public class TreeMapBackedSortedColumns extends AbstractThreadUnsafeSortedColumn
         else
         {
             // calculate reconciled col from old (existing) col and new col
-            IColumn reconciledColumn = column.reconcile(oldColumn, allocator);
+            IColumn reconciledColumn = column.reconcile(oldColumn, allocator);//看下
             map.put(name, reconciledColumn);
             // for memtable updates we only care about oldcolumn, reconciledcolumn, but when compacting
             // we need to make sure we update indexes no matter the order we merge

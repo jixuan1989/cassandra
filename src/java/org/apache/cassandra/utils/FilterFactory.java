@@ -34,7 +34,7 @@ public class FilterFactory
     private static final Logger logger = LoggerFactory.getLogger(FilterFactory.class);
     private static final TypeSizes TYPE_SIZES = TypeSizes.NATIVE;
     private static final long BITSET_EXCESS = 20;
-
+    /**sha 0.7版本之前。murmur2:1.2.0之前。murmur3:目前*/
     public enum Type
     {
         SHA, MURMUR2, MURMUR3

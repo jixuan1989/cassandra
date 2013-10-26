@@ -41,10 +41,17 @@ import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.gms.FailureDetector;
 import org.apache.cassandra.service.StorageService;
 /**
- * Ò»¸ötoken¶ÔÓ¦Ò»¸öip¡£Ò»¸öip¿ÉÒÔ¶ÔÓ¦¶à¸ötoken¡£
- * <br> tokenÄª·Ç±íÊ¾µÄÊÇÒ»¸öĞéÄâ½Úµã£¿
+ * ä¸€ä¸ªtokenå¯¹åº”ä¸€ä¸ªipã€‚ä¸€ä¸ªipå¯ä»¥å¯¹åº”å¤šä¸ªtokenã€‚
+ * <br> tokenè«éè¡¨ç¤ºçš„æ˜¯ä¸€ä¸ªè™šæ‹ŸèŠ‚ç‚¹ï¼Ÿ
  * @author hxd
- *
+ *<br>è¿™æ˜¯ä¸€ä¸ªTokenMetadataçš„æ•°æ®ç¤ºä¾‹ï¼šï¼ˆä¸‰ä¸ªæ­£å¸¸èŠ‚ç‚¹ï¼Œæ¯ä¸ªnum_token=3ï¼‰
+ * toString:<br>
+ * Normal Tokens:
+ * /166.111.82.41:[97968597608324826, 4848558567716775630, 5597558394803796696]
+ * /192.168.3.225:[617887885317243447, 1568757730276352480, 3744912842414974619]
+ * /192.168.3.226:[-7613243433252172280, 1319220758109565542, 3909925557451044612]
+ * <hr>
+ * 
  */
 public class TokenMetadata
 {
@@ -54,16 +61,19 @@ public class TokenMetadata
      * Maintains token to endpoint map of every node in the cluster.
      * Each Token is associated with exactly one Address, but each Address may have
      * multiple tokens.  Hence, the BiMultiValMap collection.
-	 * °´ÕÕÄ¿Ç°µÄĞ´·¨,ÕâÀïÆäÊµ×ÜÊÇÒ»¸öSortBiMultiValMap¶ÔÏó
+	 * æŒ‰ç…§ç›®å‰çš„å†™æ³•,è¿™é‡Œå…¶å®æ€»æ˜¯ä¸€ä¸ªSortBiMultiValMapå¯¹è±¡<br>
+	 * forward:{-7613243433252172280=/192.168.3.226, 97968597608324826=/166.111.82.41, 617887885317243447=/192.168.3.225, 1319220758109565542=/192.168.3.226, 1568757730276352480=/192.168.3.225, 3744912842414974619=/192.168.3.225, 3909925557451044612=/192.168.3.226, 4848558567716775630=/166.111.82.41, 5597558394803796696=/166.111.82.41}
+     * reverse:{/166.111.82.41=[97968597608324826, 4848558567716775630, 5597558394803796696], /192.168.3.225=[617887885317243447, 1568757730276352480, 3744912842414974619], /192.168.3.226=[-7613243433252172280, 1319220758109565542, 3909925557451044612]}
      */
     private final BiMultiValMap<Token, InetAddress> tokenToEndpointMap;
 
-    /** Maintains endpoint to host ID map of every node in the cluster */
+    /** Maintains endpoint to host ID map of every node in the cluster 
+     * <br>ä¸€ä¸ªç¤ºä¾‹ï¼š{/192.168.3.226=f21f2d72-5c5b-4e9d-9e2c-46b9c4589644, /192.168.3.225=4f0afbaf-c90c-48c1-a571-e79125356e2b, /166.111.82.41=8fe08b5e-d39a-47dc-a471-827f26b59960}*/
     private final BiMap<InetAddress, UUID> endpointToHostIdMap;
 
     // Prior to CASSANDRA-603, we just had <tt>Map<Range, InetAddress> pendingRanges<tt>,
     // which was added to when a node began bootstrap and removed from when it finished.
-    //½Úµã¿ªÊ¼Æô¶¯µÄÊ±ºò£¬¼ÓÈëpendingRanges£¬Æô¶¯Íê±ÏÉ¾³ıÖ®¡£
+    //èŠ‚ç‚¹å¼€å§‹å¯åŠ¨çš„æ—¶å€™ï¼ŒåŠ å…¥pendingRangesï¼Œå¯åŠ¨å®Œæ¯•åˆ é™¤ä¹‹ã€‚
     // This is inadequate when multiple changes are allowed simultaneously.  For example,
     // suppose that there is a ring of nodes A, C and E, with replication factor 3.
     // Node D bootstraps between C and E, so its pending ranges will be E-A, A-C and C-D.
@@ -91,7 +101,7 @@ public class TokenMetadata
     // this is a cache of the calculation from {tokenToEndpointMap, bootstrapTokens, leavingEndpoints}
     private final ConcurrentMap<String, Multimap<Range<Token>, InetAddress>> pendingRanges = new ConcurrentHashMap<String, Multimap<Range<Token>, InetAddress>>();
     /**
-     * tokens which are migrating to new endpoints .ÎªºÎÒªÓÃÒ»¸ösetÄØ¡£¡£¡£ 
+     * tokens which are migrating to new endpoints .ä¸ºä½•è¦ç”¨ä¸€ä¸ªsetå‘¢ã€‚ã€‚ã€‚ 
      */
     // nodes which are migrating to the new tokens in the ring
     private final Set<Pair<Token, InetAddress>> movingEndpoints = new HashSet<Pair<Token, InetAddress>>();
@@ -101,13 +111,14 @@ public class TokenMetadata
 
     /** Use this lock for manipulating the token map */
     private final ReadWriteLock lock = new ReentrantReadWriteLock(true);
+    /**ç¤ºä¾‹ï¼š[-7613243433252172280, 97968597608324826, 617887885317243447, 1319220758109565542, 1568757730276352480, 3744912842414974619, 3909925557451044612, 4848558567716775630, 5597558394803796696]*/
     private volatile ArrayList<Token> sortedTokens;
-
+    /**ç¤ºä¾‹ï¼š{/192.168.3.226=(datacenter1,rack1), /192.168.3.225=(datacenter1,rack1), /166.111.82.41=(datacenter1,rack1)}*/
     private final Topology topology;
-    /** list of subscribers that are notified when the tokenToEndpointMap changed */
+    /** list of subscribers that are notified when the tokenToEndpointMap changed <br> æ¯ä¸ªksæœ‰ä¸€ä¸ªå¤åˆ¶ç­–ç•¥ï¼ˆå¦‚SimpleStrategyæˆ–è€…LocallyStrategyï¼‰ï¼Œæ¯ä¸ªå¤åˆ¶ç­–ç•¥ä¸­çš„nameå­—æ®µæŒ‡æ˜äº†è¿™ä¸ªå¯¹è±¡æ˜¯å“ªä¸ªksçš„ã€‚æ¯ä¸ªå¤åˆ¶ç­–ç•¥ä¼šåœ¨è¿™é‡Œæ³¨å†Œä¸ºsubscriberã€‚*/
     private final CopyOnWriteArrayList<AbstractReplicationStrategy> subscribers = new CopyOnWriteArrayList<AbstractReplicationStrategy>();
     /**
-     * ÍøÂçip±È½ÏÆ÷
+     * ç½‘ç»œipæ¯”è¾ƒå™¨
      */
     private static final Comparator<InetAddress> inetaddressCmp = new Comparator<InetAddress>()
     {
@@ -118,7 +129,7 @@ public class TokenMetadata
     };
 
     /**
-     * ÏµÍ³Æô¶¯Ê±£¬StorageService³õÊ¼»¯TokenMetadataÊµÀı
+     * ç³»ç»Ÿå¯åŠ¨æ—¶ï¼ŒStorageServiceåˆå§‹åŒ–TokenMetadataå®ä¾‹
      */
     public TokenMetadata()
     {
@@ -135,7 +146,7 @@ public class TokenMetadata
         sortedTokens = sortTokens();
     }
     /**
-     * ·µ»ØtokenToEndpointMapµÄkeySet£¨tokenToEndpointMapÍùÍù±¾ÉíÊÇÓĞĞòµÄ£©
+     * è¿”å›tokenToEndpointMapçš„keySetï¼ˆtokenToEndpointMapå¾€å¾€æœ¬èº«æ˜¯æœ‰åºçš„ï¼‰
      * @return
      */
     private ArrayList<Token> sortTokens()
@@ -164,7 +175,7 @@ public class TokenMetadata
     }
 
     /**
-     *  ¸üĞÂÕı³£µÄtoken¡£¸Ã·½·¨Ê×ÏÈ½«¸ÃipÉæ¼°µÄÔªËØ´Ó¸÷¸öÈİÆ÷ÖĞÉ¾³ı£¨»áÍ¨ÖªsubscriberÃÇÇå¿Õtoken-endpoint»º´æ£©£¬È»ºóÔÙÖØĞÂ½«tokenÓëipµÄ¶ÔÓ¦¹ØÏµ·ÅÈëtokenToEndpointMapÖĞ<br>È»ºóÖØĞÂÅÅĞòÒ»ÏÂtoken
+     *  æ›´æ–°æ­£å¸¸çš„tokenã€‚è¯¥æ–¹æ³•é¦–å…ˆå°†è¯¥ipæ¶‰åŠçš„å…ƒç´ ä»å„ä¸ªå®¹å™¨ä¸­åˆ é™¤ï¼ˆä¼šé€šçŸ¥subscriberä»¬æ¸…ç©ºtoken-endpointç¼“å­˜ï¼‰ï¼Œç„¶åå†é‡æ–°å°†tokenä¸ipçš„å¯¹åº”å…³ç³»æ”¾å…¥tokenToEndpointMapä¸­<br>ç„¶åé‡æ–°æ’åºä¸€ä¸‹token
      * Update token map with a single token/endpoint pair in normal state.
      */
     public void updateNormalToken(Token token, InetAddress endpoint)
@@ -172,7 +183,7 @@ public class TokenMetadata
         updateNormalTokens(Collections.singleton(token), endpoint);
     }
 /**
- *  ¸üĞÂÕı³£µÄtoken¡£¸Ã·½·¨Ê×ÏÈ½«¸ÃipÉæ¼°µÄÔªËØ´Ó¸÷¸öÈİÆ÷ÖĞÉ¾³ı£¨»áÍ¨ÖªsubscriberÃÇÇå¿Õtoken-endpoint»º´æ£©£¬È»ºóÔÙÖØĞÂ½«tokenÓëipµÄ¶ÔÓ¦¹ØÏµ·ÅÈëtokenToEndpointMapÖĞ<br>È»ºóÖØĞÂÅÅĞòÒ»ÏÂtoken
+ *  æ›´æ–°æ­£å¸¸çš„tokenã€‚è¯¥æ–¹æ³•é¦–å…ˆå°†è¯¥ipæ¶‰åŠçš„å…ƒç´ ä»å„ä¸ªå®¹å™¨ä¸­åˆ é™¤ï¼ˆä¼šé€šçŸ¥subscriberä»¬æ¸…ç©ºtoken-endpointç¼“å­˜ï¼‰ï¼Œç„¶åå†é‡æ–°å°†tokenä¸ipçš„å¯¹åº”å…³ç³»æ”¾å…¥tokenToEndpointMapä¸­<br>ç„¶åé‡æ–°æ’åºä¸€ä¸‹token
  * @param tokens
  * @param endpoint
  */
@@ -185,8 +196,8 @@ public class TokenMetadata
     }
 
     /**
-     * ¸üĞÂÕı³£µÄtoken¡£¸Ã·½·¨Ê×ÏÈ½«ËùÓĞÉæ¼°µÄip´Ó¸÷¸öÈİÆ÷ÖĞÉ¾³ı£¨»áÍ¨ÖªsubscriberÃÇÇå¿Õtoken-endpoint»º´æ£©£¬È»ºóÔÙÖØĞÂ½«tokenÓëÕâĞ©ipµÄ¶ÔÓ¦¹ØÏµ·ÅÈëtokenToEndpointMapÖĞ
-     * <br>È»ºóÖØĞÂÅÅĞòÒ»ÏÂtoken
+     * æ›´æ–°æ­£å¸¸çš„tokenã€‚è¯¥æ–¹æ³•é¦–å…ˆå°†æ‰€æœ‰æ¶‰åŠçš„ipä»å„ä¸ªå®¹å™¨ä¸­åˆ é™¤ï¼ˆä¼šé€šçŸ¥subscriberä»¬æ¸…ç©ºtoken-endpointç¼“å­˜ï¼‰ï¼Œç„¶åå†é‡æ–°å°†tokenä¸è¿™äº›ipçš„å¯¹åº”å…³ç³»æ”¾å…¥tokenToEndpointMapä¸­
+     * <br>ç„¶åé‡æ–°æ’åºä¸€ä¸‹token
      * Update token map with a set of token/endpoint pairs in normal state.
      *
      * Prefer this whenever there are multiple pairs to update, as each update (whether a single or multiple)
@@ -209,8 +220,8 @@ public class TokenMetadata
 
                 assert tokens != null && !tokens.isEmpty();
 
-                bootstrapTokens.removeValue(endpoint);//bootstrapTokenÖĞÉ¾³ı¸ÃipµÄÔªËØ
-                tokenToEndpointMap.removeValue(endpoint);//tokenToEndpointMapÖĞÉ¾³ı¸ÃipµÄÔªËØ
+                bootstrapTokens.removeValue(endpoint);//bootstrapTokenä¸­åˆ é™¤è¯¥ipçš„å…ƒç´ 
+                tokenToEndpointMap.removeValue(endpoint);//tokenToEndpointMapä¸­åˆ é™¤è¯¥ipçš„å…ƒç´ 
                 topology.addEndpoint(endpoint);
                 leavingEndpoints.remove(endpoint);
                 removeFromMoving(endpoint); // also removing this endpoint from moving
@@ -237,7 +248,7 @@ public class TokenMetadata
     }
 
     /**
-     * ½«ip-id´æÈëendpointToHostIdMapÖĞ¡£Èç¹ûÕâ¸öidÒÑ¾­¸úÄ³¸öip¶ÔÓ¦ÆğÀ´ÁË£¬ÄÇÃ´±¨´í¡£ Èç¹ûÕâ¸öipÒÑ¾­ÓĞÒ»¸öidÁË£¬ÄÇÃ´»á´ò³öÒ»¸ö¾¯¸æ£¬µ«ÊÇ»¹ÊÇ»áĞŞ¸Ä...£¨ÓëÓ¢ÎÄ×¢ÊÍ²»Ò»Ñù°¡¡£¡£¡££©
+     * å°†ip-idå­˜å…¥endpointToHostIdMapä¸­ã€‚å¦‚æœè¿™ä¸ªidå·²ç»è·ŸæŸä¸ªipå¯¹åº”èµ·æ¥äº†ï¼Œé‚£ä¹ˆæŠ¥é”™ã€‚ å¦‚æœè¿™ä¸ªipå·²ç»æœ‰ä¸€ä¸ªidäº†ï¼Œé‚£ä¹ˆä¼šæ‰“å‡ºä¸€ä¸ªè­¦å‘Šï¼Œä½†æ˜¯è¿˜æ˜¯ä¼šä¿®æ”¹...ï¼ˆä¸è‹±æ–‡æ³¨é‡Šä¸ä¸€æ ·å•Šã€‚ã€‚ã€‚ï¼‰
      * Store an end-point to host ID mapping.  Each ID must be unique, and
      * cannot be changed after the fact.
      *
@@ -255,7 +266,7 @@ public class TokenMetadata
             InetAddress storedEp = endpointToHostIdMap.inverse().get(hostId);
             if (storedEp != null)
             {
-                if (!storedEp.equals(endpoint) && (FailureDetector.instance.isAlive(storedEp)))//·¢ÏÖhostId¶ÔÓ¦µÄ¾ÉµÄipÓëĞÂÌá¹©µÄ²»µÈ£¬²¢ÇÒ¾ÉµÄÃ»ÓĞËÀ£¬ÄÇÃ´±¨´í¡£
+                if (!storedEp.equals(endpoint) && (FailureDetector.instance.isAlive(storedEp)))//å‘ç°hostIdå¯¹åº”çš„æ—§çš„ipä¸æ–°æä¾›çš„ä¸ç­‰ï¼Œå¹¶ä¸”æ—§çš„æ²¡æœ‰æ­»ï¼Œé‚£ä¹ˆæŠ¥é”™ã€‚
                 {
                     throw new RuntimeException(String.format("Host ID collision between active endpoint %s and %s (id=%s)",
                                                              storedEp,
@@ -275,7 +286,7 @@ public class TokenMetadata
             lock.writeLock().unlock();
         }
 
-        UUID storedId = endpointToHostIdMap.get(endpoint);//ÅĞ¶ÏÏÂÌá¹©µÄipÊÇ·ñÒÑ¾­ÓĞ¶ÔÓ¦µÄidÁË¡£ÓĞµÄ»° ´ò³öÒ»¸ö¾¯¸æ
+        UUID storedId = endpointToHostIdMap.get(endpoint);//åˆ¤æ–­ä¸‹æä¾›çš„ipæ˜¯å¦å·²ç»æœ‰å¯¹åº”çš„idäº†ã€‚æœ‰çš„è¯ æ‰“å‡ºä¸€ä¸ªè­¦å‘Š
     }
 
     /** Return the unique host ID for an end-point. */
@@ -328,8 +339,8 @@ public class TokenMetadata
         addBootstrapTokens(Collections.singleton(token), endpoint);
     }
 /**
- * Ê×ÏÈÅĞ¶ÏÃ¿¸ötokenÊÇ·ñÒÑ¾­³öÏÖÔÚbootstrapTokens»òtokenToEndpointMapÖĞÁË£¬ÇÒ¶ÔÓ¦µÄip£¡=endpoint£¬ÄÇÃ´±¨´í
- * <br>È»ºó´ÓbootstrapTokensÖĞÏÈ°ÑÕâ¸öendpoint¶ÔÓ¦µÄ¾ÉµÄÔªËØÉ¾µô£¬È»ºó½«Õâ¸ö¸øÇ¿ÖÆ¼Ó½øÈ¥
+ * é¦–å…ˆåˆ¤æ–­æ¯ä¸ªtokenæ˜¯å¦å·²ç»å‡ºç°åœ¨bootstrapTokensæˆ–tokenToEndpointMapä¸­äº†ï¼Œä¸”å¯¹åº”çš„ipï¼=endpointï¼Œé‚£ä¹ˆæŠ¥é”™
+ * <br>ç„¶åä»bootstrapTokensä¸­å…ˆæŠŠè¿™ä¸ªendpointå¯¹åº”çš„æ—§çš„å…ƒç´ åˆ æ‰ï¼Œç„¶åå°†è¿™ä¸ªç»™å¼ºåˆ¶åŠ è¿›å»
  * @param tokens
  * @param endpoint
  */
@@ -366,7 +377,7 @@ public class TokenMetadata
         }
     }
 /**
- * °ÑËùÓĞµÄtokenÏà¹ØµÄÔªËØ´ÓbootstrapTokensÖĞÉ¾³ı
+ * æŠŠæ‰€æœ‰çš„tokenç›¸å…³çš„å…ƒç´ ä»bootstrapTokensä¸­åˆ é™¤
  * @param tokens
  */
     public void removeBootstrapTokens(Collection<Token> tokens)
@@ -385,7 +396,7 @@ public class TokenMetadata
         }
     }
 /**
- * Ôö¼ÓÒ»¸öipµ½leavingEndpoints
+ * å¢åŠ ä¸€ä¸ªipåˆ°leavingEndpoints
  * @param endpoint
  */
     public void addLeavingEndpoint(InetAddress endpoint)
@@ -404,7 +415,7 @@ public class TokenMetadata
     }
 
     /**
-     * ¼ÓÈëÒ»¸ötoken-ip¶Ôµ½movingEndpointsÖĞ
+     * åŠ å…¥ä¸€ä¸ªtoken-ipå¯¹åˆ°movingEndpointsä¸­
      * Add a new moving endpoint
      * @param token token which is node moving to
      * @param endpoint address of the moving node
@@ -426,7 +437,7 @@ public class TokenMetadata
     }
 
     /**
-     * ½«token-ip·ÅÈërelocatingTokenÖĞÈ¡
+     * å°†token-ipæ”¾å…¥relocatingTokenä¸­å–
      * Add new relocating ranges (tokens moving from their respective endpoints, to another).
      * @param tokens tokens being moved
      * @param endpoint destination of moves
@@ -453,7 +464,7 @@ public class TokenMetadata
         }
     }
 /**
- * ´Ó¸÷¸öÈİÆ÷ÖĞÉ¾³ıÓë¸ÃipÏà¹ØµÄÔªËØ
+ * ä»å„ä¸ªå®¹å™¨ä¸­åˆ é™¤ä¸è¯¥ipç›¸å…³çš„å…ƒç´ 
  * @param endpoint
  */
     public void removeEndpoint(InetAddress endpoint)
@@ -478,8 +489,8 @@ public class TokenMetadata
     }
 
     /**
-     * ´ÓmovingEndpointsÖĞÉ¾³ıpairµÄÓÒ±ß=¸ÃipµÄÔªËØ¶Ô
-     * <br>È»ºóÍ¨ÖªsubcribersÇå¿Õtoken-endpointµÄ»º´æ
+     * ä»movingEndpointsä¸­åˆ é™¤pairçš„å³è¾¹=è¯¥ipçš„å…ƒç´ å¯¹
+     * <br>ç„¶åé€šçŸ¥subcribersæ¸…ç©ºtoken-endpointçš„ç¼“å­˜
      * Remove pair of token/address from moving endpoints
      * @param endpoint address of the moving node
      */
@@ -508,7 +519,7 @@ public class TokenMetadata
     }
 
     /**
-     * ¸ù¾İtoken½«Ö®´Ó
+     * æ ¹æ®tokenå°†ä¹‹ä»
      * Remove pair of token/address from relocating ranges.
      * @param endpoint
      */
@@ -540,7 +551,7 @@ public class TokenMetadata
         }
     }
 /**
- * ´ÓtokenToEndpointMapÖĞ»ñÈ¡ip¶ÔÓ¦µÄtoken
+ * ä»tokenToEndpointMapä¸­è·å–ipå¯¹åº”çš„token
  * @param endpoint
  * @return
  */
@@ -566,7 +577,7 @@ public class TokenMetadata
         return getTokens(endpoint).iterator().next();
     }
 /**
- * ÅĞ¶ÏipÔÚtokenToEndpointMapÖĞ³öÏÖ¹ıÃ»ÓĞ
+ * åˆ¤æ–­ipåœ¨tokenToEndpointMapä¸­å‡ºç°è¿‡æ²¡æœ‰
  * @param endpoint
  * @return
  */
@@ -585,7 +596,7 @@ public class TokenMetadata
         }
     }
 /**
- * ÅĞ¶ÏipÔÚleavingEndpointsÖĞ³öÏÖ¹ıÃ»ÓĞ
+ * åˆ¤æ–­ipåœ¨leavingEndpointsä¸­å‡ºç°è¿‡æ²¡æœ‰
  * @param endpoint
  * @return
  */
@@ -604,7 +615,7 @@ public class TokenMetadata
         }
     }
 /**
- * ÅĞ¶ÏipÔÚmovingEndpointsÖĞ³öÏÖ¹ıÃ»ÓĞ
+ * åˆ¤æ–­ipåœ¨movingEndpointsä¸­å‡ºç°è¿‡æ²¡æœ‰
  * @param endpoint
  * @return
  */
@@ -630,7 +641,7 @@ public class TokenMetadata
         }
     }
 /**
- * ÅĞ¶ÏtokenÔÚrelocatingTokensÖĞ³öÏÖ¹ıÃ»ÓĞ
+ * åˆ¤æ–­tokenåœ¨relocatingTokensä¸­å‡ºç°è¿‡æ²¡æœ‰
  * @param token
  * @return
  */
@@ -670,7 +681,7 @@ public class TokenMetadata
     }
 
     /**
-     * ¿½±´ÍêtokenToEndpointMapºó£¬´ÓĞÂµÄ¶ÔÏóÖĞ½«ÔÚleavingEndpointsÖĞ³öÏÖ¹ıµÄipÉ¾³ı¡£
+     * æ‹·è´å®ŒtokenToEndpointMapåï¼Œä»æ–°çš„å¯¹è±¡ä¸­å°†åœ¨leavingEndpointsä¸­å‡ºç°è¿‡çš„ipåˆ é™¤ã€‚
      * Create a copy of TokenMetadata with tokenToEndpointMap reflecting situation after all
      * current leave operations have finished.
      *
@@ -695,7 +706,7 @@ public class TokenMetadata
     }
 
     /**
-     * Ê×ÏÈ¿½±´Ò»·İtokenToEndpointMap¡£È»ºóÉ¾³ıËùÓĞÔÚleavingEndpointsÖĞµÄip¡£È»ºó½«moving¡¢relocatingµÄip¶¼¸üĞÂµ½Õı³£×´Ì¬ÏÂ£¨·ÅÈëtokenToEndpointMapÖĞ£©
+     * é¦–å…ˆæ‹·è´ä¸€ä»½tokenToEndpointMapã€‚ç„¶ååˆ é™¤æ‰€æœ‰åœ¨leavingEndpointsä¸­çš„ipã€‚ç„¶åå°†movingã€relocatingçš„ipéƒ½æ›´æ–°åˆ°æ­£å¸¸çŠ¶æ€ä¸‹ï¼ˆæ”¾å…¥tokenToEndpointMapä¸­ï¼‰
      * Create a copy of TokenMetadata with tokenToEndpointMap reflecting situation after all
      * current leave, move, and relocate operations have finished.
      *
@@ -727,7 +738,7 @@ public class TokenMetadata
         }
     }
 /**
- * ´ÓtokenToEndpointMapÖĞ»ñÈ¡token¶ÔÓ¦µÄip
+ * ä»tokenToEndpointMapä¸­è·å–tokenå¯¹åº”çš„ip
  * @param token
  * @return
  */
@@ -744,7 +755,7 @@ public class TokenMetadata
         }
     }
 /**
- * ¸ù¾İÃ¿¸ötokenµÃµ½Ò»¸ö<ËûµÄÇ°Õß£¬Ëû>µÄrange·¶Î§
+ * æ ¹æ®æ¯ä¸ªtokenå¾—åˆ°ä¸€ä¸ª<ä»–çš„å‰è€…ï¼Œä»–>çš„rangeèŒƒå›´
  * @param tokens
  * @return
  */
@@ -756,7 +767,7 @@ public class TokenMetadata
         return ranges;
     }
     /**
-     * ¸ù¾İtokenµÃµ½Ò»¸ö<ËûµÄÇ°Õß£¬Ëû>µÄrange·¶Î§
+     * æ ¹æ®tokenå¾—åˆ°ä¸€ä¸ª<ä»–çš„å‰è€…ï¼Œä»–>çš„rangeèŒƒå›´
      * @param tokens
      * @return
      */
@@ -771,7 +782,7 @@ public class TokenMetadata
         return sortedTokens;
     }
 /**
- * ´ÓpendingRangesÖĞµÃµ½¶ÔÓ¦µÄmap¡£Èç¹ûÎª¿Õ£¬ÔòĞÂ½¨Ò»¸ö¿ÕµÄ²¢·ÅÈëpendingRangesÖĞ¡£
+ * ä»pendingRangesä¸­å¾—åˆ°å¯¹åº”çš„mapã€‚å¦‚æœä¸ºç©ºï¼Œåˆ™æ–°å»ºä¸€ä¸ªç©ºçš„å¹¶æ”¾å…¥pendingRangesä¸­ã€‚
  * @param table
  * @return
  */
@@ -788,15 +799,15 @@ public class TokenMetadata
         return map;
     }
 
-    /**´ÓpendingRangesÖĞµÃµ½¶ÔÓ¦µÄmap¡£Èç¹ûÎª¿Õ£¬ÔòĞÂ½¨Ò»¸ö¿ÕµÄ²¢·ÅÈëpendingRangesÖĞ¡£ µ«ÊÇ·µ»ØÖµÊÇÒ»¸ö±ê×¼µÄmap¡£
+    /**ä»pendingRangesä¸­å¾—åˆ°å¯¹åº”çš„mapã€‚å¦‚æœä¸ºç©ºï¼Œåˆ™æ–°å»ºä¸€ä¸ªç©ºçš„å¹¶æ”¾å…¥pendingRangesä¸­ã€‚ ä½†æ˜¯è¿”å›å€¼æ˜¯ä¸€ä¸ªæ ‡å‡†çš„mapã€‚
      *  a mutable map may be returned but caller should not modify it */
     public Map<Range<Token>, Collection<InetAddress>> getPendingRanges(String table)
     {
         return getPendingRangesMM(table).asMap();
     }
 /**
- * ´ÓpendingRangesÖĞµÃµ½¶ÔÓ¦µÄmap¡£Èç¹ûÎª¿Õ£¬ÔòĞÂ½¨Ò»¸ö¿ÕµÄ²¢·ÅÈëpendingRangesÖĞ¡£ 
- * <br>È»ºó´ÓÕâ¸ömapÖĞ£¨keyÎªRange<token>£¬valueÎªip£©£¬»ñÈ¡ipµÈÓÚendpointµÄÄÇĞ©Range<token>¡£
+ * ä»pendingRangesä¸­å¾—åˆ°å¯¹åº”çš„mapã€‚å¦‚æœä¸ºç©ºï¼Œåˆ™æ–°å»ºä¸€ä¸ªç©ºçš„å¹¶æ”¾å…¥pendingRangesä¸­ã€‚ 
+ * <br>ç„¶åä»è¿™ä¸ªmapä¸­ï¼ˆkeyä¸ºRange<token>ï¼Œvalueä¸ºipï¼‰ï¼Œè·å–ipç­‰äºendpointçš„é‚£äº›Range<token>ã€‚
  * @param table
  * @param endpoint
  * @return
@@ -814,7 +825,7 @@ public class TokenMetadata
         return ranges;
     }
 /**
- * ·ÅÈëpendingRangeÖĞÈ¥
+ * æ”¾å…¥pendingRangeä¸­å»
  * @param table
  * @param rangeMap
  */
@@ -823,7 +834,7 @@ public class TokenMetadata
         pendingRanges.put(table, rangeMap);
     }
 /**
- * ¶ş·Ö²éÕÒ·¨È¡Àë¸Ãtoken×î½üµÄÇ°Ò»¸ötoken¡£Èç¹ûtokenÅÅÔÚµÚ0Î»£¬ÔòÈ¡×îºóÒ»¸ö
+ * äºŒåˆ†æŸ¥æ‰¾æ³•å–ç¦»è¯¥tokenæœ€è¿‘çš„å‰ä¸€ä¸ªtokenã€‚å¦‚æœtokenæ’åœ¨ç¬¬0ä½ï¼Œåˆ™å–æœ€åä¸€ä¸ª
  * @param token
  * @return
  */
@@ -835,7 +846,7 @@ public class TokenMetadata
         return (Token) (index == 0 ? tokens.get(tokens.size() - 1) : tokens.get(index - 1));
     }
 /**
- * ¶ş·Ö²éÕÒ·¨È¥Àë¸Ãtoken×î½üµÄºóÒ»¸ötoken¡£Èç¹ûtokenÅÅÔÚ×îÄ©Î²£¬ÔòÈ¡µÚÒ»¸ö¡£
+ * äºŒåˆ†æŸ¥æ‰¾æ³•å»ç¦»è¯¥tokenæœ€è¿‘çš„åä¸€ä¸ªtokenã€‚å¦‚æœtokenæ’åœ¨æœ€æœ«å°¾ï¼Œåˆ™å–ç¬¬ä¸€ä¸ªã€‚
  * @param token
  * @return
  */
@@ -861,7 +872,7 @@ public class TokenMetadata
         }
     }
 /**
- * ·µ»ØendpointToHostIdMapÖĞ³öÏÖµÄËùÓĞip
+ * è¿”å›endpointToHostIdMapä¸­å‡ºç°çš„æ‰€æœ‰ip
  * @return
  */
     public Set<InetAddress> getAllEndpoints()
@@ -917,8 +928,8 @@ public class TokenMetadata
         return relocatingTokens;
     }
 /**
- * ÕÒµ½startËùÔÚµÄÎ»ÖÃ¡£Èç¹ûstart²»´æÔÚ£¬Ôò·µ»ØÀëËû×î½üµÄ×ó±ßµÄÒ»¸ö¡£ Èç¹ûËùÓĞµÄ¶¼±ÈstartĞ¡£¬ÄÇÃ´ÒªÃ´·µ»Ø-1£¨insertMin=true£© £¬ÒªÃ´·µ»Ø0
- * <br>ËùÎ½µÄinsertMin,ÆäÊµÊÇÖ¸µÄ½«À´iterator±éÀúÊ±£¬ÊÇ·ñ°üº¬StorageService.getPartitioner().getMinimumToken()¡£
+ * æ‰¾åˆ°startæ‰€åœ¨çš„ä½ç½®ã€‚å¦‚æœstartä¸å­˜åœ¨ï¼Œåˆ™è¿”å›ç¦»ä»–æœ€è¿‘çš„å·¦è¾¹çš„ä¸€ä¸ªã€‚ å¦‚æœæ‰€æœ‰çš„éƒ½æ¯”startå°ï¼Œé‚£ä¹ˆè¦ä¹ˆè¿”å›-1ï¼ˆinsertMin=trueï¼‰ ï¼Œè¦ä¹ˆè¿”å›0
+ * <br>æ‰€è°“çš„insertMin,å…¶å®æ˜¯æŒ‡çš„å°†æ¥iteratoréå†æ—¶ï¼Œæ˜¯å¦åŒ…å«StorageService.getPartitioner().getMinimumToken()ã€‚
  * @param ring
  * @param start
  * @param insertMin
@@ -928,18 +939,18 @@ public class TokenMetadata
     {
         assert ring.size() > 0;
         // insert the minimum token (at index == -1) if we were asked to include it and it isn't a member of the ring
-        int i = Collections.binarySearch(ring, start);//Èç¹ûËÑË÷¼ü°üº¬ÔÚÁĞ±íÖĞ£¬Ôò·µ»ØËÑË÷¼üµÄË÷Òı£»·ñÔò·µ»Ø (-(²åÈëµã) - 1)¡£²åÈëµã ±»¶¨ÒåÎª½«¼ü²åÈëÁĞ±íµÄÄÇÒ»µã£º¼´µÚÒ»¸ö´óÓÚ´Ë¼üµÄÔªËØË÷Òı£»Èç¹ûÁĞ±íÖĞµÄËùÓĞÔªËØ¶¼Ğ¡ÓÚÖ¸¶¨µÄ¼ü£¬ÔòÎª list.size()¡£×¢Òâ£¬Õâ±£Ö¤ÁËµ±ÇÒ½öµ±´Ë¼ü±»ÕÒµ½Ê±£¬·µ»ØµÄÖµ½« >= 0¡£ 
+        int i = Collections.binarySearch(ring, start);//å¦‚æœæœç´¢é”®åŒ…å«åœ¨åˆ—è¡¨ä¸­ï¼Œåˆ™è¿”å›æœç´¢é”®çš„ç´¢å¼•ï¼›å¦åˆ™è¿”å› (-(æ’å…¥ç‚¹) - 1)ã€‚æ’å…¥ç‚¹ è¢«å®šä¹‰ä¸ºå°†é”®æ’å…¥åˆ—è¡¨çš„é‚£ä¸€ç‚¹ï¼šå³ç¬¬ä¸€ä¸ªå¤§äºæ­¤é”®çš„å…ƒç´ ç´¢å¼•ï¼›å¦‚æœåˆ—è¡¨ä¸­çš„æ‰€æœ‰å…ƒç´ éƒ½å°äºæŒ‡å®šçš„é”®ï¼Œåˆ™ä¸º list.size()ã€‚æ³¨æ„ï¼Œè¿™ä¿è¯äº†å½“ä¸”ä»…å½“æ­¤é”®è¢«æ‰¾åˆ°æ—¶ï¼Œè¿”å›çš„å€¼å°† >= 0ã€‚ 
         if (i < 0)
         {
-            i = (i + 1) * (-1);//±íÊ¾×î½üµÄ±ÈstartĞ¡µÄÄÇ¸ötokenµÄÎ»ÖÃ
-            if (i >= ring.size())//Èç¹ûËùÓĞµÄ¶¼±ÈstartĞ¡
+            i = (i + 1) * (-1);//è¡¨ç¤ºæœ€è¿‘çš„æ¯”startå°çš„é‚£ä¸ªtokençš„ä½ç½®
+            if (i >= ring.size())//å¦‚æœæ‰€æœ‰çš„éƒ½æ¯”startå°
                 i = insertMin ? -1 : 0;
         }
         return i;
     }
 /**
- * ÕÒµ½startËùÔÚµÄÎ»ÖÃµÄtoken¡£Èç¹ûstart²»´æÔÚ£¬Ôò·µ»ØÀëËû×î½üµÄ×ó±ßµÄÒ»¸ö¡£ Èç¹ûËùÓĞµÄ¶¼±ÈstartĞ¡£¬ÄÇÃ´·µ»Ø0
- * È»ºóµÃµ½ring.get(Î»ÖÃ)¡£
+ * æ‰¾åˆ°startæ‰€åœ¨çš„ä½ç½®çš„tokenã€‚å¦‚æœstartä¸å­˜åœ¨ï¼Œåˆ™è¿”å›ç¦»ä»–æœ€è¿‘çš„å·¦è¾¹çš„ä¸€ä¸ªã€‚ å¦‚æœæ‰€æœ‰çš„éƒ½æ¯”startå°ï¼Œé‚£ä¹ˆè¿”å›0
+ * ç„¶åå¾—åˆ°ring.get(ä½ç½®)ã€‚
  * @param ring
  * @param start
  * @return
@@ -950,7 +961,7 @@ public class TokenMetadata
     }
 
     /**
-     * ´Óstart¿ªÊ¼£¬µÃµ½Ò»¸öÄÜ×ªÒ»È¦µÄÖ¸Õë¡£
+     * ä»startå¼€å§‹ï¼Œå¾—åˆ°ä¸€ä¸ªèƒ½è½¬ä¸€åœˆçš„æŒ‡é’ˆã€‚
      * iterator over the Tokens in the given ring, starting with the token for the node owning start
      * (which does not have to be a Token in the ring)
      * @param includeMin True if the minimum token should be returned in the ring even if it has no owner.
@@ -1087,7 +1098,7 @@ public class TokenMetadata
         return sb.toString();
     }
 /**
- * Í¨Öªsubscribers£¬Çå¿Õtoken-endpointµÄ»º´æ¡£
+ * é€šçŸ¥subscribersï¼Œæ¸…ç©ºtoken-endpointçš„ç¼“å­˜ã€‚
  */
     public void invalidateCaches()
     {
@@ -1097,7 +1108,7 @@ public class TokenMetadata
         }
     }
 /**
- * Ìí¼Óµ½subscribersÖĞ£¬Ä¿Ç°·¢ÏÖÓĞstrategy½øĞĞÁË×¢²á
+ * æ·»åŠ åˆ°subscribersä¸­ï¼Œç›®å‰å‘ç°æœ‰strategyè¿›è¡Œäº†æ³¨å†Œï¼ˆåœ¨æ–°ç”Ÿæˆä¸€ä¸ªstrategyçš„æ—¶å€™ å°±è¿›è¡Œæ³¨å†Œ ï¼‰
  * @param subscriber
  */
     public void register(AbstractReplicationStrategy subscriber)
@@ -1105,7 +1116,7 @@ public class TokenMetadata
         subscribers.add(subscriber);
     }
 /**
- * ´ÓsubscriberÖĞÒÆ³ı
+ * ä»subscriberä¸­ç§»é™¤
  * @param subscriber
  */
     public void unregister(AbstractReplicationStrategy subscriber)
@@ -1113,7 +1124,7 @@ public class TokenMetadata
         subscribers.remove(subscriber);
     }
 /**
- * ¸ù¾İtable´ÓpendingRangesÖĞÕÒµ½ËØÓĞÏà¹ØµÄrange-ipsµÄmap¡£È»ºóÅĞ¶ÏÄÄ¸örange°üº¬Ö¸¶¨µÄtoken£¬¾Í·µ»ØÕâĞ©ip¡£
+ * æ ¹æ®tableä»pendingRangesä¸­æ‰¾åˆ°ç´ æœ‰ç›¸å…³çš„range-ipsçš„mapã€‚ç„¶ååˆ¤æ–­å“ªä¸ªrangeåŒ…å«æŒ‡å®šçš„tokenï¼Œå°±è¿”å›è¿™äº›ipã€‚
  * @param token
  * @param table
  * @return
@@ -1135,7 +1146,7 @@ public class TokenMetadata
     }
 
     /** 
-     * µÃµ½pendingÖĞËùÓĞµÄºÍtokenÏà¹ØµÄipÒÔ¼°naturalEndpoints¡£
+     * å¾—åˆ°pendingä¸­æ‰€æœ‰çš„å’Œtokenç›¸å…³çš„ipä»¥åŠnaturalEndpointsã€‚
      * @deprecated retained for benefit of old tests
      */
     public Collection<InetAddress> getWriteEndpoints(Token token, String table, Collection<InetAddress> naturalEndpoints)

@@ -28,6 +28,7 @@ import org.apache.cassandra.utils.Pair;
 import static org.apache.cassandra.io.sstable.Component.separator;
 
 /**
+ * 翻译：sstable有keyspace和cf描述。还有代数，越高的代数，说明包含的数据越新。还有一个版本字符串
  * A SSTable is described by the keyspace and column family it contains data
  * for, a generation (where higher generations contain more recent data) and
  * an alphabetic version string.

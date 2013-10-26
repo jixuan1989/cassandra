@@ -375,7 +375,7 @@ public class Range<T extends RingPosition> extends AbstractBounds<T> implements 
         ret.add(right.toString());
         return ret;
     }
-
+    /**左边大于等于右边（成环）*/
     public boolean isWrapAround()
     {
         return isWrapAround(left, right);

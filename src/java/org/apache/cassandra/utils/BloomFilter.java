@@ -55,7 +55,7 @@ public abstract class BloomFilter implements IFilter
         }
         return result;
     }
-
+    /**根据key计算其布隆过滤器中的1的位置，并将bitset中对应位置赋一*/
     public void add(ByteBuffer key)
     {
         for (long bucketIndex : getHashBuckets(key))
@@ -63,7 +63,7 @@ public abstract class BloomFilter implements IFilter
             bitset.set(bucketIndex);
         }
     }
-
+    /**判断key在布隆过滤器中是否存在*/
     public boolean isPresent(ByteBuffer key)
     {
       for (long bucketIndex : getHashBuckets(key))

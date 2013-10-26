@@ -354,7 +354,7 @@ public class FBUtilities
             return "debug version";
         }
     }
-
+    /**毫秒计算的纳秒（毫秒*1000）*/
     public static long timestampMicros()
     {
         // we use microsecond resolution for compatibility with other client libraries, even though

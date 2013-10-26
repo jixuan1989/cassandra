@@ -42,6 +42,9 @@ import org.apache.cassandra.utils.HeapAllocator;
 import org.apache.cassandra.utils.Pair;
 
 /**
+ * 译：这个类建立在顺序文件上层。它按序存储数据到磁盘上。但是排序交给了应用层完成。 这个类希望给他的key是按序到达的
+ * <br>一个单独的索引文件也会被维护。包含key和他们在sstable中的offset。当sstable被打开时，每1/indexInterval key被读入内存中。
+ * <br>每个sstable中海油一个布隆过滤器。
  * This class is built on top of the SequenceFile. It stores
  * data on disk in sorted fashion. However the sorting is upto
  * the application. This class expects keys to be handed to it
