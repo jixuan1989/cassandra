@@ -119,6 +119,7 @@ public class CommitLogAllocator
     /**
      * Fetches an empty segment file.
      * 从可用的segment队列中获取一个可用的segment返回，如果无可用队列，则阻塞
+     * 当Segment的总量超过配置文件中定义的commitlog_total_space_in_mb时，强制将激活队列的第一个Segment刷到memTable中
      * @return the next writable segment
      */
     public CommitLogSegment fetchSegment()
@@ -270,7 +271,9 @@ public class CommitLogAllocator
 
     /**
      * Check to see if the speculative current size exceeds the cap.
-     *
+     * commitlog_total_space_in_mb如果未在配置文件中定义，则根据如下方式确定
+     * 64位系统：1024MB
+     * 32位系统：64MB
      * @return true if cap is exceeded
      */
     private boolean isCapExceeded()

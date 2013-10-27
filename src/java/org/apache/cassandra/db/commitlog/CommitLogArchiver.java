@@ -41,6 +41,9 @@ import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Strings;
 
+/**
+ * 主要负责commitLog文件的压缩工作
+ */
 public class CommitLogArchiver
 {
     private static final Logger logger = LoggerFactory.getLogger(CommitLogArchiver.class);
@@ -103,6 +106,12 @@ public class CommitLogArchiver
         }
     }
 
+    /**
+     * 检查是否需要压缩
+     * 因为commitlog_archiving.properties中未定义archive_command属性，因此不需要压缩
+     * @param path commitLogSegment对应文件的path
+     * @param name commitLogSegment对应文件的name
+     */
     public void maybeArchive(final String path, final String name)
     {
         if (Strings.isNullOrEmpty(archiveCommand))
