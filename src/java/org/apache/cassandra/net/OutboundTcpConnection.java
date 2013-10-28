@@ -252,11 +252,9 @@ public class OutboundTcpConnection extends Thread
                         Tracing.instance().stopNonLocal(state);
                 }
             }
-            //向日志中记录入队时间
-            StalenessLogger.messageOutToLog(qm.message, qm.id, qm.timestamp, socket.getInetAddress(), StalenessLogger.CDR_NODE_ENQUEUE);
             write(qm.message, qm.id, qm.timestamp, out, targetVersion);
             //向日志中记录发送完毕的时间
-            StalenessLogger.messageOutToLog(qm.message, qm.id, System.currentTimeMillis(), socket.getInetAddress(), StalenessLogger.CDR_NODE_SEND);
+            StalenessLogger.messageOutToLog(qm.message, qm.id, StalenessLogger.getCurrentTime(), socket.getInetAddress(), StalenessLogger.CDR_NODE_SEND);
             completed++;
             if (active.peek() == null)
             {
@@ -550,6 +548,8 @@ public class OutboundTcpConnection extends Thread
 
         QueuedMessage(MessageOut<?> message, String id)
         {
+        	//向日志中记录入队时间
+            StalenessLogger.messageOutToLog(message, id, StalenessLogger.getCurrentTime(), null, StalenessLogger.CDR_NODE_ENQUEUE);
             this.message = message;
             this.id = id;
             this.timestamp = System.currentTimeMillis();

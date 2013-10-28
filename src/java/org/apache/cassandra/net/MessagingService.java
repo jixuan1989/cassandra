@@ -763,7 +763,7 @@ public final class MessagingService implements MessagingServiceMBean
             }
         }
         //向日志中记录入队的时间
-    	StalenessLogger.messageInToLog(message, id, System.currentTimeMillis(), StalenessLogger.SUB_NODE_ENQUEUE);
+    	StalenessLogger.messageInToLog(message, id, StalenessLogger.getCurrentTime(), StalenessLogger.SUB_NODE_ENQUEUE);
         stage.execute(runnable, state);
     }
     /**

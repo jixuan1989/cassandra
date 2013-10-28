@@ -668,15 +668,15 @@ public class StorageProxy implements StorageProxyMBean
         {
             public void runMayThrow() throws IOException
             {
-            	long ts = System.currentTimeMillis();
+            	long ts = StalenessLogger.getCurrentTime();
             	InetAddress localAddress = FBUtilities.getBroadcastAddress();
             	StalenessLogger.coordinatorLocalApplyToLog(rm, ts, localAddress, StalenessLogger.CDR_NODE_APPLY_START);
             	rm.apply();
-                StalenessLogger.coordinatorLocalApplyToLog(rm, System.currentTimeMillis(), localAddress, StalenessLogger.CDR_NODE_APPLY_FINISH);
+                StalenessLogger.coordinatorLocalApplyToLog(rm, StalenessLogger.getCurrentTime(), localAddress, StalenessLogger.CDR_NODE_APPLY_FINISH);
                 responseHandler.response(null);
             }
         };
-        StalenessLogger.coordinatorLocalApplyToLog(rm, System.currentTimeMillis(), FBUtilities.getBroadcastAddress(), StalenessLogger.CDR_NODE_APPLY_ENQUEUE);
+        StalenessLogger.coordinatorLocalApplyToLog(rm, StalenessLogger.getCurrentTime(), FBUtilities.getBroadcastAddress(), StalenessLogger.CDR_NODE_APPLY_ENQUEUE);
         StageManager.getStage(Stage.MUTATION).execute(runnable);
     }
 

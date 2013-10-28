@@ -205,7 +205,7 @@ public class IncomingTcpConnection extends Thread
     {
         if (version < MessagingService.VERSION_12)
             input.readInt(); // size of entire message. in 1.0+ this is just a placeholder
-        long startRecvTs = System.currentTimeMillis();
+        long startRecvTs = StalenessLogger.getCurrentTime();
         String id = input.readUTF();
         long timestamp = System.currentTimeMillis();
         if (version >= MessagingService.VERSION_12)

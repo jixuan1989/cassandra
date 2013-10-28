@@ -76,9 +76,9 @@ public class MessageDeliveryTask implements Runnable
         	logger.debug("----------verbHandler："+verbHandler.toString());
         }
         //向日志中记录开始执行的时间
-    	StalenessLogger.messageInToLog(message, id, System.currentTimeMillis(), StalenessLogger.SUB_NODE_APPLY);
+    	StalenessLogger.messageInToLog(message, id, StalenessLogger.getCurrentTime(), StalenessLogger.SUB_NODE_APPLY);
         verbHandler.doVerb(message, id);
         //向日志中记录执行完毕的时间
-    	StalenessLogger.messageInToLog(message, id, System.currentTimeMillis(), StalenessLogger.SUB_NODE_FINISH);
+    	StalenessLogger.messageInToLog(message, id, StalenessLogger.getCurrentTime(), StalenessLogger.SUB_NODE_FINISH);
     }
 }

@@ -32,7 +32,8 @@ public class StalenessLogger {
 			StringBuffer sb = new StringBuffer();
 			sb.append(rm.getRowMutationId() + "\t");
 			sb.append(mid + "\t");
-			sb.append(dest.getHostAddress() + "\t");
+			sb.append(dest == null ? "null" : dest.getHostAddress());
+			sb.append('\t');
 			sb.append(timeType + "\t");
 			sb.append(timeStamp + "\t");
 			sb.append(rm.getTable() + "\t");
@@ -70,6 +71,10 @@ public class StalenessLogger {
 				sb.append(ByteBufferUtil.bytesToHex(rm.key()));
 				logger.info(sb.toString());
 		}
+	}
+	
+	public static long getCurrentTime() {
+		return System.nanoTime();
 	}
 	
 }
