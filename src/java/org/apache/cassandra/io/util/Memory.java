@@ -22,6 +22,7 @@ import sun.misc.Unsafe;
 import java.lang.reflect.Field;
 
 /**
+ * 这个一个内存类（sun.misc.Unsafe类,似乎是一个很强大的类，能提供一些底层操作）。可以申请一段内存，（必须手动）释放一段内存。将long、byte数据写入内存的某一位置，读写某一位置的定长bytes。
  * An off-heap region of memory that must be manually free'd when no longer needed.
  */
 public class Memory

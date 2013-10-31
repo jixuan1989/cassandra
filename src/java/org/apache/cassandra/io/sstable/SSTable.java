@@ -86,7 +86,7 @@ public abstract class SSTable
     protected final Set<Component> components;
     public final CFMetaData metadata;
     public final IPartitioner partitioner;
-    public final boolean compression;
+    public final boolean compression;//根据是否有CompressionInfo.db这个文件来判断。
 
     public DecoratedKey first;
     public DecoratedKey last;
@@ -114,7 +114,9 @@ public abstract class SSTable
         this.metadata = metadata;
         this.partitioner = partitioner;
     }
-
+    /**
+     * 根据first的位置进行比较，第一个<=>第二个：-0+
+     */
     public static final Comparator<SSTableReader> sstableComparator = new Comparator<SSTableReader>()
     {
         public int compare(SSTableReader o1, SSTableReader o2)
@@ -126,6 +128,7 @@ public abstract class SSTable
     public static final Ordering<SSTableReader> sstableOrdering = Ordering.from(sstableComparator);
 
     /**
+     * //TODO 这个方法有没有问题？？components中表明如果有DATA文件的话，则删除文件，但是并没有移除components中的DATA标志。因此岂不是一直有DATA标志？
      * We use a ReferenceQueue to manage deleting files that have been compacted
      * and for which no more SSTable references exist.  But this is not guaranteed
      * to run for each such file because of the semantics of the JVM gc.  So,
@@ -161,6 +164,7 @@ public abstract class SSTable
     /**
      * If the given @param key occupies only part of a larger buffer, allocate a new buffer that is only
      * as large as necessary.
+     * 不太懂
      */
     public static DecoratedKey getMinimalKey(DecoratedKey key)
     {

@@ -525,33 +525,39 @@ public class DataTracker
             SSTableIntervalTree intervalTree = buildIntervalTree(newSSTables);
             return new View(memtable, newPending, newSSTables, compacting, intervalTree);
         }
-
+        
         public View replace(Collection<SSTableReader> oldSSTables, Iterable<SSTableReader> replacements)
         {
             Set<SSTableReader> newSSTables = newSSTables(oldSSTables, replacements);
             SSTableIntervalTree intervalTree = buildIntervalTree(newSSTables);
             return new View(memtable, memtablesPendingFlush, newSSTables, compacting, intervalTree);
         }
-
+        /**在compacting中并加上tomark的，生成新view*/
         public View markCompacting(Collection<SSTableReader> tomark)
         {
             Set<SSTableReader> compactingNew = ImmutableSet.<SSTableReader>builder().addAll(compacting).addAll(tomark).build();
             return new View(memtable, memtablesPendingFlush, sstables, compactingNew, intervalTree);
         }
-
+        /**在compacting中而不在tounmark的，生成一个新view*/
         public View unmarkCompacting(Collection<SSTableReader> tounmark)
         {
             Set<SSTableReader> compactingNew = ImmutableSet.copyOf(Sets.difference(compacting, ImmutableSet.copyOf(tounmark)));
             return new View(memtable, memtablesPendingFlush, sstables, compactingNew, intervalTree);
         }
-
+        /**
+         * 将sstable和newSStable的放到一个set中返回*/
         private Set<SSTableReader> newSSTables(SSTableReader newSSTable)
         {
             assert newSSTable != null;
             // not performance-sensitive, don't obsess over doing a selection merge here
             return newSSTables(Collections.<SSTableReader>emptyList(), Collections.singletonList(newSSTable));
         }
-
+        /**
+         * 将在sstable中而不在oldsstable中的，以及replacements的放到一个set中返回。
+         * @param oldSSTables
+         * @param replacements
+         * @return
+         */
         private Set<SSTableReader> newSSTables(Collection<SSTableReader> oldSSTables, Iterable<SSTableReader> replacements)
         {
             ImmutableSet<SSTableReader> oldSet = ImmutableSet.copyOf(oldSSTables);
