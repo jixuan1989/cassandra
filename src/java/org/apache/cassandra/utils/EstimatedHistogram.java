@@ -47,7 +47,7 @@ public class EstimatedHistogram
 
     // buckets is one element longer than bucketOffsets -- the last element is values greater than the last offset
     final AtomicLongArray buckets;
-
+    /**创建一个90大小的直方图*/
     public EstimatedHistogram()
     {
         this(90);
@@ -65,7 +65,7 @@ public class EstimatedHistogram
         bucketOffsets = offsets;
         buckets = new AtomicLongArray(bucketData);
     }
-
+    /**将bucketOffsets初始化为size大小的数据，并对其值进行初始化，初始化方法是b[0]=1,b[i]=Math.round(b[i-1]*1.2),如果size=90，则b[89]=25,109,160*/
     private void makeOffsets(int size)
     {
         bucketOffsets = new long[size];
@@ -90,6 +90,7 @@ public class EstimatedHistogram
     }
 
     /**
+     * 给偏移编号大于等于n的第一个桶进行加1操作
      * Increments the count of the bucket closest to n, rounding UP.
      * @param n
      */
@@ -106,6 +107,7 @@ public class EstimatedHistogram
     }
 
     /**
+     * 获得第n个桶的值
      * @return the count in the given bucket
      */
     long get(int bucket)
@@ -131,6 +133,7 @@ public class EstimatedHistogram
     }
 
     /**
+     * 返回第一个大于0的桶的偏移编号+1
      * @return the smallest value that could have been added to this histogram
      */
     public long min()
