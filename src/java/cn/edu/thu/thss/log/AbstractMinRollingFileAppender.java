@@ -7,7 +7,6 @@ import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.GregorianCalendar;
-import java.util.TimeZone;
 
 import org.apache.log4j.FileAppender;
 import org.apache.log4j.Layout;
@@ -20,7 +19,7 @@ import org.apache.log4j.spi.LoggingEvent;
  */
 public abstract class AbstractMinRollingFileAppender extends FileAppender {
 	
-	private final String DATE_PATTERN = "'.'yyyy-MM-dd-HH-mm";
+	private static final String DATE_PATTERN = "'.'yyyy-MM-dd-HH-mm";
 
 	/**
 	 * The log file will be renamed to the value of the scheduledFilename
@@ -37,15 +36,13 @@ public abstract class AbstractMinRollingFileAppender extends FileAppender {
 	 */
 	private long nextCheck = System.currentTimeMillis() - 1;
 	
+	private Date now = new Date();
 
-	Date now = new Date();
+	private SimpleDateFormat sdf;
 
-	SimpleDateFormat sdf;
+	private GregorianCalendar rc = new GregorianCalendar();
 
-	GregorianCalendar rc = new GregorianCalendar();
-
-	// The gmtTimeZone is used only in computeCheckPeriod() method.
-	static final TimeZone gmtTimeZone = TimeZone.getTimeZone("GMT");
+	
 
 	/**
 	 * The default constructor does nothing.
@@ -167,12 +164,12 @@ public abstract class AbstractMinRollingFileAppender extends FileAppender {
 	 * @param cl The relative Calendar
 	 * @return The previous rolling time point in minute
 	 */
-	abstract int getPrevRollMinute(Calendar cl);
+	protected abstract int getPrevRollMinute(Calendar cl);
 	
 	/**
 	 * Return the next rolling time point
 	 * @param cl The relative Calendar
 	 * @return The next rolling time point
 	 */
-	abstract long getNextCheckMillis(Calendar cl);
+	protected abstract long getNextCheckMillis(Calendar cl);
 }

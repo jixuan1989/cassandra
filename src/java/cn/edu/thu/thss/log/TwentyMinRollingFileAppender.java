@@ -16,7 +16,7 @@ public class TwentyMinRollingFileAppender extends AbstractMinRollingFileAppender
 	 * 			and <b>40</b> if <b>[40, 59]</b>
 	 */
 	@Override
-	int getPrevRollMinute(Calendar cl) {
+	protected int getPrevRollMinute(Calendar cl) {
 		int minute = cl.get(Calendar.MINUTE);
 		int rollMin = 20;
 		if (minute < 20) {
@@ -28,7 +28,7 @@ public class TwentyMinRollingFileAppender extends AbstractMinRollingFileAppender
 	}
 
 	@Override
-	public long getNextCheckMillis(Calendar cl) {
+	protected long getNextCheckMillis(Calendar cl) {
 		cl.set(Calendar.SECOND, 0);
 		cl.set(Calendar.MILLISECOND, 0);
 		int minute = cl.get(Calendar.MINUTE);
