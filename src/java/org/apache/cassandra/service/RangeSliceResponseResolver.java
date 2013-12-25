@@ -57,7 +57,9 @@ public class RangeSliceResponseResolver implements IResponseResolver<RangeSliceR
     {
         this.sources = endpoints;
     }
-
+    /**
+     * 从第一个responses中拿出数据。没有阻塞行为。
+     */
     public List<Row> getData()
     {
         MessageIn<RangeSliceReply> response = responses.iterator().next();

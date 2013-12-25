@@ -68,7 +68,7 @@ public abstract class AbstractEndpointSnitch implements IEndpointSnitch
         // faster than 1 query involving remote ones
         boolean mergedHasRemote = hasRemoteNode(merged);
         return mergedHasRemote
-             ? hasRemoteNode(l1) || hasRemoteNode(l2)
+             ? hasRemoteNode(l1) || hasRemoteNode(l2) // 一个remote和一个local时，此处允许合并。但感觉应该不允许更合理。
              : true;
     }
 

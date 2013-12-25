@@ -1203,10 +1203,11 @@ public class StorageProxy implements StorageProxyMBean
                                                                   command.maxResults,
                                                                   command.countCQL3Rows,
                                                                   command.isPaging);
-
+                //hxd:一个 range的 merge 完毕
                 // collect replies and resolve according to consistency level
                 RangeSliceResponseResolver resolver = new RangeSliceResponseResolver(nodeCmd.keyspace);
                 ReadCallback<RangeSliceReply, Iterable<Row>> handler = new ReadCallback(resolver, consistency_level, nodeCmd, filteredEndpoints);
+                //生成handler后就开始计时。
                 handler.assureSufficientLiveNodes();
                 resolver.setSources(filteredEndpoints);
                 if (filteredEndpoints.size() == 1
@@ -1224,10 +1225,10 @@ public class StorageProxy implements StorageProxyMBean
                         MessagingService.instance().sendRR(message, endpoint, handler);
                     }
                 }
-
+                //发送读任务消息完毕.
                 try
                 {
-                    for (Row row : handler.get())
+                    for (Row row : handler.get())//此处进入等待状态
                     {
                         rows.add(row);
                         if (nodeCmd.countCQL3Rows)
