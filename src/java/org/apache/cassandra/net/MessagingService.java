@@ -331,7 +331,7 @@ public final class MessagingService implements MessagingServiceMBean
                 maybeAddLatency(expiredCallbackInfo.callback, expiredCallbackInfo.target, pair.right.timeout);//还要理解。。。
                 ConnectionMetrics.totalTimeouts.mark();//增加超时次数
                 getConnectionPool(expiredCallbackInfo.target).incrementTimeout();//对应的out连接增加超时次数
-                logger.debug("------apply timeoutReporter：{},{}",expiredCallbackInfo.callback.toString(),expiredCallbackInfo.sentMessage.toString());
+               // logger.debug("------apply timeoutReporter：{},{}",expiredCallbackInfo.callback.toString(),expiredCallbackInfo.sentMessage.toString());
                 if (expiredCallbackInfo.shouldHint())//如果应该hint（消息不空，对方机器当机时间没超过最大hint时间）
                 {
                     assert expiredCallbackInfo.sentMessage != null;
@@ -548,7 +548,7 @@ public final class MessagingService implements MessagingServiceMBean
     {
         String messageId = nextId();
         CallbackInfo previous;
-        logger.debug("------put callback:||{}",cb);
+        //logger.debug("------put callback:||{}",cb);
         // If HH is enabled and this is a mutation message => store the message to track for potential hints.
         if (DatabaseDescriptor.hintedHandoffEnabled() && message.verb == Verb.MUTATION)
             previous = callbacks.put(messageId, new CallbackInfo(to, cb, message, callbackDeserializers.get(message.verb)), timeout);
@@ -768,7 +768,7 @@ public final class MessagingService implements MessagingServiceMBean
      * @return
      */
     public void setCallbackForTests(String messageId, CallbackInfo callback)
-    {	logger.debug("------put callback:{}||{}",callback,callback.callback);
+    {	//logger.debug("------put callback:{}||{}",callback,callback.callback);
         callbacks.put(messageId, callback);
     }
 /**

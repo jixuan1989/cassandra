@@ -69,8 +69,8 @@ public class MessageDeliveryTask implements Runnable
             return;		
         }
         if(verb!=Verb.GOSSIP_DIGEST_ACK &&verb!=Verb.GOSSIP_DIGEST_ACK2&& verb!=Verb.GOSSIP_DIGEST_SYN){
-        	logger.debug("----------verbHandler type："+verbHandler.getClass().toString());
-        	logger.debug("----------verbHandler："+verbHandler.toString());
+        	//logger.debug("----------verbHandler type："+verbHandler.getClass().toString());
+        	//logger.debug("----------verbHandler："+verbHandler.toString());
         }
         verbHandler.doVerb(message, id);
     }
