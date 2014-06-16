@@ -61,17 +61,17 @@ public abstract class TypeSizes
         }
         return utflen;
     }
-
+    /**返回value中的剩余长度，以及该长度这个short int型的长度 之和**/
     public int sizeofWithShortLength(ByteBuffer value)
     {
         return sizeof((short) value.remaining()) + value.remaining();
     }
-
+    /**返回value中的剩余长度，以及该长度这个int型的长度 之和**/
     public int sizeofWithLength(ByteBuffer value)
     {
         return sizeof(value.remaining()) + value.remaining();
     }
-
+    /**返回各种数据类型标准的大小**/
     public static class NativeDBTypeSizes extends TypeSizes
     {
         public int sizeof(boolean value)
@@ -99,21 +99,21 @@ public abstract class TypeSizes
             return UUID_SIZE;
         }
     }
-
+/**尚未搞清楚是如何encode的。 **/
     public static class VIntEncodedTypeSizes extends TypeSizes
     {
         private static final int BOOL_SIZE = 1;
 
         public int sizeofVInt(long i)
         {
-            if (i >= -112 && i <= 127)
+            if (i >= -112 && i <= 127)//112是一个很神奇的数。不明觉厉 。其二进制形式为01110000
                 return 1;
 
             int size = 0;
             int len = -112;
             if (i < 0)
             {
-                i ^= -1L; // take one's complement'
+                i ^= -1L; // take one's complement' 得到反码（正数不变，负数变正数然后-1）
                 len = -120;
             }
             long tmp = i;
@@ -122,8 +122,8 @@ public abstract class TypeSizes
                 tmp = tmp >> 8;
                 len--;
             }
-            size++;
-            len = (len < -120) ? -(len + 120) : -(len + 112);
+            size++;//到这一步为止，size始终等于1嘛。。。。
+            len = (len < -120) ? -(len + 120) : -(len + 112);//当i为负数是，走前面，i为正数走后面
             size += len;
             return size;
         }

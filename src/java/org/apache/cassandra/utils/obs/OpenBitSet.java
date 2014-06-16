@@ -152,7 +152,7 @@ public class OpenBitSet implements IBitSet
   }
 
   /**
-   * //TODO 如果index mod 64 =63.设index /64= k. 那么(k*64+1,k*64+63)的get都为true了啊、、、
+   * 
    * Sets the bit at the specified index.
    * The index should be less than the OpenBitSet size.
    */
@@ -391,11 +391,11 @@ public class OpenBitSet implements IBitSet
   public void close() throws IOException {
     // noop, let GC do the cleanup.
   }
-
+  /*只序列化了总量，没序列化高维和低维的大小。。。*/
   public void serialize(DataOutput dos) throws IOException {
-    int bitLength = getNumWords();
-    int pageSize = getPageSize();
-    int pageCount = getPageCount();
+    int bitLength = getNumWords();//bitsets两维的总量。
+    int pageSize = getPageSize();//bitsets低维大小，默认4096
+    int pageCount = getPageCount();//bitsets高维大小
 
     dos.writeInt(bitLength);
     for (int p = 0; p < pageCount; p++) {

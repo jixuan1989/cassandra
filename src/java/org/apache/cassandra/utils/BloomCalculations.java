@@ -167,7 +167,7 @@ class BloomCalculations {
         return new BloomSpecification(K, bucketsPerElement);
     }
 
-    /**
+    /** 这个最大是为了确保将来计算出来的bitset长度不要超过Long.MAX_VALUE
      * Calculates the maximum number of buckets per element that this implementation
      * can support.  Crucially, it will lower the bucket count if necessary to meet
      * BitSet's size restrictions.
