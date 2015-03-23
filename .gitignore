@@ -8,4 +8,6 @@ src/gen-java/
 *.class
 test/conf/cassandra.yaml
 .settings/*
-data/
+data/*
+#pylib/
+#*.jar

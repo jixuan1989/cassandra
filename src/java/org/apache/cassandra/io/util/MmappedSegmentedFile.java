@@ -131,7 +131,7 @@ public class MmappedSegmentedFile extends SegmentedFile
             boundaries = new ArrayList<Long>();
             boundaries.add(0L);
         }
-
+        /**添加segment的起始位置到bounderies中， 如果boundary到当前起始位置的大小合适，就扩展原有的一段即可；如果不够大，那么生成新的segment；如果生成segment之后，发现提供的boundary还是太大了，我们就再加一个。。（略奇怪，这么一来并没解决太大的问题）*/
         public void addPotentialBoundary(long boundary)
         {
             if (boundary - currentStart <= MAX_SEGMENT_SIZE)
@@ -157,7 +157,7 @@ public class MmappedSegmentedFile extends SegmentedFile
                 currentSize = 0;
             }
         }
-
+        /**添加完全部的potential之后，添加一个结尾进入bounderies（就是文件长度）*/
         public SegmentedFile complete(String path)
         {
             long length = new File(path).length();
@@ -167,7 +167,7 @@ public class MmappedSegmentedFile extends SegmentedFile
             // create the segments
             return new MmappedSegmentedFile(path, length, createSegments(path));
         }
-
+        /**根据potential添加的各个bounderies 作为segment的起始位置，创建一个个MappedByteBuffer**/
         private Segment[] createSegments(String path)
         {
             int segcount = boundaries.size() - 1;

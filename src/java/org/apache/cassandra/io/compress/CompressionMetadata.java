@@ -42,7 +42,7 @@ public class CompressionMetadata
 {
     public final long dataLength;
     public final long compressedFileLength;
-    private final Memory chunkOffsets;
+    private final Memory chunkOffsets;//记录所有的chunk的起始位置的。
     public final String indexFilePath;
     public final CompressionParameters parameters;
 

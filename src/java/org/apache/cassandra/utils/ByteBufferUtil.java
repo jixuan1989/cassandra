@@ -371,7 +371,7 @@ public class ByteBufferUtil
         return ByteBufferUtil.read(in, readShortLength(in));
     }
 
-    /**
+    /**读取两个字节作为无符号整数（0-65535），然后跳过这么多字节
      * @param in data input
      * @return null
      * @throws IOException if an I/O error occurs.
