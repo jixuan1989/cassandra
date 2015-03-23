@@ -84,7 +84,7 @@ public class StreamingHistogram
         {
             bin.put(p, m);
             // if bin size exceeds maximum bin size then trim down to max size
-            while (bin.size() > maxBinSize)
+            while (bin.size() > maxBinSize)// hxd: why use loop here?
             {
                 // find points p1, p2 which have smallest difference
                 Iterator<Double> keys = bin.keySet().iterator();

@@ -134,7 +134,7 @@ public class SequentialWriter extends OutputStream
         }
     }
 
-    /*
+    /** 要么写length，要么写buffer数组剩下的长度 。（也就是如果buffer数组已经写不下了，那刷到磁盘上，如果能写下，接着写）
      * Write at most "length" bytes from "b" starting at position "offset", and
      * return the number of bytes written. caller is responsible for setting
      * isDirty.
@@ -214,14 +214,14 @@ public class SequentialWriter extends OutputStream
     {
         if (isDirty)
         {
-            flushData();
+            flushData();//写数据
 
             if (trickleFsync)
             {
                 bytesSinceTrickleFsync += validBufferBytes;
                 if (bytesSinceTrickleFsync >= trickleFsyncByteInterval)
                 {
-                    syncDataOnlyInternal();
+                    syncDataOnlyInternal();//强制等待真的写到磁盘上了
                     bytesSinceTrickleFsync = 0;
                 }
             }
@@ -302,7 +302,7 @@ public class SequentialWriter extends OutputStream
     {
         return filePath;
     }
-
+    /***写数据（可能强制等待刷到磁盘上，可能跳过cache？），重定位bufferOffset**/
     protected void reBuffer()
     {
         flushInternal();

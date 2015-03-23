@@ -48,7 +48,7 @@ public class CounterId implements Comparable<CounterId>
     {
         return LocalIds.instance;
     }
-
+    /**返回本地记录的 最新的那个id**/
     public static CounterId getLocalId()
     {
         return localIds().current.get();
@@ -63,7 +63,7 @@ public class CounterId implements Comparable<CounterId>
     {
         renewLocalId(FBUtilities.timestampMicros());
     }
-
+    /**生成新的id并写入系统表，将原有id放入历史中。注意该方法有synchronized关键字*/
     public static synchronized void renewLocalId(long now)
     {
         localIds().renewCurrent(now);
@@ -114,7 +114,7 @@ public class CounterId implements Comparable<CounterId>
 
         this.id = id;
     }
-
+    /**按时间uuid生成*/
     public static CounterId generate()
     {
         return new CounterId(ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes()));
@@ -162,7 +162,7 @@ public class CounterId implements Comparable<CounterId>
     {
         return id.hashCode();
     }
-
+    /**这个类只会renew一次。 并且仅在给定的column的上下文中包含该类构造时时的counter id才生成*/
     public static class OneShotRenewer
     {
         private boolean renewed;
@@ -173,7 +173,7 @@ public class CounterId implements Comparable<CounterId>
             renewed = false;
             initialId = getLocalId();
         }
-
+        /**如果该类没有真的renew过，并且给定的column的上下文中包含该类构造时时的counter id， 则生成一个*/
         public void maybeRenew(CounterColumn column)
         {
             if (!renewed && column.hasCounterId(initialId))
@@ -183,7 +183,7 @@ public class CounterId implements Comparable<CounterId>
             }
         }
     }
-
+    /**从系统表中读取counter，并保存在类中。也可以初始化系统表的counter值。*/
     private static class LocalCounterIdHistory
     {
         private final AtomicReference<CounterId> current;
@@ -208,7 +208,7 @@ public class CounterId implements Comparable<CounterId>
                 olds = new CopyOnWriteArrayList<CounterIdRecord>(SystemTable.getOldLocalCounterIds());
             }
         }
-
+        /**生成新的id并写入系统表，将原有id放入历史中。注意该方法有synchronized关键字*/
         synchronized void renewCurrent(long now)
         {
             CounterId newCounterId = generate();

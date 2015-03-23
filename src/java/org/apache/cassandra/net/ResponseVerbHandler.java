@@ -48,13 +48,13 @@ public class ResponseVerbHandler implements IVerbHandler
         if (cb instanceof IAsyncCallback)
         {
             Tracing.trace("Processing response from {}", message.from);
-            logger.debug("-----response:{}",cb);
+            //logger.debug("-----response:{}",cb);
             ((IAsyncCallback) cb).response(message);
         }
         else
         {
             Tracing.trace("Processing result from {}", message.from);
-            logger.debug("-----result:{}",cb);
+           // logger.debug("-----result:{}",cb);
             ((IAsyncResult) cb).result(message);
         }
     }

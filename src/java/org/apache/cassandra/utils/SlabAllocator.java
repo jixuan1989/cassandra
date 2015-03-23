@@ -123,6 +123,7 @@ public class SlabAllocator extends Allocator
      *  - to provide a step between initialization and allocation, so that racing to CAS a
      *    new region in is harmless
      *  - encapsulates the allocation offset
+     *  init的时候分配size大小的内存。 allocate的时候有点像是使用另一个size（传入的参数）大小内容。将原内存的offset指针指向size大小之后的位置（或者理解成从region中拿出一块给别人用，叫做allocate）
      */
     private static class Region
     {
