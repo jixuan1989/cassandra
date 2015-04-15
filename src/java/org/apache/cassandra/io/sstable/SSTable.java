@@ -88,8 +88,8 @@ public abstract class SSTable
     public final IPartitioner partitioner;
     public final boolean compression;//根据是否有CompressionInfo.db这个文件来判断。
 
-    public DecoratedKey first;
-    public DecoratedKey last;
+    public DecoratedKey first;//?
+    public DecoratedKey last;//?
 
     protected SSTable(Descriptor descriptor, CFMetaData metadata, IPartitioner partitioner)
     {
@@ -128,7 +128,7 @@ public abstract class SSTable
     public static final Ordering<SSTableReader> sstableOrdering = Ordering.from(sstableComparator);
 
     /**
-     * //TODO 这个方法有没有问题？？components中表明如果有DATA文件的话，则删除文件，但是并没有移除components中的DATA标志。因此岂不是一直有DATA标志？
+     * 
      * We use a ReferenceQueue to manage deleting files that have been compacted
      * and for which no more SSTable references exist.  But this is not guaranteed
      * to run for each such file because of the semantics of the JVM gc.  So,

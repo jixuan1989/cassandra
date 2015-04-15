@@ -70,6 +70,7 @@ public abstract class AbstractDataInput extends InputStream implements DataInput
      * Reads a 16-bit character from the current position in this file. Blocks until
      * two bytes have been read, the end of the file is reached or an exception is
      * thrown.
+     * hxd:为何要连续读取两个字节？
      *
      * @return the next char value from this file.
      * @throws EOFException

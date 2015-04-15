@@ -992,7 +992,7 @@ public class StorageProxy implements StorageProxyMBean
                     for (InetAddress endpoint : handler.endpoints)
                     {
                         Tracing.trace("Enqueuing full data read to {}", endpoint);
-                        MessagingService.instance().sendRR(message, endpoint, repairHandler);
+                        MessagingService.instance().sendRR(message, endpoint, repairHandler);//发送重新读取数据的请求
                     }
                 }
             }
@@ -1011,7 +1011,7 @@ public class StorageProxy implements StorageProxyMBean
                     Row row;
                     try
                     {
-                        row = handler.get();
+                        row = handler.get();//同步获取重新读取的数据,并从中找出最新的,并向那些需要repair的节点发送修复请求
                     }
                     catch (DigestMismatchException e)
                     {
@@ -1023,7 +1023,7 @@ public class StorageProxy implements StorageProxyMBean
                     {
                         // wait for the repair writes to be acknowledged, to minimize impact on any replica that's
                         // behind on writes in case the out-of-sync row is read multiple times in quick succession
-                        FBUtilities.waitOnFutures(resolver.repairResults, DatabaseDescriptor.getWriteRpcTimeout());
+                        FBUtilities.waitOnFutures(resolver.repairResults, DatabaseDescriptor.getWriteRpcTimeout());//等待修复请求的回应
                     }
                     catch (TimeoutException e)
                     {

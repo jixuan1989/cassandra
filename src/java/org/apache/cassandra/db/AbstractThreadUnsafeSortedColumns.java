@@ -54,7 +54,7 @@ public abstract class AbstractThreadUnsafeSortedColumns implements ISortedColumn
     {
         deletionInfo.purge(gcBefore);
     }
-
+    /***保留所有和参数相等的，不等的就从列中去掉*/
     public void retainAll(ISortedColumns columns)
     {
         Iterator<IColumn> iter = iterator();

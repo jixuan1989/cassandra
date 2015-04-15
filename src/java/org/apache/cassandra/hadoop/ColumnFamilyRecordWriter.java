@@ -187,21 +187,23 @@ final class ColumnFamilyRecordWriter extends AbstractColumnFamilyRecordWriter<By
                 while (true)
                 {
                     // send the mutation to the last-used endpoint.  first time through, this will NPE harmlessly.
-                    try
-                    {
-                        client.batch_mutate(batch, consistencyLevel);
-                        break;
+                    if(client!=null){
+	                	try
+	                    {
+	                        client.batch_mutate(batch, consistencyLevel);
+	                        break;
+	                    }
+	                    catch (Exception e)
+	                    {
+	                    	e.printStackTrace();
+	                    	closeInternal();
+	                        if (!iter.hasNext())
+	                        {
+	                            lastException = new IOException(e);
+	                            break outer;
+	                        }
+	                    }
                     }
-                    catch (Exception e)
-                    {
-                        closeInternal();
-                        if (!iter.hasNext())
-                        {
-                            lastException = new IOException(e);
-                            break outer;
-                        }
-                    }
-
                     // attempt to connect to a different endpoint
                     try
                     {
