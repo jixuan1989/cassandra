@@ -1,4 +1,4 @@
-﻿#忽略所有ant出来的文件
+#忽略所有ant出来的文件
 build/*
 bin/*
 .ant-targets-build.xml
@@ -8,3 +8,8 @@ src/gen-java/
 *.class
 test/conf/cassandra.yaml
 .settings/*
+data_cassandra/*
+log_cassandra/*
+pylib/*
+test/data/*
+pom.xml
