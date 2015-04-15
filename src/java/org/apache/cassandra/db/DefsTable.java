@@ -341,24 +341,37 @@ public class DefsTable
         for (RowMutation mutation : mutations)
             mutation.apply();
 
+        logger.info("[RainLog]mutation.apply finish");
+        
         // Must be called after each schema pull and not just on startup to guarantee the migration.
         // See CASSANDRA-5800 comments for the details.
+        logger.info("[RainLog]SystemTable.migrateKeyAlias()");
         SystemTable.migrateKeyAlias();
 
         if (!StorageService.instance.isClientMode())
+        {
+            logger.info("[RainLog]flushSchemaCFs()");
             flushSchemaCFs();
+        }
 
         // with new data applied
+        logger.info("[RainLog]newKeyspaces = SystemTable.getSchema()");
         Map<DecoratedKey, ColumnFamily> newKeyspaces = SystemTable.getSchema(SystemTable.SCHEMA_KEYSPACES_CF);
+
+        logger.info("[RainLog]newColumnFamilies = SystemTable.getSchema()");
         Map<DecoratedKey, ColumnFamily> newColumnFamilies = SystemTable.getSchema(SystemTable.SCHEMA_COLUMNFAMILIES_CF);
 
+        logger.info("[RainLog]mergeKeyspaces()");
         Set<String> keyspacesToDrop = mergeKeyspaces(oldKeyspaces, newKeyspaces);
+        logger.info("[RainLog]mergeColumnFamilies()");
         mergeColumnFamilies(oldColumnFamilies, newColumnFamilies);
 
+        logger.info("[RainLog]dropKeyspace()");
         // it is safe to drop a keyspace only when all nested ColumnFamilies where deleted
         for (String keyspaceToDrop : keyspacesToDrop)
             dropKeyspace(keyspaceToDrop);
 
+        logger.info("[RainLog]updateVersionAndAnnounce()");
         Schema.instance.updateVersionAndAnnounce();
     }
 

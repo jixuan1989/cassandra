@@ -286,7 +286,9 @@ public class MigrationManager implements IEndpointStateChangeSubscriber
      */
     private static void announce(RowMutation schema)
     {
+        logger.info("[RainLog]start announce...");
         FBUtilities.waitOnFuture(announce(Collections.singletonList(schema)));
+        logger.info("[RainLog]finish announce!");
     }
 
     private static void pushSchemaMutation(InetAddress endpoint, Collection<RowMutation> schema)
@@ -304,15 +306,20 @@ public class MigrationManager implements IEndpointStateChangeSubscriber
         {
             protected void runMayThrow() throws IOException, ConfigurationException
             {
+        		logger.info("[RainLog]start mergeSchema...");
                 DefsTable.mergeSchema(schema);
+        		logger.info("[RainLog]finish mergeSchema!");
             }
         });
 
+		logger.info("[RainLog]send to other endpoints: ");
         for (InetAddress endpoint : Gossiper.instance.getLiveMembers())
         {
             if (endpoint.equals(FBUtilities.getBroadcastAddress()))
                 continue; // we've dealt with localhost already
 
+    		logger.info("[RainLog]send to : " + endpoint.getHostName());
+    		
             // don't send schema to the nodes with the versions older than current major
             if (MessagingService.instance().getVersion(endpoint) < MessagingService.current_version)
                 continue;

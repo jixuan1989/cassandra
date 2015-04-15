@@ -453,7 +453,9 @@ public class Schema
      */
     public void updateVersionAndAnnounce()
     {
+        logger.info("[RainLog]updateVersion()");
         updateVersion();
+        logger.info("[RainLog]MigrationManager.passiveAnnounce()");
         MigrationManager.passiveAnnounce(version);
     }
 
