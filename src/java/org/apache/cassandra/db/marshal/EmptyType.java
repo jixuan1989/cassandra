@@ -19,6 +19,11 @@ package org.apache.cassandra.db.marshal;
 
 import java.nio.ByteBuffer;
 
+import org.apache.cassandra.cql3.Constants;
+import org.apache.cassandra.cql3.Term;
+import org.apache.cassandra.serializers.TypeSerializer;
+import org.apache.cassandra.serializers.EmptySerializer;
+import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 /**
@@ -30,16 +35,6 @@ public class EmptyType extends AbstractType<Void>
     public static final EmptyType instance = new EmptyType();
 
     private EmptyType() {} // singleton
-
-    public Void compose(ByteBuffer bytes)
-    {
-        return null;
-    }
-
-    public ByteBuffer decompose(Void value)
-    {
-        return ByteBufferUtil.EMPTY_BYTE_BUFFER;
-    }
 
     public int compare(ByteBuffer o1, ByteBuffer o2)
     {
@@ -59,9 +54,19 @@ public class EmptyType extends AbstractType<Void>
         return ByteBufferUtil.EMPTY_BYTE_BUFFER;
     }
 
-    public void validate(ByteBuffer bytes) throws MarshalException
+    @Override
+    public Term fromJSONObject(Object parsed) throws MarshalException
     {
-        if (bytes.remaining() > 0)
-            throw new MarshalException("EmptyType only accept empty values");
+        if (!(parsed instanceof String))
+            throw new MarshalException(String.format("Expected an empty string, but got: %s", parsed));
+        if (!((String) parsed).isEmpty())
+            throw new MarshalException(String.format("'%s' is not empty", parsed));
+
+        return new Constants.Value(ByteBufferUtil.EMPTY_BYTE_BUFFER);
+    }
+
+    public TypeSerializer<Void> getSerializer()
+    {
+        return EmptySerializer.instance;
     }
 }

@@ -21,7 +21,6 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 
-import org.apache.cassandra.cache.RefCountedMemory;
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.util.Memory;
 
@@ -36,8 +35,18 @@ public class OffHeapBitSet implements IBitSet
     public OffHeapBitSet(long numBits)
     {
         // OpenBitSet.bits2words calculation is there for backward compatibility.
-        int byteCount = OpenBitSet.bits2words(numBits) * 8;
-        bytes = RefCountedMemory.allocate(byteCount);
+        long wordCount = OpenBitSet.bits2words(numBits);
+        if (wordCount > Integer.MAX_VALUE)
+            throw new UnsupportedOperationException("Bloom filter size is > 16GB, reduce the bloom_filter_fp_chance");
+        try
+        {
+            long byteCount = wordCount * 8L;
+            bytes = Memory.allocate(byteCount);
+        }
+        catch (OutOfMemoryError e)
+        {
+            throw new RuntimeException("Out of native memory occured, You can avoid it by increasing the system ram space or by increasing bloom_filter_fp_chance.");
+        }
         // flush/clear the existing memory.
         clear();
     }
@@ -52,12 +61,18 @@ public class OffHeapBitSet implements IBitSet
         return bytes.size() * 8;
     }
 
+    @Override
+    public long offHeapSize()
+    {
+        return bytes.size();
+    }
+
     public boolean get(long index)
     {
         long i = index >> 3;
         long bit = index & 0x7;
         int bitmask = 0x1 << bit;
-        return ((bytes.getByte(i) & 0xFF) & bitmask) != 0;
+        return (bytes.getByte(i) & bitmask) != 0;
     }
 
     public void set(long index)
@@ -112,9 +127,9 @@ public class OffHeapBitSet implements IBitSet
 
     public static OffHeapBitSet deserialize(DataInput in) throws IOException
     {
-        int byteCount = in.readInt() * 8;
-        Memory memory = RefCountedMemory.allocate(byteCount);
-        for (int i = 0; i < byteCount;)
+        long byteCount = in.readInt() * 8L;
+        Memory memory = Memory.allocate(byteCount);
+        for (long i = 0; i < byteCount;)
         {
             long v = in.readLong();
             memory.setByte(i++, (byte) (v >>> 0));
@@ -129,7 +144,7 @@ public class OffHeapBitSet implements IBitSet
         return new OffHeapBitSet(memory);
     }
 
-    public void close() throws IOException
+    public void close()
     {
         bytes.free();
     }
@@ -156,5 +171,10 @@ public class OffHeapBitSet implements IBitSet
             h = (h << 1) | (h >>> 63); // rotate left
         }
         return (int) ((h >> 32) ^ h) + 0x98761234;
+    }
+
+    public String toString()
+    {
+        return "[OffHeapBitSet]";
     }
 }

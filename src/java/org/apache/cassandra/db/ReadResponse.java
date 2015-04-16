@@ -21,12 +21,13 @@ import java.io.*;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 /*
  * The read response message is sent by the server when reading data
- * this encapsulates the tablename and the row that has been read.
- * The table name is needed so that we can use it to create repairs.
+ * this encapsulates the keyspacename and the row that has been read.
+ * The keyspace name is needed so that we can use it to create repairs.
  */
 public class ReadResponse
 {
@@ -67,11 +68,11 @@ public class ReadResponse
 
 class ReadResponseSerializer implements IVersionedSerializer<ReadResponse>
 {
-    public void serialize(ReadResponse response, DataOutput out, int version) throws IOException
+    public void serialize(ReadResponse response, DataOutputPlus out, int version) throws IOException
     {
         out.writeInt(response.isDigestQuery() ? response.digest().remaining() : 0);
         ByteBuffer buffer = response.isDigestQuery() ? response.digest() : ByteBufferUtil.EMPTY_BYTE_BUFFER;
-        ByteBufferUtil.write(buffer, out);
+        out.write(buffer);
         out.writeBoolean(response.isDigestQuery());
         if (!response.isDigestQuery())
             Row.serializer.serialize(response.row(), out, version);
@@ -104,6 +105,7 @@ class ReadResponseSerializer implements IVersionedSerializer<ReadResponse>
         TypeSizes typeSizes = TypeSizes.NATIVE;
         ByteBuffer buffer = response.isDigestQuery() ? response.digest() : ByteBufferUtil.EMPTY_BYTE_BUFFER;
         int size = typeSizes.sizeof(buffer.remaining());
+        size += buffer.remaining();
         size += typeSizes.sizeof(response.isDigestQuery());
         if (!response.isDigestQuery())
             size += Row.serializer.serializedSize(response.row(), version);

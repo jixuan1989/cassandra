@@ -21,12 +21,12 @@ import java.net.InetAddress;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.db.Table;
+import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.WriteType;
@@ -34,21 +34,23 @@ import org.apache.cassandra.db.WriteType;
 /**
  * Handles blocking writes for ONE, ANY, TWO, THREE, QUORUM, and ALL consistency levels.
  */
-public class WriteResponseHandler extends AbstractWriteResponseHandler
+public class WriteResponseHandler<T> extends AbstractWriteResponseHandler<T>
 {
     protected static final Logger logger = LoggerFactory.getLogger(WriteResponseHandler.class);
 
-    protected final AtomicInteger responses;
+    protected volatile int responses;
+    private static final AtomicIntegerFieldUpdater<WriteResponseHandler> responsesUpdater
+            = AtomicIntegerFieldUpdater.newUpdater(WriteResponseHandler.class, "responses");
 
     public WriteResponseHandler(Collection<InetAddress> writeEndpoints,
                                 Collection<InetAddress> pendingEndpoints,
                                 ConsistencyLevel consistencyLevel,
-                                Table table,
+                                Keyspace keyspace,
                                 Runnable callback,
                                 WriteType writeType)
     {
-        super(table, writeEndpoints, pendingEndpoints, consistencyLevel, callback, writeType);
-        responses = new AtomicInteger(totalBlockFor());
+        super(keyspace, writeEndpoints, pendingEndpoints, consistencyLevel, callback, writeType);
+        responses = totalBlockFor();
     }
 
     public WriteResponseHandler(InetAddress endpoint, WriteType writeType, Runnable callback)
@@ -61,15 +63,15 @@ public class WriteResponseHandler extends AbstractWriteResponseHandler
         this(endpoint, writeType, null);
     }
 
-    public void response(MessageIn m)
+    public void response(MessageIn<T> m)
     {
-        if (responses.decrementAndGet() == 0)
+        if (responsesUpdater.decrementAndGet(this) == 0)
             signal();
     }
 
     protected int ackCount()
     {
-        return totalBlockFor() - responses.get();
+        return totalBlockFor() - responses;
     }
 
     public boolean isLatencyForSnitch()

@@ -17,26 +17,21 @@
  */
 package org.apache.cassandra.cql3.statements;
 
-import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.auth.Permission;
+import org.apache.cassandra.auth.*;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
-import org.apache.cassandra.cql3.KSPropDefs;
-import org.apache.cassandra.exceptions.InvalidRequestException;
-import org.apache.cassandra.exceptions.RequestValidationException;
-import org.apache.cassandra.exceptions.UnauthorizedException;
+import org.apache.cassandra.exceptions.*;
 import org.apache.cassandra.locator.AbstractReplicationStrategy;
-import org.apache.cassandra.service.ClientState;
-import org.apache.cassandra.service.MigrationManager;
-import org.apache.cassandra.service.StorageService;
+import org.apache.cassandra.service.*;
 import org.apache.cassandra.thrift.ThriftValidation;
-import org.apache.cassandra.transport.messages.ResultMessage;
+import org.apache.cassandra.transport.Event;
 
 /** A <code>CREATE KEYSPACE</code> statement parsed from a CQL query. */
 public class CreateKeyspaceStatement extends SchemaAlteringStatement
 {
     private final String name;
     private final KSPropDefs attrs;
+    private final boolean ifNotExists;
 
     /**
      * Creates a new <code>CreateKeyspaceStatement</code> instance for a given
@@ -45,11 +40,12 @@ public class CreateKeyspaceStatement extends SchemaAlteringStatement
      * @param name the name of the keyspace to create
      * @param attrs map of the raw keyword arguments that followed the <code>WITH</code> keyword.
      */
-    public CreateKeyspaceStatement(String name, KSPropDefs attrs)
+    public CreateKeyspaceStatement(String name, KSPropDefs attrs, boolean ifNotExists)
     {
         super();
         this.name = name;
         this.attrs = attrs;
+        this.ifNotExists = ifNotExists;
     }
 
     @Override
@@ -58,7 +54,7 @@ public class CreateKeyspaceStatement extends SchemaAlteringStatement
         return name;
     }
 
-    public void checkAccess(ClientState state) throws UnauthorizedException, InvalidRequestException
+    public void checkAccess(ClientState state) throws UnauthorizedException
     {
         state.hasAllKeyspacesAccess(Permission.CREATE);
     }
@@ -70,10 +66,8 @@ public class CreateKeyspaceStatement extends SchemaAlteringStatement
      *
      * @throws InvalidRequestException if arguments are missing or unacceptable
      */
-    @Override
     public void validate(ClientState state) throws RequestValidationException
     {
-        super.validate(state);
         ThriftValidation.validateKeyspaceNotSystem(name);
 
         // keyspace name
@@ -97,13 +91,45 @@ public class CreateKeyspaceStatement extends SchemaAlteringStatement
                                                                 attrs.getReplicationOptions());
     }
 
-    public void announceMigration() throws RequestValidationException
+    public boolean announceMigration(boolean isLocalOnly) throws RequestValidationException
     {
-        MigrationManager.announceNewKeyspace(attrs.asKSMetadata(name));
+        try
+        {
+            MigrationManager.announceNewKeyspace(attrs.asKSMetadata(name), isLocalOnly);
+            return true;
+        }
+        catch (AlreadyExistsException e)
+        {
+            if (ifNotExists)
+                return false;
+            throw e;
+        }
     }
 
-    public ResultMessage.SchemaChange.Change changeType()
+    public Event.SchemaChange changeEvent()
     {
-        return ResultMessage.SchemaChange.Change.CREATED;
+        return new Event.SchemaChange(Event.SchemaChange.Change.CREATED, keyspace());
+    }
+
+    protected void grantPermissionsToCreator(QueryState state)
+    {
+        try
+        {
+            RoleResource role = RoleResource.role(state.getClientState().getUser().getName());
+            DataResource keyspace = DataResource.keyspace(keyspace());
+            DatabaseDescriptor.getAuthorizer().grant(AuthenticatedUser.SYSTEM_USER,
+                                                     keyspace.applicablePermissions(),
+                                                     keyspace,
+                                                     role);
+            FunctionResource functions = FunctionResource.keyspace(keyspace());
+            DatabaseDescriptor.getAuthorizer().grant(AuthenticatedUser.SYSTEM_USER,
+                                                     functions.applicablePermissions(),
+                                                     functions,
+                                                     role);
+        }
+        catch (RequestExecutionException e)
+        {
+            throw new RuntimeException(e);
+        }
     }
 }

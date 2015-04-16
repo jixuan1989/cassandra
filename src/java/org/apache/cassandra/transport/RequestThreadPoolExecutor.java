@@ -17,23 +17,80 @@
  */
 package org.apache.cassandra.transport;
 
-import java.util.concurrent.ArrayBlockingQueue;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.cassandra.concurrent.DebuggableThreadPoolExecutor;
-import org.apache.cassandra.concurrent.NamedThreadFactory;
+import io.netty.util.concurrent.AbstractEventExecutor;
+import io.netty.util.concurrent.EventExecutorGroup;
+import io.netty.util.concurrent.Future;
+import org.apache.cassandra.concurrent.TracingAwareExecutorService;
 import org.apache.cassandra.config.DatabaseDescriptor;
 
-public class RequestThreadPoolExecutor extends DebuggableThreadPoolExecutor
-{
-    private final static int CORE_THREAD_TIMEOUT_SEC = 30;
+import static org.apache.cassandra.concurrent.SharedExecutorPool.SHARED;
 
-    public RequestThreadPoolExecutor()
+public class RequestThreadPoolExecutor extends AbstractEventExecutor
+{
+    private final static int MAX_QUEUED_REQUESTS = 128;
+    private final static String THREAD_FACTORY_ID = "Native-Transport-Requests";
+    private final TracingAwareExecutorService wrapped = SHARED.newExecutor(DatabaseDescriptor.getNativeTransportMaxThreads(),
+                                                                           MAX_QUEUED_REQUESTS,
+                                                                           "transport",
+                                                                           THREAD_FACTORY_ID);
+
+    public boolean isShuttingDown()
     {
-        super(DatabaseDescriptor.getNativeTransportMinThreads(),
-              DatabaseDescriptor.getNativeTransportMaxThreads(),
-              CORE_THREAD_TIMEOUT_SEC, TimeUnit.SECONDS,
-              new ArrayBlockingQueue(32), // Seems to help smooth latency compared to SynchronousQueue.
-              new NamedThreadFactory("Native-Transport-Requests"));
+        return wrapped.isShutdown();
+    }
+
+    public Future<?> shutdownGracefully(long l, long l2, TimeUnit timeUnit)
+    {
+        throw new IllegalStateException();
+    }
+
+    public Future<?> terminationFuture()
+    {
+        throw new IllegalStateException();
+    }
+
+    @Override
+    public void shutdown()
+    {
+        wrapped.shutdown();
+    }
+
+    @Override
+    public List<Runnable> shutdownNow()
+    {
+        return wrapped.shutdownNow();
+    }
+
+    public boolean isShutdown()
+    {
+        return wrapped.isShutdown();
+    }
+
+    public boolean isTerminated()
+    {
+        return wrapped.isTerminated();
+    }
+
+    public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException
+    {
+        return wrapped.awaitTermination(timeout, unit);
+    }
+
+    public EventExecutorGroup parent()
+    {
+        return null;
+    }
+
+    public boolean inEventLoop(Thread thread)
+    {
+        return false;
+    }
+
+    public void execute(Runnable command)
+    {
+        wrapped.execute(command);
     }
 }

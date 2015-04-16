@@ -23,13 +23,16 @@ public enum OperationType
     VALIDATION("Validation"),
     KEY_CACHE_SAVE("Key cache save"),
     ROW_CACHE_SAVE("Row cache save"),
+    COUNTER_CACHE_SAVE("Counter cache save"),
     CLEANUP("Cleanup"),
     SCRUB("Scrub"),
     UPGRADE_SSTABLES("Upgrade sstables"),
     INDEX_BUILD("Secondary index build"),
     /** Compaction for tombstone removal */
     TOMBSTONE_COMPACTION("Tombstone Compaction"),
-    UNKNOWN("Unkown compaction type");
+    UNKNOWN("Unknown compaction type"),
+    ANTICOMPACTION("Anticompaction after repair"),
+    VERIFY("Verify");
 
     private final String type;
 

@@ -17,21 +17,27 @@
  */
 package org.apache.cassandra.db.marshal;
 
-import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import org.apache.cassandra.db.Column;
+import org.apache.cassandra.cql3.Sets;
+import org.apache.cassandra.cql3.Term;
+import org.apache.cassandra.db.Cell;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
-import org.apache.cassandra.utils.Pair;
+import org.apache.cassandra.serializers.MarshalException;
+import org.apache.cassandra.serializers.SetSerializer;
+import org.apache.cassandra.transport.Server;
 
 public class SetType<T> extends CollectionType<Set<T>>
 {
     // interning instances
-    private static final Map<AbstractType<?>, SetType> instances = new HashMap<AbstractType<?>, SetType>();
+    private static final Map<AbstractType<?>, SetType> instances = new HashMap<>();
+    private static final Map<AbstractType<?>, SetType> frozenInstances = new HashMap<>();
 
-    public final AbstractType<T> elements;
+    private final AbstractType<T> elements;
+    private final SetSerializer<T> serializer;
+    private final boolean isMultiCell;
 
     public static SetType<?> getInstance(TypeParser parser) throws ConfigurationException, SyntaxException
     {
@@ -39,24 +45,32 @@ public class SetType<T> extends CollectionType<Set<T>>
         if (l.size() != 1)
             throw new ConfigurationException("SetType takes exactly 1 type parameter");
 
-        return getInstance(l.get(0));
+        return getInstance(l.get(0), true);
     }
 
-    public static synchronized <T> SetType<T> getInstance(AbstractType<T> elements)
+    public static synchronized <T> SetType<T> getInstance(AbstractType<T> elements, boolean isMultiCell)
     {
-        SetType<T> t = instances.get(elements);
+        Map<AbstractType<?>, SetType> internMap = isMultiCell ? instances : frozenInstances;
+        SetType<T> t = internMap.get(elements);
         if (t == null)
         {
-            t = new SetType<T>(elements);
-            instances.put(elements, t);
+            t = new SetType<T>(elements, isMultiCell);
+            internMap.put(elements, t);
         }
         return t;
     }
 
-    public SetType(AbstractType<T> elements)
+    public SetType(AbstractType<T> elements, boolean isMultiCell)
     {
         super(Kind.SET);
         this.elements = elements;
+        this.serializer = SetSerializer.getInstance(elements.getSerializer());
+        this.isMultiCell = isMultiCell;
+    }
+
+    public AbstractType<T> getElementsType()
+    {
+        return elements;
     }
 
     public AbstractType<T> nameComparator()
@@ -69,64 +83,96 @@ public class SetType<T> extends CollectionType<Set<T>>
         return EmptyType.instance;
     }
 
-    public Set<T> compose(ByteBuffer bytes)
+    @Override
+    public boolean isMultiCell()
     {
-        try
-        {
-            ByteBuffer input = bytes.duplicate();
-            int n = getUnsignedShort(input);
-            Set<T> l = new LinkedHashSet<T>(n);
-            for (int i = 0; i < n; i++)
-            {
-                int s = getUnsignedShort(input);
-                byte[] data = new byte[s];
-                input.get(data);
-                ByteBuffer databb = ByteBuffer.wrap(data);
-                elements.validate(databb);
-                l.add(elements.compose(databb));
-            }
-            return l;
-        }
-        catch (BufferUnderflowException e)
-        {
-            throw new MarshalException("Not enough bytes to read a set");
-        }
+        return isMultiCell;
     }
 
-    /**
-     * Layout is: {@code <n><s_1><b_1>...<s_n><b_n> }
-     * where:
-     *   n is the number of elements
-     *   s_i is the number of bytes composing the ith element
-     *   b_i is the s_i bytes composing the ith element
-     */
-    public ByteBuffer decompose(Set<T> value)
+    @Override
+    public AbstractType<?> freeze()
     {
-        List<ByteBuffer> bbs = new ArrayList<ByteBuffer>(value.size());
-        int size = 0;
-        for (T elt : value)
-        {
-            ByteBuffer bb = elements.decompose(elt);
-            bbs.add(bb);
-            size += 2 + bb.remaining();
-        }
-        return pack(bbs, value.size(), size);
+        if (isMultiCell)
+            return getInstance(this.elements, false);
+        else
+            return this;
     }
 
-    protected void appendToStringBuilder(StringBuilder sb)
+    @Override
+    public boolean isCompatibleWithFrozen(CollectionType<?> previous)
     {
-        sb.append(getClass().getName()).append(TypeParser.stringifyTypeParameters(Collections.<AbstractType<?>>singletonList(elements)));
+        assert !isMultiCell;
+        return this.elements.isCompatibleWith(((SetType) previous).elements);
     }
 
-    public ByteBuffer serialize(List<Pair<ByteBuffer, Column>> columns)
+    @Override
+    public boolean isValueCompatibleWithFrozen(CollectionType<?> previous)
     {
-        List<ByteBuffer> bbs = new ArrayList<ByteBuffer>(columns.size());
-        int size = 0;
-        for (Pair<ByteBuffer, Column> p : columns)
+        // because sets are ordered, any changes to the type must maintain the ordering
+        return isCompatibleWithFrozen(previous);
+    }
+
+    @Override
+    public int compare(ByteBuffer o1, ByteBuffer o2)
+    {
+        return ListType.compareListOrSet(elements, o1, o2);
+    }
+
+    public SetSerializer<T> getSerializer()
+    {
+        return serializer;
+    }
+
+    public boolean isByteOrderComparable()
+    {
+        return elements.isByteOrderComparable();
+    }
+
+    @Override
+    public String toString(boolean ignoreFreezing)
+    {
+        boolean includeFrozenType = !ignoreFreezing && !isMultiCell();
+
+        StringBuilder sb = new StringBuilder();
+        if (includeFrozenType)
+            sb.append(FrozenType.class.getName()).append("(");
+        sb.append(getClass().getName());
+        sb.append(TypeParser.stringifyTypeParameters(Collections.<AbstractType<?>>singletonList(elements), ignoreFreezing || !isMultiCell));
+        if (includeFrozenType)
+            sb.append(")");
+        return sb.toString();
+    }
+
+    public List<ByteBuffer> serializedValues(List<Cell> cells)
+    {
+        List<ByteBuffer> bbs = new ArrayList<ByteBuffer>(cells.size());
+        for (Cell c : cells)
+            bbs.add(c.name().collectionElement());
+        return bbs;
+    }
+
+    @Override
+    public Term fromJSONObject(Object parsed) throws MarshalException
+    {
+        if (!(parsed instanceof List))
+            throw new MarshalException(String.format(
+                    "Expected a list (representing a set), but got a %s: %s", parsed.getClass().getSimpleName(), parsed));
+
+        List list = (List) parsed;
+        Set<Term> terms = new HashSet<>(list.size());
+        for (Object element : list)
         {
-            bbs.add(p.left);
-            size += 2 + p.left.remaining();
+            if (element == null)
+                throw new MarshalException("Invalid null element in set");
+            terms.add(elements.fromJSONObject(element));
         }
-        return pack(bbs, columns.size(), size);
+
+        return new Sets.DelayedValue(elements, terms);
+    }
+
+    @Override
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
+    {
+        return ListType.setOrListToJsonString(buffer, elements, protocolVersion);
     }
 }

@@ -19,6 +19,7 @@ package org.apache.cassandra.db.compaction;
 
 import java.util.List;
 import java.util.Map;
+import javax.management.openmbean.TabularData;
 
 public interface CompactionManagerMBean
 {
@@ -28,33 +29,8 @@ public interface CompactionManagerMBean
     /** List of running compaction summary strings. */
     public List<String> getCompactionSummary();
 
-    /**
-     * @see org.apache.cassandra.metrics.CompactionMetrics#pendingTasks
-     * @return estimated number of compactions remaining to perform
-     */
-    @Deprecated
-    public int getPendingTasks();
-
-    /**
-     * @see org.apache.cassandra.metrics.CompactionMetrics#completedTasks
-     * @return number of completed compactions since server [re]start
-     */
-    @Deprecated
-    public long getCompletedTasks();
-
-    /**
-     * @see org.apache.cassandra.metrics.CompactionMetrics#bytesCompacted
-     * @return total number of bytes compacted since server [re]start
-     */
-    @Deprecated
-    public long getTotalBytesCompacted();
-
-    /**
-     * @see org.apache.cassandra.metrics.CompactionMetrics#totalCompactionsCompleted
-     * @return total number of compactions since server [re]start
-     */
-    @Deprecated
-    public long getTotalCompactionsCompleted();
+    /** compaction history **/
+    public TabularData getCompactionHistory();
 
     /**
      * Triggers the compaction of user specified sstables.
@@ -62,7 +38,8 @@ public interface CompactionManagerMBean
      * If you do so, user defined compaction is performed several times to the groups of files
      * in the same keyspace/columnfamily.
      *
-     * @param dataFiles a comma separated list of sstable filename to compact
+     * @param dataFiles a comma separated list of sstable file to compact.
+     *                  must contain keyspace and columnfamily name in path(for 2.1+) or file name itself.
      */
     public void forceUserDefinedCompaction(String dataFiles);
 

@@ -17,53 +17,65 @@
  */
 package org.apache.cassandra.db.filter;
 
-import java.io.DataInput;
-import java.io.DataOutput;
-import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Comparator;
-import java.util.Iterator;
+import java.io.DataInput;
+import java.io.IOException;
+import java.util.*;
 
+import com.google.common.collect.AbstractIterator;
+import com.google.common.collect.Iterators;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.columniterator.ISSTableColumnIterator;
 import org.apache.cassandra.db.columniterator.OnDiskAtomIterator;
-import org.apache.cassandra.db.columniterator.SSTableSliceIterator;
-import org.apache.cassandra.db.marshal.AbstractType;
-import org.apache.cassandra.db.marshal.CompositeType;
+import org.apache.cassandra.db.composites.CType;
+import org.apache.cassandra.db.composites.CellName;
+import org.apache.cassandra.db.composites.CellNameType;
+import org.apache.cassandra.db.composites.Composite;
 import org.apache.cassandra.io.IVersionedSerializer;
-import org.apache.cassandra.io.sstable.SSTableReader;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.io.util.FileDataInput;
-import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.tracing.Tracing;
 
 public class SliceQueryFilter implements IDiskAtomFilter
 {
     private static final Logger logger = LoggerFactory.getLogger(SliceQueryFilter.class);
-    public static final Serializer serializer = new Serializer();
+
+    /**
+     * A special value for compositesToGroup that indicates that partitioned tombstones should not be included in results
+     * or count towards the limit.  See CASSANDRA-8490 for more details on why this is needed (and done this way).
+     **/
+    public static final int IGNORE_TOMBSTONED_PARTITIONS = -2;
 
     public final ColumnSlice[] slices;
     public final boolean reversed;
     public volatile int count;
     public final int compositesToGroup;
-    // This is a hack to allow rolling upgrade with pre-1.2 nodes
-    private final int countMutliplierForCompatibility;
 
     // Not serialized, just a ack for range slices to find the number of live column counted, even when we group
     private ColumnCounter columnCounter;
 
-    public SliceQueryFilter(ByteBuffer start, ByteBuffer finish, boolean reversed, int count)
+    public SliceQueryFilter(Composite start, Composite finish, boolean reversed, int count)
     {
-        this(new ColumnSlice[] { new ColumnSlice(start, finish) }, reversed, count);
+        this(new ColumnSlice(start, finish), reversed, count);
     }
 
-    public SliceQueryFilter(ByteBuffer start, ByteBuffer finish, boolean reversed, int count, int compositesToGroup)
+    public SliceQueryFilter(Composite start, Composite finish, boolean reversed, int count, int compositesToGroup)
     {
-        this(new ColumnSlice[] { new ColumnSlice(start, finish) }, reversed, count, compositesToGroup, 1);
+        this(new ColumnSlice(start, finish), reversed, count, compositesToGroup);
+    }
+
+    public SliceQueryFilter(ColumnSlice slice, boolean reversed, int count)
+    {
+        this(new ColumnSlice[]{ slice }, reversed, count);
+    }
+
+    public SliceQueryFilter(ColumnSlice slice, boolean reversed, int count, int compositesToGroup)
+    {
+        this(new ColumnSlice[]{ slice }, reversed, count, compositesToGroup);
     }
 
     /**
@@ -72,140 +84,261 @@ public class SliceQueryFilter implements IDiskAtomFilter
      */
     public SliceQueryFilter(ColumnSlice[] slices, boolean reversed, int count)
     {
-        this(slices, reversed, count, -1, 1);
+        this(slices, reversed, count, -1);
     }
 
-    public SliceQueryFilter(ColumnSlice[] slices, boolean reversed, int count, int compositesToGroup, int countMutliplierForCompatibility)
+    public SliceQueryFilter(ColumnSlice[] slices, boolean reversed, int count, int compositesToGroup)
     {
         this.slices = slices;
         this.reversed = reversed;
         this.count = count;
         this.compositesToGroup = compositesToGroup;
-        this.countMutliplierForCompatibility = countMutliplierForCompatibility;
     }
 
     public SliceQueryFilter cloneShallow()
     {
-        return new SliceQueryFilter(slices, reversed, count, compositesToGroup, countMutliplierForCompatibility);
+        return new SliceQueryFilter(slices, reversed, count, compositesToGroup);
     }
 
     public SliceQueryFilter withUpdatedCount(int newCount)
     {
-        return new SliceQueryFilter(slices, reversed, newCount, compositesToGroup, countMutliplierForCompatibility);
+        return new SliceQueryFilter(slices, reversed, newCount, compositesToGroup);
     }
 
     public SliceQueryFilter withUpdatedSlices(ColumnSlice[] newSlices)
     {
-        return new SliceQueryFilter(newSlices, reversed, count, compositesToGroup, countMutliplierForCompatibility);
+        return new SliceQueryFilter(newSlices, reversed, count, compositesToGroup);
     }
 
-    public SliceQueryFilter withUpdatedSlice(ByteBuffer start, ByteBuffer finish)
+    public SliceQueryFilter withUpdatedStart(Composite newStart, CellNameType comparator)
     {
-        return new SliceQueryFilter(new ColumnSlice[]{ new ColumnSlice(start, finish) }, reversed, count, compositesToGroup, countMutliplierForCompatibility);
+        Comparator<Composite> cmp = reversed ? comparator.reverseComparator() : comparator;
+
+        List<ColumnSlice> newSlices = new ArrayList<>(slices.length);
+        boolean pastNewStart = false;
+        for (ColumnSlice slice : slices)
+        {
+            if (pastNewStart)
+            {
+                newSlices.add(slice);
+                continue;
+            }
+
+            if (slice.isBefore(cmp, newStart))
+                continue;
+
+            if (slice.includes(cmp, newStart))
+                newSlices.add(new ColumnSlice(newStart, slice.finish));
+            else
+                newSlices.add(slice);
+
+            pastNewStart = true;
+        }
+        return withUpdatedSlices(newSlices.toArray(new ColumnSlice[newSlices.size()]));
     }
 
-    public OnDiskAtomIterator getMemtableColumnIterator(ColumnFamily cf, DecoratedKey key)
+    public Iterator<Cell> getColumnIterator(ColumnFamily cf)
     {
-        return Memtable.getSliceIterator(key, cf, this);
+        assert cf != null;
+        return reversed ? cf.reverseIterator(slices) : cf.iterator(slices);
     }
 
-    public ISSTableColumnIterator getSSTableColumnIterator(SSTableReader sstable, DecoratedKey key)
+    public OnDiskAtomIterator getColumnIterator(final DecoratedKey key, final ColumnFamily cf)
     {
-        return new SSTableSliceIterator(sstable, key, slices, reversed);
+        assert cf != null;
+        final Iterator<Cell> iter = getColumnIterator(cf);
+
+        return new OnDiskAtomIterator()
+        {
+            public ColumnFamily getColumnFamily()
+            {
+                return cf;
+            }
+
+            public DecoratedKey getKey()
+            {
+                return key;
+            }
+
+            public boolean hasNext()
+            {
+                return iter.hasNext();
+            }
+
+            public OnDiskAtom next()
+            {
+                return iter.next();
+            }
+
+            public void close() throws IOException { }
+
+            public void remove()
+            {
+                throw new UnsupportedOperationException();
+            }
+        };
     }
 
-    public ISSTableColumnIterator getSSTableColumnIterator(SSTableReader sstable, FileDataInput file, DecoratedKey key, RowIndexEntry indexEntry)
+    public OnDiskAtomIterator getSSTableColumnIterator(SSTableReader sstable, DecoratedKey key)
     {
-        return new SSTableSliceIterator(sstable, file, key, slices, reversed, indexEntry);
+        return sstable.iterator(key, slices, reversed);
     }
 
-    public Comparator<Column> getColumnComparator(AbstractType<?> comparator)
+    public OnDiskAtomIterator getSSTableColumnIterator(SSTableReader sstable, FileDataInput file, DecoratedKey key, RowIndexEntry indexEntry)
     {
-        return reversed ? comparator.columnReverseComparator : comparator.columnComparator;
+        return sstable.iterator(file, key, slices, reversed, indexEntry);
     }
 
-    public void collectReducedColumns(ColumnFamily container, Iterator<Column> reducedColumns, int gcBefore)
+    public Comparator<Cell> getColumnComparator(CellNameType comparator)
     {
-        columnCounter = getColumnCounter(container);
+        return reversed ? comparator.columnReverseComparator() : comparator.columnComparator(false);
+    }
+
+    public void collectReducedColumns(ColumnFamily container, Iterator<Cell> reducedColumns, int gcBefore, long now)
+    {
+        columnCounter = columnCounter(container.getComparator(), now);
+        DeletionInfo.InOrderTester tester = container.deletionInfo().inOrderTester(reversed);
 
         while (reducedColumns.hasNext())
         {
-            Column column = reducedColumns.next();
+            Cell cell = reducedColumns.next();
             if (logger.isTraceEnabled())
                 logger.trace(String.format("collecting %s of %s: %s",
-                                           columnCounter.live(), count, column.getString(container.getComparator())));
+                                           columnCounter.live(), count, cell.getString(container.getComparator())));
 
-            columnCounter.count(column, container);
+            columnCounter.count(cell, tester);
 
             if (columnCounter.live() > count)
                 break;
 
-            // but we need to add all non-gc-able columns to the result for read repair:
-            if (QueryFilter.isRelevant(column, container, gcBefore))
-                container.addColumn(column);
+            if (respectTombstoneThresholds() && columnCounter.ignored() > DatabaseDescriptor.getTombstoneFailureThreshold())
+            {
+                Tracing.trace("Scanned over {} tombstones; query aborted (see tombstone_failure_threshold); slices={}",
+                              DatabaseDescriptor.getTombstoneFailureThreshold(), getSlicesInfo(container));
+
+                throw new TombstoneOverwhelmingException(columnCounter.ignored(),
+                                                         count,
+                                                         container.metadata().ksName,
+                                                         container.metadata().cfName,
+                                                         container.getComparator().getString(cell.name()),
+                                                         getSlicesInfo(container));
+            }
+
+            container.maybeAppendColumn(cell, tester, gcBefore);
         }
 
-        Tracing.trace("Read {} live cells and {} tombstoned", columnCounter.live(), columnCounter.ignored());
+        boolean warnTombstones = respectTombstoneThresholds() && columnCounter.ignored() > DatabaseDescriptor.getTombstoneWarnThreshold();
+        if (warnTombstones)
+        {
+            logger.warn("Read {} live and {} tombstoned cells in {}.{} (see tombstone_warn_threshold). {} columns were requested, slices={}",
+                        columnCounter.live(),
+                        columnCounter.ignored(),
+                        container.metadata().ksName,
+                        container.metadata().cfName,
+                        count,
+                        getSlicesInfo(container));
+        }
+        Tracing.trace("Read {} live and {} tombstoned cells{}",
+                      columnCounter.live(),
+                      columnCounter.ignored(),
+                      warnTombstones ? " (see tombstone_warn_threshold)" : "");
     }
 
-    public int getLiveCount(ColumnFamily cf)
+    private String getSlicesInfo(ColumnFamily container)
     {
-        ColumnCounter counter = getColumnCounter(cf);
-        for (Column column : cf)
-            counter.count(column, cf);
-        return counter.live();
+        StringBuilder sb = new StringBuilder();
+        CellNameType type = container.metadata().comparator;
+        for (ColumnSlice sl : slices)
+        {
+            assert sl != null;
+
+            sb.append('[');
+            sb.append(type.getString(sl.start));
+            sb.append('-');
+            sb.append(type.getString(sl.finish));
+            sb.append(']');
+        }
+        return sb.toString();
     }
 
-    private ColumnCounter getColumnCounter(ColumnFamily container)
+    protected boolean respectTombstoneThresholds()
     {
-        AbstractType<?> comparator = container.getComparator();
+        return true;
+    }
+
+    public int getLiveCount(ColumnFamily cf, long now)
+    {
+        return columnCounter(cf.getComparator(), now).countAll(cf).live();
+    }
+
+    public ColumnCounter columnCounter(CellNameType comparator, long now)
+    {
         if (compositesToGroup < 0)
-            return new ColumnCounter();
+            return new ColumnCounter(now);
         else if (compositesToGroup == 0)
-            return new ColumnCounter.GroupByPrefix(null, 0);
+            return new ColumnCounter.GroupByPrefix(now, null, 0);
         else
-            return new ColumnCounter.GroupByPrefix((CompositeType)comparator, compositesToGroup);
+            return new ColumnCounter.GroupByPrefix(now, comparator, compositesToGroup);
     }
 
-    public void trim(ColumnFamily cf, int trimTo)
+    public void trim(ColumnFamily cf, int trimTo, long now)
     {
-        ColumnCounter counter = getColumnCounter(cf);
+        ColumnCounter counter = columnCounter(cf.getComparator(), now);
 
-        Collection<Column> columns = reversed
+        Collection<Cell> cells = reversed
                                    ? cf.getReverseSortedColumns()
                                    : cf.getSortedColumns();
 
-        for (Iterator<Column> iter = columns.iterator(); iter.hasNext(); )
+        DeletionInfo.InOrderTester tester = cf.deletionInfo().inOrderTester(reversed);
+
+        for (Iterator<Cell> iter = cells.iterator(); iter.hasNext(); )
         {
-            Column column = iter.next();
-            counter.count(column, cf);
+            Cell cell = iter.next();
+            counter.count(cell, tester);
 
             if (counter.live() > trimTo)
             {
                 iter.remove();
                 while (iter.hasNext())
+                {
+                    iter.next();
                     iter.remove();
+                }
             }
         }
     }
 
-    public ByteBuffer start()
+    public Composite start()
     {
         return this.slices[0].start;
     }
 
-    public ByteBuffer finish()
+    public Composite finish()
     {
         return this.slices[slices.length - 1].finish;
     }
 
-    public void setStart(ByteBuffer start)
+    public void setStart(Composite start)
     {
         assert slices.length == 1;
         this.slices[0] = new ColumnSlice(start, this.slices[0].finish);
     }
 
     public int lastCounted()
+    {
+        // If we have a slice limit set, columnCounter.live() can overcount by one because we have to call
+        // columnCounter.count() before we can tell if we've exceeded the slice limit (and accordingly, should not
+        // add the cells to returned container).  To deal with this overcounting, we take the min of the slice
+        // limit and the counter's count.
+        return columnCounter == null ? 0 : Math.min(columnCounter.live(), count);
+    }
+
+    public int lastIgnored()
+    {
+        return columnCounter == null ? 0 : columnCounter.ignored();
+    }
+
+    public int lastLive()
     {
         return columnCounter == null ? 0 : columnCounter.live();
     }
@@ -226,38 +359,82 @@ public class SliceQueryFilter implements IDiskAtomFilter
         count = newLimit;
     }
 
-    public boolean maySelectPrefix(Comparator<ByteBuffer> cmp, ByteBuffer prefix)
+    public boolean maySelectPrefix(CType type, Composite prefix)
     {
         for (ColumnSlice slice : slices)
-            if (slice.includes(cmp, prefix))
+            if (slice.includes(type, prefix))
                 return true;
         return false;
     }
 
+    public boolean shouldInclude(SSTableReader sstable)
+    {
+        List<ByteBuffer> minColumnNames = sstable.getSSTableMetadata().minColumnNames;
+        List<ByteBuffer> maxColumnNames = sstable.getSSTableMetadata().maxColumnNames;
+        CellNameType comparator = sstable.metadata.comparator;
+
+        if (minColumnNames.isEmpty() || maxColumnNames.isEmpty())
+            return true;
+
+        for (ColumnSlice slice : slices)
+            if (slice.intersects(minColumnNames, maxColumnNames, comparator, reversed))
+                return true;
+
+        return false;
+    }
+
+    public boolean isHeadFilter()
+    {
+        return slices.length == 1 && slices[0].start.isEmpty() && !reversed;
+    }
+
+    public boolean countCQL3Rows(CellNameType comparator)
+    {
+        // If comparator is dense a cell == a CQL3 rows so we're always counting CQL3 rows
+        // in particular. Otherwise, we do so only if we group the cells into CQL rows.
+        return comparator.isDense() || compositesToGroup >= 0;
+    }
+
+    public boolean isFullyCoveredBy(ColumnFamily cf, long now)
+    {
+        // cf is the beginning of a partition. It covers this filter if:
+        //   1) either this filter requests the head of the partition and request less
+        //      than what cf has to offer (note: we do need to use getLiveCount() for that
+        //      as it knows if the filter count cells or CQL3 rows).
+        //   2) the start and finish bound of this filter are included in cf.
+        if (isHeadFilter() && count <= getLiveCount(cf, now))
+            return true;
+
+        if (start().isEmpty() || finish().isEmpty() || !cf.hasColumns())
+            return false;
+
+        Composite low = isReversed() ? finish() : start();
+        Composite high = isReversed() ? start() : finish();
+
+        CellName first = cf.iterator(ColumnSlice.ALL_COLUMNS_ARRAY).next().name();
+        CellName last = cf.reverseIterator(ColumnSlice.ALL_COLUMNS_ARRAY).next().name();
+
+        return cf.getComparator().compare(first, low) <= 0
+            && cf.getComparator().compare(high, last) <= 0;
+    }
+
     public static class Serializer implements IVersionedSerializer<SliceQueryFilter>
     {
-        public void serialize(SliceQueryFilter f, DataOutput out, int version) throws IOException
+        private CType type;
+
+        public Serializer(CType type)
         {
-            if (version < MessagingService.VERSION_12)
-            {
-                // It's kind of lame, but probably better than throwing an exception
-                ColumnSlice slice = new ColumnSlice(f.start(), f.finish());
-                ColumnSlice.serializer.serialize(slice, out, version);
-            }
-            else
-            {
-                out.writeInt(f.slices.length);
-                for (ColumnSlice slice : f.slices)
-                    ColumnSlice.serializer.serialize(slice, out, version);
-            }
+            this.type = type;
+        }
+
+        public void serialize(SliceQueryFilter f, DataOutputPlus out, int version) throws IOException
+        {
+            out.writeInt(f.slices.length);
+            for (ColumnSlice slice : f.slices)
+                type.sliceSerializer().serialize(slice, out, version);
             out.writeBoolean(f.reversed);
             int count = f.count;
-            if (f.compositesToGroup > 0 && version < MessagingService.VERSION_12)
-                count *= f.countMutliplierForCompatibility;
             out.writeInt(count);
-
-            if (version < MessagingService.VERSION_12)
-                return;
 
             out.writeInt(f.compositesToGroup);
         }
@@ -265,23 +442,15 @@ public class SliceQueryFilter implements IDiskAtomFilter
         public SliceQueryFilter deserialize(DataInput in, int version) throws IOException
         {
             ColumnSlice[] slices;
-            if (version < MessagingService.VERSION_12)
-            {
-                slices = new ColumnSlice[]{ ColumnSlice.serializer.deserialize(in, version) };
-            }
-            else
-            {
-                slices = new ColumnSlice[in.readInt()];
-                for (int i = 0; i < slices.length; i++)
-                    slices[i] = ColumnSlice.serializer.deserialize(in, version);
-            }
+            slices = new ColumnSlice[in.readInt()];
+            for (int i = 0; i < slices.length; i++)
+                slices[i] = type.sliceSerializer().deserialize(in, version);
             boolean reversed = in.readBoolean();
             int count = in.readInt();
             int compositesToGroup = -1;
-            if (version >= MessagingService.VERSION_12)
-                compositesToGroup = in.readInt();
+            compositesToGroup = in.readInt();
 
-            return new SliceQueryFilter(slices, reversed, count, compositesToGroup, 1);
+            return new SliceQueryFilter(slices, reversed, count, compositesToGroup);
         }
 
         public long serializedSize(SliceQueryFilter f, int version)
@@ -289,22 +458,53 @@ public class SliceQueryFilter implements IDiskAtomFilter
             TypeSizes sizes = TypeSizes.NATIVE;
 
             int size = 0;
-            if (version < MessagingService.VERSION_12)
-            {
-                size += ColumnSlice.serializer.serializedSize(new ColumnSlice(f.start(), f.finish()), version);
-            }
-            else
-            {
-                size += sizes.sizeof(f.slices.length);
-                for (ColumnSlice slice : f.slices)
-                    size += ColumnSlice.serializer.serializedSize(slice, version);
-            }
+            size += sizes.sizeof(f.slices.length);
+            for (ColumnSlice slice : f.slices)
+                size += type.sliceSerializer().serializedSize(slice, version);
             size += sizes.sizeof(f.reversed);
             size += sizes.sizeof(f.count);
 
-            if (version >= MessagingService.VERSION_12)
-                size += sizes.sizeof(f.compositesToGroup);
+            size += sizes.sizeof(f.compositesToGroup);
             return size;
         }
+    }
+
+    public Iterator<RangeTombstone> getRangeTombstoneIterator(final ColumnFamily source)
+    {
+        final DeletionInfo delInfo = source.deletionInfo();
+        if (!delInfo.hasRanges() || slices.length == 0)
+            return Iterators.<RangeTombstone>emptyIterator();
+
+        return new AbstractIterator<RangeTombstone>()
+        {
+            private int sliceIdx = 0;
+            private Iterator<RangeTombstone> sliceIter = currentRangeIter();
+
+            protected RangeTombstone computeNext()
+            {
+                while (true)
+                {
+                    if (sliceIter.hasNext())
+                        return sliceIter.next();
+
+                    if (!nextSlice())
+                        return endOfData();
+
+                    sliceIter = currentRangeIter();
+                }
+            }
+
+            private Iterator<RangeTombstone> currentRangeIter()
+            {
+                ColumnSlice slice = slices[reversed ? (slices.length - 1 - sliceIdx) : sliceIdx];
+                return reversed ? delInfo.rangeIterator(slice.finish, slice.start)
+                                : delInfo.rangeIterator(slice.start, slice.finish);
+            }
+
+            private boolean nextSlice()
+            {
+                return ++sliceIdx < slices.length;
+            }
+        };
     }
 }

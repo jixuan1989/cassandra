@@ -17,21 +17,18 @@
  */
 package org.apache.cassandra.cql3;
 
-import java.nio.ByteBuffer;
-import java.util.List;
-
-import org.apache.cassandra.db.ConsistencyLevel;
-import org.apache.cassandra.transport.messages.ResultMessage;
+import org.apache.cassandra.cql3.functions.Function;
+import org.apache.cassandra.exceptions.*;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.QueryState;
-import org.apache.cassandra.exceptions.*;
+import org.apache.cassandra.transport.messages.ResultMessage;
 
 public interface CQLStatement
 {
     /**
      * Returns the number of bound terms in this statement.
      */
-    public int getBoundsTerms();
+    public int getBoundTerms();
 
     /**
      * Perform any access verification necessary for the statement.
@@ -52,15 +49,18 @@ public interface CQLStatement
      * Execute the statement and return the resulting result or null if there is no result.
      *
      * @param state the current query state
-     * @param variables the values for bounded variables. The implementation
-     * can assume that each bound term have a corresponding value.
+     * @param options options for this query (consistency, variables, pageSize, ...)
      */
-    public ResultMessage execute(ConsistencyLevel cl, QueryState state, List<ByteBuffer> variables) throws RequestValidationException, RequestExecutionException;
+    public ResultMessage execute(QueryState state, QueryOptions options) throws RequestValidationException, RequestExecutionException;
 
     /**
      * Variante of execute used for internal query against the system tables, and thus only query the local node.
      *
      * @param state the current query state
      */
-    public ResultMessage executeInternal(QueryState state) throws RequestValidationException, RequestExecutionException;
+    public ResultMessage executeInternal(QueryState state, QueryOptions options) throws RequestValidationException, RequestExecutionException;
+
+    boolean usesFunction(String ksName, String functionName);
+
+    public Iterable<Function> getFunctions();
 }

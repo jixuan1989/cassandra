@@ -18,7 +18,6 @@
 package org.apache.cassandra.gms;
 
 import java.io.DataInput;
-import java.io.DataOutput;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.util.HashMap;
@@ -27,8 +26,8 @@ import java.util.Map;
 
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.net.CompactEndpointSerializationHelper;
-import org.apache.cassandra.net.MessagingService;
 
 /**
  * This ack gets sent out as a result of the receipt of a GossipDigestSynMessage by an
@@ -60,11 +59,9 @@ public class GossipDigestAck
 
 class GossipDigestAckSerializer implements IVersionedSerializer<GossipDigestAck>
 {
-    public void serialize(GossipDigestAck gDigestAckMessage, DataOutput out, int version) throws IOException
+    public void serialize(GossipDigestAck gDigestAckMessage, DataOutputPlus out, int version) throws IOException
     {
         GossipDigestSerializationHelper.serialize(gDigestAckMessage.gDigestList, out, version);
-        if (version < MessagingService.VERSION_12)
-            out.writeBoolean(true); // 0.6 compatibility
         out.writeInt(gDigestAckMessage.epStateMap.size());
         for (Map.Entry<InetAddress, EndpointState> entry : gDigestAckMessage.epStateMap.entrySet())
         {
@@ -77,8 +74,6 @@ class GossipDigestAckSerializer implements IVersionedSerializer<GossipDigestAck>
     public GossipDigestAck deserialize(DataInput in, int version) throws IOException
     {
         List<GossipDigest> gDigestList = GossipDigestSerializationHelper.deserialize(in, version);
-        if (version < MessagingService.VERSION_12)
-            in.readBoolean(); // 0.6 compatibility
         int size = in.readInt();
         Map<InetAddress, EndpointState> epStateMap = new HashMap<InetAddress, EndpointState>(size);
 
@@ -94,8 +89,6 @@ class GossipDigestAckSerializer implements IVersionedSerializer<GossipDigestAck>
     public long serializedSize(GossipDigestAck ack, int version)
     {
         int size = GossipDigestSerializationHelper.serializedSize(ack.gDigestList, version);
-        if (version < MessagingService.VERSION_12)
-            size += TypeSizes.NATIVE.sizeof(true);
         size += TypeSizes.NATIVE.sizeof(ack.epStateMap.size());
         for (Map.Entry<InetAddress, EndpointState> entry : ack.epStateMap.entrySet())
             size += CompactEndpointSerializationHelper.serializedSize(entry.getKey())

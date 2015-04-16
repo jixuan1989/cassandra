@@ -17,117 +17,315 @@
  */
 package org.apache.cassandra.io.sstable;
 
-import java.io.DataInput;
-import java.io.DataOutput;
+import java.io.DataInputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.List;
+import java.nio.ByteOrder;
 
 import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.RowPosition;
 import org.apache.cassandra.dht.IPartitioner;
-import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.io.util.DataOutputPlus;
+import org.apache.cassandra.io.util.Memory;
+import org.apache.cassandra.io.util.MemoryOutputStream;
+import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.concurrent.WrappedSharedCloseable;
+import org.apache.cassandra.utils.memory.MemoryUtil;
 
-/**
- * Two approaches to building an IndexSummary:
- * 1. Call maybeAddEntry with every potential index entry
- * 2. Call shouldAddEntry, [addEntry,] incrementRowid
+import static org.apache.cassandra.io.sstable.Downsampling.BASE_SAMPLING_LEVEL;
+
+/*
+ * Layout of Memory for index summaries:
+ *
+ * There are two sections:
+ *  1. A "header" containing the offset into `bytes` of entries in the summary summary data, consisting of
+ *     one four byte position for each entry in the summary.  This allows us do simple math in getIndex()
+ *     to find the position in the Memory to start reading the actual index summary entry.
+ *     (This is necessary because keys can have different lengths.)
+ *  2.  A sequence of (DecoratedKey, position) pairs, where position is the offset into the actual index file.
  */
-public class IndexSummary
+public class IndexSummary extends WrappedSharedCloseable
 {
     public static final IndexSummarySerializer serializer = new IndexSummarySerializer();
-    private final ArrayList<Long> positions;
-    private final ArrayList<DecoratedKey> keys;
-    private long keysWritten = 0;
-    private int indexInterval;
 
-    private IndexSummary()
+    /**
+     * A lower bound for the average number of partitions in between each index summary entry. A lower value means
+     * that more partitions will have an entry in the index summary when at the full sampling level.
+     */
+    private final int minIndexInterval;
+
+    private final IPartitioner partitioner;
+    private final int sizeAtFullSampling;
+    // we permit the memory to span a range larger than we use,
+    // so we have an accompanying count and length for each part
+    // we split our data into two ranges: offsets (indexing into entries),
+    // and entries containing the summary data
+    private final Memory offsets;
+    private final int offsetCount;
+    // entries is a list of (partition key, index file offset) pairs
+    private final Memory entries;
+    private final long entriesLength;
+
+    /**
+     * A value between 1 and BASE_SAMPLING_LEVEL that represents how many of the original
+     * index summary entries ((1 / indexInterval) * numKeys) have been retained.
+     *
+     * Thus, this summary contains (samplingLevel / BASE_SAMPLING_LEVEL) * ((1 / indexInterval) * numKeys)) entries.
+     */
+    private final int samplingLevel;
+
+    public IndexSummary(IPartitioner partitioner, Memory offsets, int offsetCount, Memory entries, long entriesLength,
+                        int sizeAtFullSampling, int minIndexInterval, int samplingLevel)
     {
-        positions = new ArrayList<Long>();
-        keys = new ArrayList<DecoratedKey>();
+        super(new Memory[] { offsets, entries });
+        assert offsets.getInt(0) == 0;
+        this.partitioner = partitioner;
+        this.minIndexInterval = minIndexInterval;
+        this.offsetCount = offsetCount;
+        this.entriesLength = entriesLength;
+        this.sizeAtFullSampling = sizeAtFullSampling;
+        this.offsets = offsets;
+        this.entries = entries;
+        this.samplingLevel = samplingLevel;
+        assert samplingLevel > 0;
     }
 
-    public IndexSummary(long expectedKeys, int indexInterval)
+    private IndexSummary(IndexSummary copy)
     {
-        long expectedEntries = expectedKeys / indexInterval;
-        if (expectedEntries > Integer.MAX_VALUE)
-            // TODO: that's a _lot_ of keys, or a very low interval
-            throw new RuntimeException("Cannot use index_interval of " + indexInterval + " with " + expectedKeys + " (expected) keys.");
-        positions = new ArrayList<Long>((int)expectedEntries);
-        keys = new ArrayList<DecoratedKey>((int)expectedEntries);
-        this.indexInterval = indexInterval;
+        super(copy);
+        this.partitioner = copy.partitioner;
+        this.minIndexInterval = copy.minIndexInterval;
+        this.offsetCount = copy.offsetCount;
+        this.entriesLength = copy.entriesLength;
+        this.sizeAtFullSampling = copy.sizeAtFullSampling;
+        this.offsets = copy.offsets;
+        this.entries = copy.entries;
+        this.samplingLevel = copy.samplingLevel;
     }
 
-    public void incrementRowid()
+    // binary search is notoriously more difficult to get right than it looks; this is lifted from
+    // Harmony's Collections implementation
+    public int binarySearch(RowPosition key)
     {
-        keysWritten++;
+        // We will be comparing non-native Keys, so use a buffer with appropriate byte order
+        ByteBuffer hollow = MemoryUtil.getHollowDirectByteBuffer().order(ByteOrder.BIG_ENDIAN);
+        int low = 0, mid = offsetCount, high = mid - 1, result = -1;
+        while (low <= high)
+        {
+            mid = (low + high) >> 1;
+            fillTemporaryKey(mid, hollow);
+            result = -DecoratedKey.compareTo(partitioner, hollow, key);
+            if (result > 0)
+            {
+                low = mid + 1;
+            }
+            else if (result == 0)
+            {
+                return mid;
+            }
+            else
+            {
+                high = mid - 1;
+            }
+        }
+
+        return -mid - (result < 0 ? 1 : 2);
     }
 
-    public boolean shouldAddEntry()
+    /**
+     * Gets the position of the actual index summary entry in our Memory attribute, 'bytes'.
+     * @param index The index of the entry or key to get the position for
+     * @return an offset into our Memory attribute where the actual entry resides
+     */
+    public int getPositionInSummary(int index)
     {
-        return keysWritten % indexInterval == 0;
+        // The first section of bytes holds a four-byte position for each entry in the summary, so just multiply by 4.
+        return offsets.getInt(index << 2);
     }
 
-    public void addEntry(DecoratedKey key, long indexPosition)
+    public byte[] getKey(int index)
     {
-        keys.add(SSTable.getMinimalKey(key));
-        positions.add(indexPosition);
+        long start = getPositionInSummary(index);
+        int keySize = (int) (calculateEnd(index) - start - 8L);
+        byte[] key = new byte[keySize];
+        entries.getBytes(start, key, 0, keySize);
+        return key;
     }
 
-    public void maybeAddEntry(DecoratedKey decoratedKey, long indexPosition)
+    private void fillTemporaryKey(int index, ByteBuffer buffer)
     {
-        if (shouldAddEntry())
-            addEntry(decoratedKey, indexPosition);
-        incrementRowid();
-    }
-
-    public List<DecoratedKey> getKeys()
-    {
-        return keys;
+        long start = getPositionInSummary(index);
+        int keySize = (int) (calculateEnd(index) - start - 8L);
+        entries.setByteBuffer(buffer, start, keySize);
     }
 
     public long getPosition(int index)
     {
-        return positions.get(index);
+        return entries.getLong(calculateEnd(index) - 8);
     }
 
-    public int getIndexInterval() {
-        return indexInterval;
-    }
-
-	public void complete()
+    public long getEndInSummary(int index)
     {
-        keys.trimToSize();
-        positions.trimToSize();
+        return calculateEnd(index);
+    }
+
+    private long calculateEnd(int index)
+    {
+        return index == (offsetCount - 1) ? entriesLength : getPositionInSummary(index + 1);
+    }
+
+    public int getMinIndexInterval()
+    {
+        return minIndexInterval;
+    }
+
+    public double getEffectiveIndexInterval()
+    {
+        return (BASE_SAMPLING_LEVEL / (double) samplingLevel) * minIndexInterval;
+    }
+
+    /**
+     * Returns an estimate of the total number of keys in the SSTable.
+     */
+    public long getEstimatedKeyCount()
+    {
+        return ((long) getMaxNumberOfEntries() + 1) * minIndexInterval;
+    }
+
+    public int size()
+    {
+        return offsetCount;
+    }
+
+    public int getSamplingLevel()
+    {
+        return samplingLevel;
+    }
+
+    /**
+     * Returns the number of entries this summary would have if it were at the full sampling level, which is equal
+     * to the number of entries in the primary on-disk index divided by the min index interval.
+     */
+    public int getMaxNumberOfEntries()
+    {
+        return sizeAtFullSampling;
+    }
+
+    /**
+     * Returns the amount of off-heap memory used for the entries portion of this summary.
+     * @return size in bytes
+     */
+    long getEntriesLength()
+    {
+        return entriesLength;
+    }
+
+    Memory getOffsets()
+    {
+        return offsets;
+    }
+
+    Memory getEntries()
+    {
+        return entries;
+    }
+
+    public long getOffHeapSize()
+    {
+        return offsetCount * 4 + entriesLength;
+    }
+
+    /**
+     * Returns the number of primary (on-disk) index entries between the index summary entry at `index` and the next
+     * index summary entry (assuming there is one).  Without any downsampling, this will always be equivalent to
+     * the index interval.
+     *
+     * @param index the index of an index summary entry (between zero and the index entry size)
+     *
+     * @return the number of partitions after `index` until the next partition with a summary entry
+     */
+    public int getEffectiveIndexIntervalAfterIndex(int index)
+    {
+        return Downsampling.getEffectiveIndexIntervalAfterIndex(index, samplingLevel, minIndexInterval);
+    }
+
+    public IndexSummary sharedCopy()
+    {
+        return new IndexSummary(this);
     }
 
     public static class IndexSummarySerializer
     {
-        public void serialize(IndexSummary t, DataOutput out) throws IOException
+        public void serialize(IndexSummary t, DataOutputPlus out, boolean withSamplingLevel) throws IOException
         {
-            assert t.keys.size() == t.positions.size() : "keysize and the position sizes are not same.";
-            out.writeInt(t.indexInterval);
-            out.writeInt(t.keys.size());
-            for (int i = 0; i < t.keys.size(); i++)
+            out.writeInt(t.minIndexInterval);
+            out.writeInt(t.offsetCount);
+            out.writeLong(t.getOffHeapSize());
+            if (withSamplingLevel)
             {
-                out.writeLong(t.positions.get(i));
-                ByteBufferUtil.writeWithLength(t.keys.get(i).key, out);
+                out.writeInt(t.samplingLevel);
+                out.writeInt(t.sizeAtFullSampling);
             }
+            // our on-disk representation treats the offsets and the summary data as one contiguous structure,
+            // in which the offsets are based from the start of the structure. i.e., if the offsets occupy
+            // X bytes, the value of the first offset will be X. In memory we split the two regions up, so that
+            // the summary values are indexed from zero, so we apply a correction to the offsets when de/serializing.
+            // In this case adding X to each of the offsets.
+            int baseOffset = t.offsetCount * 4;
+            for (int i = 0 ; i < t.offsetCount ; i++)
+            {
+                int offset = t.offsets.getInt(i * 4) + baseOffset;
+                // our serialization format for this file uses native byte order, so if this is different to the
+                // default Java serialization order (BIG_ENDIAN) we have to reverse our bytes
+                if (ByteOrder.nativeOrder() != ByteOrder.BIG_ENDIAN)
+                    offset = Integer.reverseBytes(offset);
+                out.writeInt(offset);
+            }
+            out.write(t.entries, 0, t.entriesLength);
         }
 
-        public IndexSummary deserialize(DataInput in, IPartitioner partitioner) throws IOException
+        public IndexSummary deserialize(DataInputStream in, IPartitioner partitioner, boolean haveSamplingLevel, int expectedMinIndexInterval, int maxIndexInterval) throws IOException
         {
-            IndexSummary summary = new IndexSummary();
-            summary.indexInterval = in.readInt();
-
-            int size = in.readInt();
-            for (int i = 0; i < size; i++)
+            int minIndexInterval = in.readInt();
+            if (minIndexInterval != expectedMinIndexInterval)
             {
-                long location = in.readLong();
-                ByteBuffer key = ByteBufferUtil.readWithLength(in);
-                summary.addEntry(partitioner.decorateKey(key), location);
+                throw new IOException(String.format("Cannot read index summary because min_index_interval changed from %d to %d.",
+                                                    minIndexInterval, expectedMinIndexInterval));
             }
-            return summary;
+
+            int offsetCount = in.readInt();
+            long offheapSize = in.readLong();
+            int samplingLevel, fullSamplingSummarySize;
+            if (haveSamplingLevel)
+            {
+                samplingLevel = in.readInt();
+                fullSamplingSummarySize = in.readInt();
+            }
+            else
+            {
+                samplingLevel = BASE_SAMPLING_LEVEL;
+                fullSamplingSummarySize = offsetCount;
+            }
+
+            int effectiveIndexInterval = (int) Math.ceil((BASE_SAMPLING_LEVEL / (double) samplingLevel) * minIndexInterval);
+            if (effectiveIndexInterval > maxIndexInterval)
+            {
+                throw new IOException(String.format("Rebuilding index summary because the effective index interval (%d) is higher than" +
+                                                    " the current max index interval (%d)", effectiveIndexInterval, maxIndexInterval));
+            }
+
+            Memory offsets = Memory.allocate(offsetCount * 4);
+            Memory entries = Memory.allocate(offheapSize - offsets.size());
+            FBUtilities.copy(in, new MemoryOutputStream(offsets), offsets.size());
+            FBUtilities.copy(in, new MemoryOutputStream(entries), entries.size());
+            // our on-disk representation treats the offsets and the summary data as one contiguous structure,
+            // in which the offsets are based from the start of the structure. i.e., if the offsets occupy
+            // X bytes, the value of the first offset will be X. In memory we split the two regions up, so that
+            // the summary values are indexed from zero, so we apply a correction to the offsets when de/serializing.
+            // In this case subtracting X from each of the offsets.
+            for (int i = 0 ; i < offsets.size() ; i += 4)
+                offsets.setInt(i, (int) (offsets.getInt(i) - offsets.size()));
+            return new IndexSummary(partitioner, offsets, offsetCount, entries, entries.size(), fullSamplingSummarySize, minIndexInterval, samplingLevel);
         }
     }
 }

@@ -23,6 +23,9 @@ import java.util.List;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.BytesType;
 import org.apache.cassandra.db.marshal.UTF8Type;
+import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.serializers.MarshalException;
 
 public abstract class BytesConversionFcts
 {
@@ -31,38 +34,49 @@ public abstract class BytesConversionFcts
     public static Function makeToBlobFunction(AbstractType<?> fromType)
     {
         String name = fromType.asCQL3Type() + "asblob";
-        return new AbstractFunction(name, BytesType.instance, fromType)
+        return new NativeScalarFunction(name, BytesType.instance, fromType)
         {
-            public ByteBuffer execute(List<ByteBuffer> parameters)
+            public ByteBuffer execute(int protocolVersion, List<ByteBuffer> parameters)
             {
                 return parameters.get(0);
             }
         };
     }
 
-    public static Function makeFromBlobFunction(AbstractType<?> toType)
+    public static Function makeFromBlobFunction(final AbstractType<?> toType)
     {
-        String name = "blobas" + toType.asCQL3Type();
-        return new AbstractFunction(name, toType, BytesType.instance)
+        final String name = "blobas" + toType.asCQL3Type();
+        return new NativeScalarFunction(name, toType, BytesType.instance)
         {
-            public ByteBuffer execute(List<ByteBuffer> parameters)
+            public ByteBuffer execute(int protocolVersion, List<ByteBuffer> parameters) throws InvalidRequestException
             {
-                return parameters.get(0);
+                ByteBuffer val = parameters.get(0);
+                try
+                {
+                    if (val != null)
+                        toType.validate(val);
+                    return val;
+                }
+                catch (MarshalException e)
+                {
+                    throw new InvalidRequestException(String.format("In call to function %s, value 0x%s is not a valid binary representation for type %s",
+                                                                    name, ByteBufferUtil.bytesToHex(val), toType.asCQL3Type()));
+                }
             }
         };
     }
 
-    public static final Function VarcharAsBlobFct = new AbstractFunction("varcharasblob", BytesType.instance, UTF8Type.instance)
+    public static final Function VarcharAsBlobFct = new NativeScalarFunction("varcharasblob", BytesType.instance, UTF8Type.instance)
     {
-        public ByteBuffer execute(List<ByteBuffer> parameters)
+        public ByteBuffer execute(int protocolVersion, List<ByteBuffer> parameters)
         {
             return parameters.get(0);
         }
     };
 
-    public static final Function BlobAsVarcharFact = new AbstractFunction("blobasvarchar", UTF8Type.instance, BytesType.instance)
+    public static final Function BlobAsVarcharFact = new NativeScalarFunction("blobasvarchar", UTF8Type.instance, BytesType.instance)
     {
-        public ByteBuffer execute(List<ByteBuffer> parameters)
+        public ByteBuffer execute(int protocolVersion, List<ByteBuffer> parameters)
         {
             return parameters.get(0);
         }

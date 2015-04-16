@@ -29,7 +29,7 @@ import com.google.common.collect.Multimaps;
 /**
  *
  * A variant of BiMap which does not enforce uniqueness of values. This means the inverse
- * is a Multimap.
+ * is a Multimap.  (But the "forward" view is not a multimap; keys may only each have one value.)
  *
  * @param <K>
  * @param <V>
@@ -137,5 +137,10 @@ public class BiMultiValMap<K, V> implements Map<K, V>
     public Collection<V> values()
     {
         return reverseMap.keys();
+    }
+
+    public Collection<V> valueSet()
+    {
+        return reverseMap.keySet();
     }
 }

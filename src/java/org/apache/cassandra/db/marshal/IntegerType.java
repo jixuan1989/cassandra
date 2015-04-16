@@ -20,8 +20,12 @@ package org.apache.cassandra.db.marshal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 
-import org.apache.cassandra.cql.jdbc.JdbcInteger;
 import org.apache.cassandra.cql3.CQL3Type;
+import org.apache.cassandra.cql3.Constants;
+import org.apache.cassandra.cql3.Term;
+import org.apache.cassandra.serializers.TypeSerializer;
+import org.apache.cassandra.serializers.IntegerSerializer;
+import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 public final class IntegerType extends AbstractType<BigInteger>
@@ -56,17 +60,12 @@ public final class IntegerType extends AbstractType<BigInteger>
 
     IntegerType() {/* singleton */}
 
-    public BigInteger compose(ByteBuffer bytes)
-    {
-        return JdbcInteger.instance.compose(bytes);
-    }
-
-    public ByteBuffer decompose(BigInteger value)
-    {
-        return JdbcInteger.instance.decompose(value);
-    }
-
     public int compare(ByteBuffer lhs, ByteBuffer rhs)
+    {
+        return IntegerType.compareIntegers(lhs, rhs);
+    }
+
+    public static int compareIntegers(ByteBuffer lhs, ByteBuffer rhs)
     {
         int lhsLen = lhs.remaining();
         int rhsLen = rhs.remaining();
@@ -124,11 +123,6 @@ public final class IntegerType extends AbstractType<BigInteger>
         return 0;
     }
 
-    public String getString(ByteBuffer bytes)
-    {
-        return JdbcInteger.instance.getString(bytes);
-    }
-
     public ByteBuffer fromString(String source) throws MarshalException
     {
         // Return an empty ByteBuffer for an empty string.
@@ -149,13 +143,39 @@ public final class IntegerType extends AbstractType<BigInteger>
         return decompose(integerType);
     }
 
-    public void validate(ByteBuffer bytes) throws MarshalException
+    @Override
+    public Term fromJSONObject(Object parsed) throws MarshalException
     {
-        // no invalid integers.
+        try
+        {
+            return new Constants.Value(getSerializer().serialize(new BigInteger(parsed.toString())));
+        }
+        catch (NumberFormatException exc)
+        {
+            throw new MarshalException(String.format(
+                    "Value '%s' is not a valid representation of a varint value", parsed));
+        }
+    }
+
+    @Override
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
+    {
+        return getSerializer().deserialize(buffer).toString();
+    }
+
+    @Override
+    public boolean isValueCompatibleWithInternal(AbstractType<?> otherType)
+    {
+        return this == otherType || Int32Type.instance.isValueCompatibleWith(otherType) || LongType.instance.isValueCompatibleWith(otherType);
     }
 
     public CQL3Type asCQL3Type()
     {
         return CQL3Type.Native.VARINT;
+    }
+
+    public TypeSerializer<BigInteger> getSerializer()
+    {
+        return IntegerSerializer.instance;
     }
 }

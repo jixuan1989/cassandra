@@ -20,7 +20,8 @@ package org.apache.cassandra.db.index;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 
-import org.apache.cassandra.db.Column;
+import org.apache.cassandra.utils.concurrent.OpOrder;
+import org.apache.cassandra.db.Cell;
 import org.apache.cassandra.db.ColumnFamily;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.utils.ByteBufferUtil;
@@ -31,29 +32,21 @@ import org.apache.cassandra.utils.ByteBufferUtil;
 public abstract class PerRowSecondaryIndex extends SecondaryIndex
 {
     /**
-     * Index the given row for new index creation.  @param cf will represent the entire row.
+     * Index the given row.
      *
      * @param rowKey the row key
-     * @param cf the current rows data
+     * @param cf the cf data to be indexed
      */
     public abstract void index(ByteBuffer rowKey, ColumnFamily cf);
-
-    /**
-     * Index the given row
-     *
-     * @param rowKey the row key
-     */
-    public abstract void index(ByteBuffer rowKey);
 
     /**
      * cleans up deleted columns from cassandra cleanup compaction
      *
      * @param key
      */
-    public abstract void delete(DecoratedKey key);
+    public abstract void delete(DecoratedKey key, OpOrder.Group opGroup);
 
-    @Override
-    public String getNameForSystemTable(ByteBuffer columnName)
+    public String getNameForSystemKeyspace(ByteBuffer columnName)
     {
         try
         {
@@ -65,8 +58,7 @@ public abstract class PerRowSecondaryIndex extends SecondaryIndex
         }
     }
 
-    @Override
-    public boolean validate(Column column)
+    public boolean validate(Cell cell)
     {
         return true;
     }

@@ -20,67 +20,69 @@ package org.apache.cassandra.service;
 import java.net.InetAddress;
 import java.util.Collection;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
-import com.google.common.base.Predicate;
 import com.google.common.collect.Iterables;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ConsistencyLevel;
-import org.apache.cassandra.db.Table;
+import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.WriteType;
 import org.apache.cassandra.exceptions.*;
-import org.apache.cassandra.gms.FailureDetector;
 import org.apache.cassandra.net.IAsyncCallback;
+import org.apache.cassandra.net.IAsyncCallbackWithFailure;
 import org.apache.cassandra.net.MessageIn;
-import org.apache.cassandra.utils.SimpleCondition;
+import org.apache.cassandra.utils.concurrent.SimpleCondition;
 
-public abstract class AbstractWriteResponseHandler implements IAsyncCallback
+public abstract class AbstractWriteResponseHandler<T> implements IAsyncCallbackWithFailure<T>
 {
-    private static Predicate<InetAddress> isAlive = new Predicate<InetAddress>()
-    {
-        public boolean apply(InetAddress endpoint)
-        {
-            return FailureDetector.instance.isAlive(endpoint);
-        }
-    };
+    protected static final Logger logger = LoggerFactory.getLogger( AbstractWriteResponseHandler.class );
 
     private final SimpleCondition condition = new SimpleCondition();
-    protected final Table table;
-    protected final long startTime;
+    protected final Keyspace keyspace;
+    protected final long start;
     protected final Collection<InetAddress> naturalEndpoints;
-    protected final ConsistencyLevel consistencyLevel;
+    public final ConsistencyLevel consistencyLevel;
     protected final Runnable callback;
     protected final Collection<InetAddress> pendingEndpoints;
     private final WriteType writeType;
+    private static final AtomicIntegerFieldUpdater<AbstractWriteResponseHandler> failuresUpdater
+        = AtomicIntegerFieldUpdater.newUpdater(AbstractWriteResponseHandler.class, "failures");
+    private volatile int failures = 0;
 
     /**
-     * @param pendingEndpoints
      * @param callback A callback to be called when the write is successful.
      */
-    protected AbstractWriteResponseHandler(Table table,
+    protected AbstractWriteResponseHandler(Keyspace keyspace,
                                            Collection<InetAddress> naturalEndpoints,
                                            Collection<InetAddress> pendingEndpoints,
                                            ConsistencyLevel consistencyLevel,
                                            Runnable callback,
                                            WriteType writeType)
     {
-        this.table = table;
+        this.keyspace = keyspace;
         this.pendingEndpoints = pendingEndpoints;
-        this.startTime = System.currentTimeMillis();
+        this.start = System.nanoTime();
         this.consistencyLevel = consistencyLevel;
         this.naturalEndpoints = naturalEndpoints;
         this.callback = callback;
         this.writeType = writeType;
     }
 
-    public void get() throws WriteTimeoutException
+    public void get() throws WriteTimeoutException, WriteFailureException
     {
-        long timeout = DatabaseDescriptor.getWriteRpcTimeout() - (System.currentTimeMillis() - startTime);
+        long requestTimeout = writeType == WriteType.COUNTER
+                            ? DatabaseDescriptor.getCounterWriteRpcTimeout()
+                            : DatabaseDescriptor.getWriteRpcTimeout();
+
+        long timeout = TimeUnit.MILLISECONDS.toNanos(requestTimeout) - (System.nanoTime() - start);
 
         boolean success;
         try
         {
-            success = condition.await(timeout, TimeUnit.MILLISECONDS);
+            success = condition.await(timeout, TimeUnit.NANOSECONDS);
         }
         catch (InterruptedException ex)
         {
@@ -88,30 +90,79 @@ public abstract class AbstractWriteResponseHandler implements IAsyncCallback
         }
 
         if (!success)
-            throw new WriteTimeoutException(writeType, consistencyLevel, ackCount(), totalBlockFor());
+        {
+            int blockedFor = totalBlockFor();
+            int acks = ackCount();
+            // It's pretty unlikely, but we can race between exiting await above and here, so
+            // that we could now have enough acks. In that case, we "lie" on the acks count to
+            // avoid sending confusing info to the user (see CASSANDRA-6491).
+            if (acks >= blockedFor)
+                acks = blockedFor - 1;
+            throw new WriteTimeoutException(writeType, consistencyLevel, acks, blockedFor);
+        }
+
+        if (totalBlockFor() + failures > totalEndpoints())
+        {
+            throw new WriteFailureException(consistencyLevel, ackCount(), failures, totalBlockFor(), writeType);
+        }
     }
 
+    /** 
+     * @return the minimum number of endpoints that must reply. 
+     */
     protected int totalBlockFor()
     {
         // During bootstrap, we have to include the pending endpoints or we may fail the consistency level
         // guarantees (see #833)
-        return consistencyLevel.blockFor(table) + pendingEndpoints.size();
+        return consistencyLevel.blockFor(keyspace) + pendingEndpoints.size();
     }
 
+    /** 
+     * @return the total number of endpoints the request has been sent to. 
+     */
+    protected int totalEndpoints()
+    {
+        return naturalEndpoints.size() + pendingEndpoints.size();
+    }
+
+    /**
+     * @return true if the message counts towards the totalBlockFor() threshold
+     */
+    protected boolean waitingFor(InetAddress from)
+    {
+        return true;
+    }
+
+    /**
+     * @return number of responses received
+     */
     protected abstract int ackCount();
 
     /** null message means "response from local write" */
-    public abstract void response(MessageIn msg);
+    public abstract void response(MessageIn<T> msg);
 
     public void assureSufficientLiveNodes() throws UnavailableException
     {
-        consistencyLevel.assureSufficientLiveNodes(table, Iterables.filter(Iterables.concat(naturalEndpoints, pendingEndpoints), isAlive));
+        consistencyLevel.assureSufficientLiveNodes(keyspace, Iterables.filter(Iterables.concat(naturalEndpoints, pendingEndpoints), isAlive));
     }
 
     protected void signal()
     {
-        condition.signal();
+        condition.signalAll();
         if (callback != null)
             callback.run();
+    }
+
+    @Override
+    public void onFailure(InetAddress from)
+    {
+        logger.trace("Got failure from {}", from);
+
+        int n = waitingFor(from)
+              ? failuresUpdater.incrementAndGet(this)
+              : failures;
+
+        if (totalBlockFor() + n > totalEndpoints())
+            signal();
     }
 }

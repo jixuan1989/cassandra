@@ -17,13 +17,14 @@
  */
 package org.apache.cassandra.cql3.statements;
 
-import java.nio.ByteBuffer;
-import java.util.List;
 
 import org.apache.cassandra.auth.DataResource;
+import org.apache.cassandra.auth.IResource;
 import org.apache.cassandra.cql3.CQLStatement;
-import org.apache.cassandra.db.ConsistencyLevel;
-import org.apache.cassandra.exceptions.*;
+import org.apache.cassandra.cql3.QueryOptions;
+import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.exceptions.RequestExecutionException;
+import org.apache.cassandra.exceptions.RequestValidationException;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.transport.messages.ResultMessage;
@@ -36,12 +37,12 @@ public abstract class AuthorizationStatement extends ParsedStatement implements 
         return new Prepared(this);
     }
 
-    public int getBoundsTerms()
+    public int getBoundTerms()
     {
         return 0;
     }
 
-    public ResultMessage execute(ConsistencyLevel cl, QueryState state, List<ByteBuffer> variables)
+    public ResultMessage execute(QueryState state, QueryOptions options)
     throws RequestValidationException, RequestExecutionException
     {
         return execute(state.getClientState());
@@ -49,16 +50,20 @@ public abstract class AuthorizationStatement extends ParsedStatement implements 
 
     public abstract ResultMessage execute(ClientState state) throws RequestValidationException, RequestExecutionException;
 
-    public ResultMessage executeInternal(QueryState state)
+    public ResultMessage executeInternal(QueryState state, QueryOptions options)
     {
         // executeInternal is for local query only, thus altering permission doesn't make sense and is not supported
         throw new UnsupportedOperationException();
     }
 
-    public static DataResource maybeCorrectResource(DataResource resource, ClientState state) throws InvalidRequestException
+    public static IResource maybeCorrectResource(IResource resource, ClientState state) throws InvalidRequestException
     {
-        if (resource.isColumnFamilyLevel() && resource.getKeyspace() == null)
-            return DataResource.columnFamily(state.getKeyspace(), resource.getColumnFamily());
+        if (DataResource.class.isInstance(resource))
+        {
+            DataResource dataResource = (DataResource) resource;
+            if (dataResource.isTableLevel() && dataResource.getKeyspace() == null)
+                return DataResource.table(state.getKeyspace(), dataResource.getTable());
+        }
         return resource;
     }
 }

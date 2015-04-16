@@ -19,36 +19,31 @@ package org.apache.cassandra.transport;
 
 import java.util.concurrent.ConcurrentMap;
 
+import io.netty.channel.Channel;
+import org.apache.cassandra.auth.IAuthenticator;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.QueryState;
-
 import org.cliffc.high_scale_lib.NonBlockingHashMap;
 
 public class ServerConnection extends Connection
 {
-    public static final Factory FACTORY = new Factory()
-    {
-        public Connection newConnection(Connection.Tracker tracker)
-        {
-            return new ServerConnection(tracker);
-        }
-    };
+    private enum State { UNINITIALIZED, AUTHENTICATION, READY }
 
-    private enum State { UNINITIALIZED, AUTHENTICATION, READY; }
-
+    private volatile IAuthenticator.SaslNegotiator saslNegotiator;
     private final ClientState clientState;
     private volatile State state;
 
-    private final ConcurrentMap<Integer, QueryState> queryStates = new NonBlockingHashMap<Integer, QueryState>();
+    private final ConcurrentMap<Integer, QueryState> queryStates = new NonBlockingHashMap<>();
 
-    public ServerConnection(Connection.Tracker tracker)
+    public ServerConnection(Channel channel, int version, Connection.Tracker tracker)
     {
-        super(tracker);
-        this.clientState = new ClientState();
+        super(channel, version, tracker);
+        this.clientState = ClientState.forExternalCalls(channel.remoteAddress());
         this.state = State.UNINITIALIZED;
     }
 
-    public QueryState getQueryState(int streamId)
+    private QueryState getQueryState(int streamId)
     {
         QueryState qState = queryStates.get(streamId);
         if (qState == null)
@@ -61,7 +56,7 @@ public class ServerConnection extends Connection
         return qState;
     }
 
-    public void validateNewMessage(Message.Type type)
+    public QueryState validateNewMessage(Message.Type type, int version, int streamId)
     {
         switch (state)
         {
@@ -70,8 +65,9 @@ public class ServerConnection extends Connection
                     throw new ProtocolException(String.format("Unexpected message %s, expecting STARTUP or OPTIONS", type));
                 break;
             case AUTHENTICATION:
-                if (type != Message.Type.CREDENTIALS)
-                    throw new ProtocolException(String.format("Unexpected message %s, needs authentication through CREDENTIALS message", type));
+                // Support both SASL auth from protocol v2 and the older style Credentials auth from v1
+                if (type != Message.Type.AUTH_RESPONSE && type != Message.Type.CREDENTIALS)
+                    throw new ProtocolException(String.format("Unexpected message %s, expecting %s", type, version == 1 ? "CREDENTIALS" : "SASL_RESPONSE"));
                 break;
             case READY:
                 if (type == Message.Type.STARTUP)
@@ -80,6 +76,7 @@ public class ServerConnection extends Connection
             default:
                 throw new AssertionError();
         }
+        return getQueryState(streamId);
     }
 
     public void applyStateTransition(Message.Type requestType, Message.Type responseType)
@@ -96,13 +93,27 @@ public class ServerConnection extends Connection
                 }
                 break;
             case AUTHENTICATION:
-                assert requestType == Message.Type.CREDENTIALS;
-                if (responseType == Message.Type.READY)
+                // Support both SASL auth from protocol v2 and the older style Credentials auth from v1
+                assert requestType == Message.Type.AUTH_RESPONSE || requestType == Message.Type.CREDENTIALS;
+
+                if (responseType == Message.Type.READY || responseType == Message.Type.AUTH_SUCCESS)
+                {
                     state = State.READY;
+                    // we won't use the authenticator again, null it so that it can be GC'd
+                    saslNegotiator = null;
+                }
+                break;
             case READY:
                 break;
             default:
                 throw new AssertionError();
         }
+    }
+
+    public IAuthenticator.SaslNegotiator getSaslNegotiator()
+    {
+        if (saslNegotiator == null)
+            saslNegotiator = DatabaseDescriptor.getAuthenticator().newSaslNegotiator();
+        return saslNegotiator;
     }
 }

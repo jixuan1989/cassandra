@@ -20,27 +20,33 @@ package org.apache.cassandra.transport.messages;
 import java.util.UUID;
 
 import com.google.common.collect.ImmutableMap;
-import org.jboss.netty.buffer.ChannelBuffer;
+import io.netty.buffer.ByteBuf;
 
-import org.apache.cassandra.cql3.QueryProcessor;
+import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.transport.*;
+import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.UUIDGen;
 
 public class PrepareMessage extends Message.Request
 {
     public static final Message.Codec<PrepareMessage> codec = new Message.Codec<PrepareMessage>()
     {
-        public PrepareMessage decode(ChannelBuffer body)
+        public PrepareMessage decode(ByteBuf body, int version)
         {
             String query = CBUtil.readLongString(body);
             return new PrepareMessage(query);
         }
 
-        public ChannelBuffer encode(PrepareMessage msg)
+        public void encode(PrepareMessage msg, ByteBuf dest, int version)
         {
-            return CBUtil.longStringToCB(msg.query);
+            CBUtil.writeLongString(msg.query, dest);
+        }
+
+        public int encodedSize(PrepareMessage msg, int version)
+        {
+            return CBUtil.sizeOfLongString(msg.query);
         }
     };
 
@@ -50,11 +56,6 @@ public class PrepareMessage extends Message.Request
     {
         super(Message.Type.PREPARE);
         this.query = query;
-    }
-
-    public ChannelBuffer encode()
-    {
-        return codec.encode(this);
     }
 
     public Message.Response execute(QueryState state)
@@ -70,11 +71,11 @@ public class PrepareMessage extends Message.Request
 
             if (state.traceNextQuery())
             {
-                state.createTracingSession();
-                Tracing.instance().begin("Preparing CQL3 query", ImmutableMap.of("query", query));
+                state.createTracingSession(connection);
+                Tracing.instance.begin("Preparing CQL3 query", state.getClientAddress(), ImmutableMap.of("query", query));
             }
 
-            Message.Response response = QueryProcessor.prepare(query, state.getClientState(), false);
+            Message.Response response = ClientState.getCQLQueryHandler().prepare(query, state, getCustomPayload());
 
             if (tracingId != null)
                 response.setTracingId(tracingId);
@@ -83,11 +84,12 @@ public class PrepareMessage extends Message.Request
         }
         catch (Exception e)
         {
+            JVMStabilityInspector.inspectThrowable(e);
             return ErrorMessage.fromException(e);
         }
         finally
         {
-            Tracing.instance().stopSession();
+            Tracing.instance.stopSession();
         }
     }
 

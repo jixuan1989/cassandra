@@ -17,6 +17,8 @@
  */
 package org.apache.cassandra.net;
 
+import java.util.concurrent.TimeUnit;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,7 +30,7 @@ public class ResponseVerbHandler implements IVerbHandler
 
     public void doVerb(MessageIn message, int id)
     {
-        long latency = System.currentTimeMillis() - MessagingService.instance().getRegisteredCallbackAge(id);
+        long latency = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - MessagingService.instance().getRegisteredCallbackAge(id));
         CallbackInfo callbackInfo = MessagingService.instance().removeRegisteredCallback(id);
         if (callbackInfo == null)
         {
@@ -40,7 +42,15 @@ public class ResponseVerbHandler implements IVerbHandler
 
         Tracing.trace("Processing response from {}", message.from);
         IAsyncCallback cb = callbackInfo.callback;
-        MessagingService.instance().maybeAddLatency(cb, message.from, latency);
-        cb.response(message);
+        if (message.isFailureResponse())
+        {
+            ((IAsyncCallbackWithFailure) cb).onFailure(message.from);
+        }
+        else
+        {
+            //TODO: Should we add latency only in success cases?
+            MessagingService.instance().maybeAddLatency(cb, message.from, latency);
+            cb.response(message);
+        }
     }
 }

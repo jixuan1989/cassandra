@@ -18,15 +18,14 @@
 package org.apache.cassandra.db;
 
 import java.io.DataInput;
-import java.io.DataOutput;
 import java.io.IOException;
-import java.util.Iterator;
 import java.util.UUID;
 
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.io.ISSTableSerializer;
 import org.apache.cassandra.io.IVersionedSerializer;
-import org.apache.cassandra.io.sstable.Descriptor;
+import org.apache.cassandra.io.sstable.format.Version;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.utils.UUIDSerializer;
 
@@ -49,7 +48,7 @@ public class ColumnFamilySerializer implements IVersionedSerializer<ColumnFamily
      * <column count>
      * <columns, serialized individually>
     */
-    public void serialize(ColumnFamily cf, DataOutput out, int version)
+    public void serialize(ColumnFamily cf, DataOutputPlus out, int version)
     {
         try
         {
@@ -61,24 +60,17 @@ public class ColumnFamilySerializer implements IVersionedSerializer<ColumnFamily
 
             out.writeBoolean(true);
             serializeCfId(cf.id(), out, version);
-
-            if (cf.metadata().isSuper() && version < MessagingService.VERSION_20)
-            {
-                SuperColumns.serializeSuperColumnFamily(cf, out, version);
-                return;
-            }
-
-            DeletionInfo.serializer().serialize(cf.deletionInfo(), out, version);
-            ColumnSerializer columnSerializer = Column.serializer;
+            cf.getComparator().deletionInfoSerializer().serialize(cf.deletionInfo(), out, version);
+            ColumnSerializer columnSerializer = cf.getComparator().columnSerializer();
             int count = cf.getColumnCount();
             out.writeInt(count);
             int written = 0;
-            for (Column column : cf)
+            for (Cell cell : cf)
             {
-                columnSerializer.serialize(column, out);
+                columnSerializer.serialize(cell, out);
                 written++;
             }
-            assert count == written: "Column family had " + count + " columns, but " + written + " written";
+            assert count == written: "Table had " + count + " columns, but " + written + " written";
         }
         catch (IOException e)
         {
@@ -102,41 +94,30 @@ public class ColumnFamilySerializer implements IVersionedSerializer<ColumnFamily
             return null;
 
         ColumnFamily cf = factory.create(Schema.instance.getCFMetaData(deserializeCfId(in, version)));
-        int expireBefore = (int) (System.currentTimeMillis() / 1000);
 
         if (cf.metadata().isSuper() && version < MessagingService.VERSION_20)
         {
-            SuperColumns.deserializerSuperColumnFamily(in, cf, flag, expireBefore, version);
+            SuperColumns.deserializerSuperColumnFamily(in, cf, flag, version);
         }
         else
         {
-            cf.delete(DeletionInfo.serializer().deserialize(in, version, cf.getComparator()));
+            cf.delete(cf.getComparator().deletionInfoSerializer().deserialize(in, version));
 
-            ColumnSerializer columnSerializer = Column.serializer;
+            ColumnSerializer columnSerializer = cf.getComparator().columnSerializer();
             int size = in.readInt();
             for (int i = 0; i < size; ++i)
-            {
-                cf.addColumn(columnSerializer.deserialize(in, flag, expireBefore));
-            }
+                cf.addColumn(columnSerializer.deserialize(in, flag));
         }
         return cf;
     }
 
     public long contentSerializedSize(ColumnFamily cf, TypeSizes typeSizes, int version)
     {
-        long size = 0L;
-
-        if (cf.metadata().isSuper() && version < MessagingService.VERSION_20)
-        {
-            size += SuperColumns.serializedSize(cf, typeSizes, version);
-        }
-        else
-        {
-            size += DeletionInfo.serializer().serializedSize(cf.deletionInfo(), typeSizes, version);
-            size += typeSizes.sizeof(cf.getColumnCount());
-            for (Column column : cf)
-                size += column.serializedSize(typeSizes);
-        }
+        long size = cf.getComparator().deletionInfoSerializer().serializedSize(cf.deletionInfo(), typeSizes, version);
+        size += typeSizes.sizeof(cf.getColumnCount());
+        ColumnSerializer columnSerializer = cf.getComparator().columnSerializer();
+        for (Cell cell : cf)
+            size += columnSerializer.serializedSize(cell, typeSizes);
         return size;
     }
 
@@ -159,55 +140,25 @@ public class ColumnFamilySerializer implements IVersionedSerializer<ColumnFamily
         return serializedSize(cf, TypeSizes.NATIVE, version);
     }
 
-    public void serializeForSSTable(ColumnFamily cf, DataOutput out)
+    public void serializeForSSTable(ColumnFamily cf, DataOutputPlus out)
     {
         // Column families shouldn't be written directly to disk, use ColumnIndex.Builder instead
         throw new UnsupportedOperationException();
     }
 
-    public ColumnFamily deserializeFromSSTable(DataInput in, Descriptor.Version version)
+    public ColumnFamily deserializeFromSSTable(DataInput in, Version version)
     {
         throw new UnsupportedOperationException();
     }
 
-    public void deserializeColumnsFromSSTable(DataInput in, ColumnFamily cf, int size, ColumnSerializer.Flag flag, int expireBefore, Descriptor.Version version) throws IOException
+    public void serializeCfId(UUID cfId, DataOutputPlus out, int version) throws IOException
     {
-        Iterator<OnDiskAtom> iter = cf.metadata().getOnDiskIterator(in, size, flag, expireBefore, version);
-        while (iter.hasNext())
-            cf.addAtom(iter.next());
-    }
-
-    public void deserializeFromSSTable(DataInput in, ColumnFamily cf, ColumnSerializer.Flag flag, Descriptor.Version version) throws IOException
-    {
-        cf.delete(DeletionInfo.serializer().deserializeFromSSTable(in, version));
-        int size = in.readInt();
-        int expireBefore = (int) (System.currentTimeMillis() / 1000);
-        deserializeColumnsFromSSTable(in, cf, size, flag, expireBefore, version);
-    }
-
-    public void serializeCfId(UUID cfId, DataOutput out, int version) throws IOException
-    {
-        if (version < MessagingService.VERSION_12) // try to use CF's old id where possible (CASSANDRA-3794)
-        {
-            Integer oldId = Schema.instance.convertNewCfId(cfId);
-
-            if (oldId == null)
-                throw new IOException("Can't serialize ColumnFamily ID " + cfId + " to be used by version " + version +
-                                      ", because int <-> uuid mapping could not be established (CF was created in mixed version cluster).");
-
-            out.writeInt(oldId);
-        }
-        else
-            UUIDSerializer.serializer.serialize(cfId, out, version);
+        UUIDSerializer.serializer.serialize(cfId, out, version);
     }
 
     public UUID deserializeCfId(DataInput in, int version) throws IOException
     {
-        // create a ColumnFamily based on the cf id
-        UUID cfId = (version < MessagingService.VERSION_12)
-                     ? Schema.instance.convertOldCfId(in.readInt())
-                     : UUIDSerializer.serializer.deserialize(in, version);
-
+        UUID cfId = UUIDSerializer.serializer.deserialize(in, version);
         if (Schema.instance.getCF(cfId) == null)
             throw new UnknownColumnFamilyException("Couldn't find cfId=" + cfId, cfId);
 
@@ -216,17 +167,6 @@ public class ColumnFamilySerializer implements IVersionedSerializer<ColumnFamily
 
     public int cfIdSerializedSize(UUID cfId, TypeSizes typeSizes, int version)
     {
-        if (version < MessagingService.VERSION_12) // try to use CF's old id where possible (CASSANDRA-3794)
-        {
-            Integer oldId = Schema.instance.convertNewCfId(cfId);
-
-            if (oldId == null)
-                throw new RuntimeException("Can't serialize ColumnFamily ID " + cfId + " to be used by version " + version +
-                        ", because int <-> uuid mapping could not be established (CF was created in mixed version cluster).");
-
-            return typeSizes.sizeof(oldId);
-        }
-
         return typeSizes.sizeof(cfId);
     }
 }

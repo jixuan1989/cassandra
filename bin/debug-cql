@@ -51,13 +51,13 @@ fi
 # Special-case path variables.
 case "`uname`" in
     CYGWIN*) 
-        CLASSPATH=`cygpath -p -w "$CLASSPATH"`
-        CASSANDRA_CONF=`cygpath -p -w "$CASSANDRA_CONF"`
+        CLASSPATH="`cygpath -p -w "$CLASSPATH"`"
+        CASSANDRA_CONF="`cygpath -p -w "$CASSANDRA_CONF"`"
     ;;
 esac
 
 class="org.apache.cassandra.transport.Client"
-cassandra_parms="-Dlog4j.configuration=log4j-tools.properties"
+cassandra_parms="-Dlogback.configurationFile=logback-tools.xml"
 "$JAVA" $JVM_OPTS $cassandra_parms  -cp "$CLASSPATH" "$class" $1 $2
 
 exit $?

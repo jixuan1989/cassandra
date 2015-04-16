@@ -20,29 +20,34 @@
  */
 package org.apache.cassandra.db.filter;
 
-import java.nio.ByteBuffer;
-
-import org.apache.cassandra.db.Column;
+import org.apache.cassandra.db.Cell;
+import org.apache.cassandra.db.composites.CellName;
+import org.apache.cassandra.db.composites.CellNameType;
 import org.apache.cassandra.db.ColumnFamily;
-import org.apache.cassandra.db.marshal.CompositeType;
-import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.db.DeletionInfo;
 
 public class ColumnCounter
 {
     protected int live;
     protected int ignored;
+    protected final long timestamp;
 
-    public void count(Column column, ColumnFamily container)
+    public ColumnCounter(long timestamp)
     {
-        if (!isLive(column, container))
+        this.timestamp = timestamp;
+    }
+
+    public void count(Cell cell, DeletionInfo.InOrderTester tester)
+    {
+        if (!isLive(cell, tester, timestamp))
             ignored++;
         else
             live++;
     }
 
-    protected static boolean isLive(Column column, ColumnFamily container)
+    protected static boolean isLive(Cell cell, DeletionInfo.InOrderTester tester, long timestamp)
     {
-        return column.isLive() && (!container.deletionInfo().isDeleted(column));
+        return cell.isLive(timestamp) && !tester.isDeleted(cell);
     }
 
     public int live()
@@ -55,11 +60,22 @@ public class ColumnCounter
         return ignored;
     }
 
+    public ColumnCounter countAll(ColumnFamily container)
+    {
+        if (container == null)
+            return this;
+
+        DeletionInfo.InOrderTester tester = container.inOrderDeletionTester();
+        for (Cell c : container)
+            count(c, tester);
+        return this;
+    }
+
     public static class GroupByPrefix extends ColumnCounter
     {
-        private final CompositeType type;
+        private final CellNameType type;
         private final int toGroup;
-        private ByteBuffer[] last;
+        private CellName previous;
 
         /**
          * A column counter that count only 1 for all the columns sharing a
@@ -71,17 +87,18 @@ public class ColumnCounter
          *                column. If 0, all columns are grouped, otherwise we group
          *                those for which the {@code toGroup} first component are equals.
          */
-        public GroupByPrefix(CompositeType type, int toGroup)
+        public GroupByPrefix(long timestamp, CellNameType type, int toGroup)
         {
+            super(timestamp);
             this.type = type;
             this.toGroup = toGroup;
 
             assert toGroup == 0 || type != null;
         }
 
-        public void count(Column column, ColumnFamily container)
+        public void count(Cell cell, DeletionInfo.InOrderTester tester)
         {
-            if (!isLive(column, container))
+            if (!isLive(cell, tester, timestamp))
             {
                 ignored++;
                 return;
@@ -93,27 +110,39 @@ public class ColumnCounter
                 return;
             }
 
-            ByteBuffer[] current = type.split(column.name());
-            assert current.length >= toGroup;
+            CellName current = cell.name();
+            assert current.size() >= toGroup;
 
-            if (last != null)
+            if (previous != null)
             {
-                boolean isSameGroup = true;
-                for (int i = 0; i < toGroup; i++)
+                boolean isSameGroup = previous.isStatic() == current.isStatic();
+                if (isSameGroup)
                 {
-                    if (ByteBufferUtil.compareUnsigned(last[i], current[i]) != 0)
+                    for (int i = 0; i < toGroup; i++)
                     {
-                        isSameGroup = false;
-                        break;
+                        if (type.subtype(i).compare(previous.get(i), current.get(i)) != 0)
+                        {
+                            isSameGroup = false;
+                            break;
+                        }
                     }
                 }
 
                 if (isSameGroup)
                     return;
+
+                // We want to count the static group as 1 (CQL) row only if it's the only
+                // group in the partition. So, since we have already counted it at this point,
+                // just don't count the 2nd group if there is one and the first one was static
+                if (previous.isStatic())
+                {
+                    previous = current;
+                    return;
+                }
             }
 
             live++;
-            last = current;
+            previous = current;
         }
     }
 }

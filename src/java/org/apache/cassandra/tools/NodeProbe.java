@@ -25,20 +25,32 @@ import java.lang.management.MemoryUsage;
 import java.lang.management.RuntimeMXBean;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
-import java.text.SimpleDateFormat;
-import java.util.*;
+import java.util.AbstractMap;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.locks.Condition;
-import javax.management.*;
+
+import javax.management.JMX;
+import javax.management.MBeanServerConnection;
+import javax.management.MalformedObjectNameException;
+import javax.management.ObjectName;
+import javax.management.openmbean.CompositeData;
+import javax.management.openmbean.OpenDataException;
+import javax.management.openmbean.TabularData;
 import javax.management.remote.JMXConnector;
 import javax.management.remote.JMXConnectorFactory;
 import javax.management.remote.JMXServiceURL;
 
-import com.google.common.collect.Iterables;
-
-import org.apache.cassandra.concurrent.JMXEnabledThreadPoolExecutorMBean;
+import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.db.ColumnFamilyStoreMBean;
 import org.apache.cassandra.db.HintedHandOffManager;
 import org.apache.cassandra.db.HintedHandOffManagerMBean;
@@ -46,20 +58,38 @@ import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.compaction.CompactionManagerMBean;
 import org.apache.cassandra.gms.FailureDetector;
 import org.apache.cassandra.gms.FailureDetectorMBean;
+import org.apache.cassandra.gms.Gossiper;
+import org.apache.cassandra.gms.GossiperMBean;
 import org.apache.cassandra.locator.EndpointSnitchInfoMBean;
+import org.apache.cassandra.metrics.CassandraMetricsRegistry;
+import org.apache.cassandra.metrics.ColumnFamilyMetrics.Sampler;
+import org.apache.cassandra.metrics.StorageMetrics;
+import org.apache.cassandra.metrics.ThreadPoolMetrics;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.net.MessagingServiceMBean;
-import org.apache.cassandra.service.*;
-import org.apache.cassandra.streaming.StreamingService;
-import org.apache.cassandra.streaming.StreamingServiceMBean;
-import org.apache.cassandra.utils.SimpleCondition;
+import org.apache.cassandra.service.CacheService;
+import org.apache.cassandra.service.CacheServiceMBean;
+import org.apache.cassandra.service.GCInspector;
+import org.apache.cassandra.service.GCInspectorMXBean;
+import org.apache.cassandra.service.StorageProxy;
+import org.apache.cassandra.service.StorageProxyMBean;
+import org.apache.cassandra.service.StorageServiceMBean;
+import org.apache.cassandra.streaming.StreamManagerMBean;
+import org.apache.cassandra.streaming.StreamState;
+import org.apache.cassandra.streaming.management.StreamStateCompositeData;
+
+import com.google.common.base.Function;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
+import com.google.common.util.concurrent.Uninterruptibles;
 
 /**
  * JMX client operations for Cassandra.
  */
-public class NodeProbe
+public class NodeProbe implements AutoCloseable
 {
-    private static final String fmtUrl = "service:jmx:rmi:///jndi/rmi://%s:%d/jmxrmi";
+    private static final String fmtUrl = "service:jmx:rmi:///jndi/rmi://[%s]:%d/jmxrmi";
     private static final String ssObjName = "org.apache.cassandra.db:type=StorageService";
     private static final int defaultPort = 7199;
     final String host;
@@ -71,13 +101,14 @@ public class NodeProbe
     private MBeanServerConnection mbeanServerConn;
     private CompactionManagerMBean compactionProxy;
     private StorageServiceMBean ssProxy;
+    private GossiperMBean gossProxy;
     private MemoryMXBean memProxy;
+    private GCInspectorMXBean gcProxy;
     private RuntimeMXBean runtimeProxy;
-    private StreamingServiceMBean streamProxy;
+    private StreamManagerMBean streamProxy;
     public MessagingServiceMBean msProxy;
     private FailureDetectorMBean fdProxy;
     private CacheServiceMBean cacheService;
-    private PBSPredictorMBean PBSPredictorProxy;
     private StorageProxyMBean spProxy;
     private HintedHandOffManagerMBean hhProxy;
     private boolean failed;
@@ -89,7 +120,7 @@ public class NodeProbe
      * @param port TCP port of the remote JMX agent
      * @throws IOException on connection failures
      */
-    public NodeProbe(String host, int port, String username, String password) throws IOException, InterruptedException
+    public NodeProbe(String host, int port, String username, String password) throws IOException
     {
         assert username != null && !username.isEmpty() && password != null && !password.isEmpty()
                : "neither username nor password can be blank";
@@ -108,7 +139,7 @@ public class NodeProbe
      * @param port TCP port of the remote JMX agent
      * @throws IOException on connection failures
      */
-    public NodeProbe(String host, int port) throws IOException, InterruptedException
+    public NodeProbe(String host, int port) throws IOException
     {
         this.host = host;
         this.port = port;
@@ -121,7 +152,7 @@ public class NodeProbe
      * @param host hostname or IP address of the JMX agent
      * @throws IOException on connection failures
      */
-    public NodeProbe(String host) throws IOException, InterruptedException
+    public NodeProbe(String host) throws IOException
     {
         this.host = host;
         this.port = defaultPort;
@@ -149,12 +180,10 @@ public class NodeProbe
         {
             ObjectName name = new ObjectName(ssObjName);
             ssProxy = JMX.newMBeanProxy(mbeanServerConn, name, StorageServiceMBean.class);
-            name = new ObjectName(PBSPredictor.MBEAN_NAME);
-            PBSPredictorProxy = JMX.newMBeanProxy(mbeanServerConn, name, PBSPredictorMBean.class);
             name = new ObjectName(MessagingService.MBEAN_NAME);
             msProxy = JMX.newMBeanProxy(mbeanServerConn, name, MessagingServiceMBean.class);
-            name = new ObjectName(StreamingService.MBEAN_OBJECT_NAME);
-            streamProxy = JMX.newMBeanProxy(mbeanServerConn, name, StreamingServiceMBean.class);
+            name = new ObjectName(StreamManagerMBean.OBJECT_NAME);
+            streamProxy = JMX.newMBeanProxy(mbeanServerConn, name, StreamManagerMBean.class);
             name = new ObjectName(CompactionManager.MBEAN_OBJECT_NAME);
             compactionProxy = JMX.newMBeanProxy(mbeanServerConn, name, CompactionManagerMBean.class);
             name = new ObjectName(FailureDetector.MBEAN_NAME);
@@ -165,7 +194,12 @@ public class NodeProbe
             spProxy = JMX.newMBeanProxy(mbeanServerConn, name, StorageProxyMBean.class);
             name = new ObjectName(HintedHandOffManager.MBEAN_NAME);
             hhProxy = JMX.newMBeanProxy(mbeanServerConn, name, HintedHandOffManagerMBean.class);
-        } catch (MalformedObjectNameException e)
+            name = new ObjectName(GCInspector.MBEAN_NAME);
+            gcProxy = JMX.newMBeanProxy(mbeanServerConn, name, GCInspectorMXBean.class);
+            name = new ObjectName(Gossiper.MBEAN_NAME);
+            gossProxy = JMX.newMBeanProxy(mbeanServerConn, name, GossiperMBean.class);
+        }
+        catch (MalformedObjectNameException e)
         {
             throw new RuntimeException(
                     "Invalid ObjectName? Please report this as a bug.", e);
@@ -182,67 +216,82 @@ public class NodeProbe
         jmxc.close();
     }
 
-    public void forceTableCleanup(String tableName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
+    public int forceKeyspaceCleanup(String keyspaceName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
     {
-        ssProxy.forceTableCleanup(tableName, columnFamilies);
+        return ssProxy.forceKeyspaceCleanup(keyspaceName, columnFamilies);
     }
 
-    public void scrub(String tableName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
+    public int scrub(boolean disableSnapshot, boolean skipCorrupted, String keyspaceName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
     {
-        ssProxy.scrub(tableName, columnFamilies);
+        return ssProxy.scrub(disableSnapshot, skipCorrupted, keyspaceName, columnFamilies);
     }
 
-    public void upgradeSSTables(String tableName, boolean excludeCurrentVersion, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
+    public int verify(boolean extendedVerify, String keyspaceName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
     {
-        ssProxy.upgradeSSTables(tableName, excludeCurrentVersion, columnFamilies);
+        return ssProxy.verify(extendedVerify, keyspaceName, columnFamilies);
     }
 
-    public void forceTableCompaction(String tableName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
+    public int upgradeSSTables(String keyspaceName, boolean excludeCurrentVersion, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
     {
-        ssProxy.forceTableCompaction(tableName, columnFamilies);
+        return ssProxy.upgradeSSTables(keyspaceName, excludeCurrentVersion, columnFamilies);
     }
 
-    public void forceTableFlush(String tableName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
+    public void forceKeyspaceCleanup(PrintStream out, String keyspaceName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
     {
-        ssProxy.forceTableFlush(tableName, columnFamilies);
+        if (forceKeyspaceCleanup(keyspaceName, columnFamilies) != 0)
+        {
+            failed = true;
+            out.println("Aborted cleaning up at least one table in keyspace "+keyspaceName+", check server logs for more information.");
+        }
     }
 
-    public void forceTableRepair(String tableName, boolean isSequential, boolean isLocal, String... columnFamilies) throws IOException
+    public void scrub(PrintStream out, boolean disableSnapshot, boolean skipCorrupted, String keyspaceName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
     {
-        ssProxy.forceTableRepair(tableName, isSequential, isLocal, columnFamilies);
+        if (scrub(disableSnapshot, skipCorrupted, keyspaceName, columnFamilies) != 0)
+        {
+            failed = true;
+            out.println("Aborted scrubbing at least one table in keyspace "+keyspaceName+", check server logs for more information.");
+        }
     }
 
-    public void forceRepairAsync(final PrintStream out, final String tableName, boolean isSequential, boolean isLocal, boolean primaryRange, String... columnFamilies) throws IOException
+    public void verify(PrintStream out, boolean extendedVerify, String keyspaceName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
     {
-        RepairRunner runner = new RepairRunner(out, tableName, columnFamilies);
+        if (verify(extendedVerify, keyspaceName, columnFamilies) != 0)
+        {
+            failed = true;
+            out.println("Aborted verifying at least one table in keyspace "+keyspaceName+", check server logs for more information.");
+        }
+    }
+
+
+    public void upgradeSSTables(PrintStream out, String keyspaceName, boolean excludeCurrentVersion, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
+    {
+        if (upgradeSSTables(keyspaceName, excludeCurrentVersion, columnFamilies) != 0)
+        {
+            failed = true;
+            out.println("Aborted upgrading sstables for atleast one table in keyspace "+keyspaceName+", check server logs for more information.");
+        }
+    }
+
+
+    public void forceKeyspaceCompaction(boolean splitOutput, String keyspaceName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
+    {
+        ssProxy.forceKeyspaceCompaction(splitOutput, keyspaceName, columnFamilies);
+    }
+
+    public void forceKeyspaceFlush(String keyspaceName, String... columnFamilies) throws IOException, ExecutionException, InterruptedException
+    {
+        ssProxy.forceKeyspaceFlush(keyspaceName, columnFamilies);
+    }
+
+    public void repairAsync(final PrintStream out, final String keyspace, Map<String, String> options) throws IOException
+    {
+        RepairRunner runner = new RepairRunner(out, ssProxy, keyspace, options);
         try
         {
+            jmxc.addConnectionNotificationListener(runner, null, null);
             ssProxy.addNotificationListener(runner, null, null);
-            if (!runner.repairAndWait(ssProxy, isSequential, isLocal, primaryRange))
-                failed = true;
-        }
-        catch (Exception e)
-        {
-            throw new IOException(e) ;
-        }
-        finally
-        {
-            try
-            {
-               ssProxy.removeNotificationListener(runner);
-            }
-            catch (ListenerNotFoundException ignored) {}
-        }
-    }
-
-    public void forceRepairRangeAsync(final PrintStream out, final String tableName, boolean isSequential, boolean isLocal, final String startToken, final String endToken, String... columnFamilies) throws IOException
-    {
-        RepairRunner runner = new RepairRunner(out, tableName, columnFamilies);
-        try
-        {
-            ssProxy.addNotificationListener(runner, null, null);
-            if (!runner.repairRangeAndWait(ssProxy,  isSequential, isLocal, startToken, endToken))
-                failed = true;
+            runner.run();
         }
         catch (Exception e)
         {
@@ -253,27 +302,42 @@ public class NodeProbe
             try
             {
                 ssProxy.removeNotificationListener(runner);
+                jmxc.removeConnectionNotificationListener(runner);
             }
-            catch (ListenerNotFoundException ignored) {}
+            catch (Throwable e)
+            {
+                out.println("Exception occurred during clean-up. " + e);
+            }
         }
     }
 
-    public void forceTableRepairPrimaryRange(String tableName, boolean isSequential, boolean isLocal, String... columnFamilies) throws IOException
+    public Map<Sampler, CompositeData> getPartitionSample(String ks, String cf, int capacity, int duration, int count, List<Sampler> samplers) throws OpenDataException
     {
-        ssProxy.forceTableRepairPrimaryRange(tableName, isSequential, isLocal, columnFamilies);
+        ColumnFamilyStoreMBean cfsProxy = getCfsProxy(ks, cf);
+        for(Sampler sampler : samplers)
+        {
+            cfsProxy.beginLocalSampling(sampler.name(), capacity);
+        }
+        Uninterruptibles.sleepUninterruptibly(duration, TimeUnit.MILLISECONDS);
+        Map<Sampler, CompositeData> result = Maps.newHashMap();
+        for(Sampler sampler : samplers)
+        {
+            result.put(sampler, cfsProxy.finishLocalSampling(sampler.name(), count));
+        }
+        return result;
     }
 
-    public void forceTableRepairRange(String beginToken, String endToken, String tableName, boolean isSequential, boolean isLocal, String... columnFamilies) throws IOException
+    public void invalidateCounterCache()
     {
-        ssProxy.forceTableRepairRange(beginToken, endToken, tableName, isSequential, isLocal, columnFamilies);
+        cacheService.invalidateCounterCache();
     }
 
-    public void invalidateKeyCache() throws IOException
+    public void invalidateKeyCache()
     {
         cacheService.invalidateKeyCache();
     }
 
-    public void invalidateRowCache() throws IOException
+    public void invalidateRowCache()
     {
         cacheService.invalidateRowCache();
     }
@@ -340,6 +404,11 @@ public class NodeProbe
         {
             throw new RuntimeException(e);
         }
+    }
+
+    public double[] getAndResetGCStats()
+    {
+        return gcProxy.getAndResetStats();
     }
 
     public Iterator<Map.Entry<String, ColumnFamilyStoreMBean>> getColumnFamilyStoreMBeanProxies()
@@ -416,7 +485,7 @@ public class NodeProbe
     }
 
     /**
-     * Take a snapshot of all the tables, optionally specifying only a specific column family.
+     * Take a snapshot of all the keyspaces, optionally specifying only a specific column family.
      *
      * @param snapshotName the name of the snapshot.
      * @param columnFamily the column family to snapshot or all on null
@@ -428,7 +497,7 @@ public class NodeProbe
         {
             if (keyspaces.length != 1)
             {
-                throw new IOException("When specifying the column family for a snapshot, you must specify one and only one keyspace");
+                throw new IOException("When specifying the table for a snapshot, you must specify one and only one keyspace");
             }
             ssProxy.takeColumnFamilySnapshot(keyspaces[0], columnFamily, snapshotName);
         }
@@ -437,11 +506,43 @@ public class NodeProbe
     }
 
     /**
+     * Take a snapshot of all column family from different keyspaces.
+     * 
+     * @param snapshotName
+     *            the name of the snapshot.
+     * @param columnfamilylist
+     *            list of columnfamily from different keyspace in the form of ks1.cf1 ks2.cf2
+     */
+    public void takeMultipleColumnFamilySnapshot(String snapshotName, String... columnFamilyList)
+            throws IOException
+    {
+        if (null != columnFamilyList && columnFamilyList.length != 0)
+        {
+            ssProxy.takeMultipleColumnFamilySnapshot(snapshotName, columnFamilyList);
+        }
+        else
+        {
+            throw new IOException("The column family List  for a snapshot should not be empty or null");
+        }
+
+    }
+
+    /**
      * Remove all the existing snapshots.
      */
     public void clearSnapshot(String tag, String... keyspaces) throws IOException
     {
         ssProxy.clearSnapshot(tag, keyspaces);
+    }
+
+    public Map<String, TabularData> getSnapshotDetails()
+    {
+        return ssProxy.getSnapshotDetails();
+    }
+
+    public long trueSnapshotsSize()
+    {
+        return ssProxy.trueSnapshotsSize();
     }
 
     public boolean isJoined()
@@ -459,7 +560,7 @@ public class NodeProbe
         ssProxy.decommission();
     }
 
-    public void move(String newToken) throws IOException, InterruptedException
+    public void move(String newToken) throws IOException
     {
         ssProxy.move(newToken);
     }
@@ -479,33 +580,9 @@ public class NodeProbe
         ssProxy.forceRemoveCompletion();
     }
 
-    public Iterator<Map.Entry<String, JMXEnabledThreadPoolExecutorMBean>> getThreadPoolMBeanProxies()
+    public void assassinateEndpoint(String address) throws UnknownHostException
     {
-        try
-        {
-            return new ThreadPoolProxyMBeanIterator(mbeanServerConn);
-        }
-        catch (MalformedObjectNameException e)
-        {
-            throw new RuntimeException("Invalid ObjectName? Please report this as a bug.", e);
-        }
-        catch (IOException e)
-        {
-            throw new RuntimeException("Could not retrieve list of stat mbeans.", e);
-        }
-    }
-
-    /**
-     * Get the compaction threshold
-     *
-     * @param outs the stream to write to
-     */
-    public void getCompactionThreshold(PrintStream outs, String ks, String cf)
-    {
-        ColumnFamilyStoreMBean cfsProxy = getCfsProxy(ks, cf);
-        outs.println("Current compaction thresholds for " + ks + "/" + cf + ": \n" +
-                     " min = " + cfsProxy.getMinimumCompactionThreshold() + ", " +
-                     " max = " + cfsProxy.getMaximumCompactionThreshold());
+        gossProxy.assassinateEndpoint(address);
     }
 
     /**
@@ -520,7 +597,27 @@ public class NodeProbe
         cfsProxy.setCompactionThresholds(minimumCompactionThreshold, maximumCompactionThreshold);
     }
 
-    public void setCacheCapacities(int keyCacheCapacity, int rowCacheCapacity)
+    public void disableAutoCompaction(String ks, String ... columnFamilies) throws IOException
+    {
+        ssProxy.disableAutoCompaction(ks, columnFamilies);
+    }
+
+    public void enableAutoCompaction(String ks, String ... columnFamilies) throws IOException
+    {
+        ssProxy.enableAutoCompaction(ks, columnFamilies);
+    }
+
+    public void setIncrementalBackupsEnabled(boolean enabled)
+    {
+        ssProxy.setIncrementalBackupsEnabled(enabled);
+    }
+
+    public boolean isIncrementalBackupsEnabled()
+    {
+        return ssProxy.isIncrementalBackupsEnabled();
+    }
+
+    public void setCacheCapacities(int keyCacheCapacity, int rowCacheCapacity, int counterCacheCapacity)
     {
         try
         {
@@ -528,11 +625,33 @@ public class NodeProbe
             CacheServiceMBean cacheMBean = JMX.newMBeanProxy(mbeanServerConn, new ObjectName(keyCachePath), CacheServiceMBean.class);
             cacheMBean.setKeyCacheCapacityInMB(keyCacheCapacity);
             cacheMBean.setRowCacheCapacityInMB(rowCacheCapacity);
+            cacheMBean.setCounterCacheCapacityInMB(counterCacheCapacity);
         }
         catch (MalformedObjectNameException e)
         {
             throw new RuntimeException(e);
         }
+    }
+
+    public void setCacheKeysToSave(int keyCacheKeysToSave, int rowCacheKeysToSave, int counterCacheKeysToSave)
+    {
+        try
+        {
+            String keyCachePath = "org.apache.cassandra.db:type=Caches";
+            CacheServiceMBean cacheMBean = JMX.newMBeanProxy(mbeanServerConn, new ObjectName(keyCachePath), CacheServiceMBean.class);
+            cacheMBean.setKeyCacheKeysToSave(keyCacheKeysToSave);
+            cacheMBean.setRowCacheKeysToSave(rowCacheKeysToSave);
+            cacheMBean.setCounterCacheKeysToSave(counterCacheKeysToSave);
+        }
+        catch (MalformedObjectNameException e)
+        {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public void setHintedHandoffThrottleInKB(int throttleInKB)
+    {
+        ssProxy.setHintedHandoffThrottleInKB(throttleInKB);
     }
 
     public List<InetAddress> getEndpoints(String keyspace, String cf, String key)
@@ -546,24 +665,15 @@ public class NodeProbe
         return cfsProxy.getSSTablesForKey(key);
     }
 
-    public Set<InetAddress> getStreamDestinations()
+    public Set<StreamState> getStreamStatus()
     {
-        return streamProxy.getStreamDestinations();
-    }
-
-    public List<String> getFilesDestinedFor(InetAddress host) throws IOException
-    {
-        return streamProxy.getOutgoingFiles(host.getHostAddress());
-    }
-
-    public Set<InetAddress> getStreamSources()
-    {
-        return streamProxy.getStreamSources();
-    }
-
-    public List<String> getIncomingFiles(InetAddress host) throws IOException
-    {
-        return streamProxy.getIncomingFiles(host.getHostAddress());
+        return Sets.newHashSet(Iterables.transform(streamProxy.getCurrentStreams(), new Function<CompositeData, StreamState>()
+        {
+            public StreamState apply(CompositeData input)
+            {
+                return StreamStateCompositeData.fromCompositeData(input);
+            }
+        }));
     }
 
     public String getOperationMode()
@@ -571,11 +681,16 @@ public class NodeProbe
         return ssProxy.getOperationMode();
     }
 
-    public void truncate(String tableName, String cfName)
+    public boolean isStarting()
+    {
+        return ssProxy.isStarting();
+    }
+
+    public void truncate(String keyspaceName, String cfName)
     {
         try
         {
-            ssProxy.truncate(tableName, cfName);
+            ssProxy.truncate(keyspaceName, cfName);
         }
         catch (TimeoutException e)
         {
@@ -642,7 +757,7 @@ public class NodeProbe
 
         for (Map.Entry<String, String> pair : tokenToEndpoint.entrySet())
         {
-            if (pair.getKey().toString().equals(stringToken))
+            if (pair.getKey().equals(stringToken))
             {
                 return pair.getValue();
             }
@@ -680,6 +795,21 @@ public class NodeProbe
         return ssProxy.getKeyspaces();
     }
 
+    public List<String> getNonSystemKeyspaces()
+    {
+        return ssProxy.getNonSystemKeyspaces();
+    }
+
+    public String getClusterName()
+    {
+        return ssProxy.getClusterName();
+    }
+
+    public String getPartitioner()
+    {
+        return ssProxy.getPartitionerName();
+    }
+
     public void disableHintedHandoff()
     {
         spProxy.setHintedHandoffEnabled(false);
@@ -690,6 +820,16 @@ public class NodeProbe
         spProxy.setHintedHandoffEnabled(true);
     }
 
+    public boolean isHandoffEnabled()
+    {
+        return spProxy.getHintedHandoffEnabled();
+    }
+
+    public void enableHintedHandoff(String dcNames)
+    {
+        spProxy.setHintedHandoffEnabledByDCList(dcNames);
+    }
+
     public void pauseHintsDelivery()
     {
         hhProxy.pauseHintsDelivery(true);
@@ -698,6 +838,27 @@ public class NodeProbe
     public void resumeHintsDelivery()
     {
         hhProxy.pauseHintsDelivery(false);
+    }
+
+    public void truncateHints(final String host)
+    {
+        hhProxy.deleteHintsForEndpoint(host);
+    }
+
+    public void truncateHints()
+    {
+        try
+        {
+            hhProxy.truncateAllHints();
+        }
+        catch (ExecutionException e)
+        {
+            throw new RuntimeException("Error while executing truncate hints", e);
+        }
+        catch (InterruptedException e)
+        {
+            throw new RuntimeException("Error while executing truncate hints", e);
+        }
     }
 
     public void stopNativeTransport()
@@ -725,6 +886,11 @@ public class NodeProbe
         ssProxy.startGossiping();
     }
 
+    public boolean isGossipRunning()
+    {
+        return ssProxy.isGossipRunning();
+    }
+
     public void stopThriftServer()
     {
         ssProxy.stopRPCServer();
@@ -738,6 +904,11 @@ public class NodeProbe
     public boolean isThriftServerRunning()
     {
         return ssProxy.isRPCServerRunning();
+    }
+
+    public void stopCassandraDaemon()
+    {
+        ssProxy.stopDaemon();
     }
 
     public boolean isInitialized()
@@ -755,9 +926,14 @@ public class NodeProbe
         return ssProxy.getCompactionThroughputMbPerSec();
     }
 
+    public int getStreamThroughput()
+    {
+        return ssProxy.getStreamThroughputMbPerSec();
+    }
+
     public int getExceptionCount()
     {
-        return ssProxy.getExceptionCount();
+        return (int)StorageMetrics.exceptions.getCount();
     }
 
     public Map<String, Integer> getDroppedMessages()
@@ -805,11 +981,6 @@ public class NodeProbe
         return ssProxy.describeRingJMX(keyspaceName);
     }
 
-    public PBSPredictorMBean getPBSPredictorMBean()
-    {
-        return PBSPredictorProxy;
-    }
-
     public void rebuild(String sourceDc)
     {
         ssProxy.rebuild(sourceDc);
@@ -829,6 +1000,276 @@ public class NodeProbe
     {
         return failed;
     }
+
+    public long getReadRepairAttempted()
+    {
+        return spProxy.getReadRepairAttempted();
+    }
+
+    public long getReadRepairRepairedBlocking()
+    {
+        return spProxy.getReadRepairRepairedBlocking();
+    }
+
+    public long getReadRepairRepairedBackground()
+    {
+        return spProxy.getReadRepairRepairedBackground();
+    }
+
+    // JMX getters for the o.a.c.metrics API below.
+    /**
+     * Retrieve cache metrics based on the cache type (KeyCache, RowCache, or CounterCache)
+     * @param cacheType KeyCach, RowCache, or CounterCache
+     * @param metricName Capacity, Entries, HitRate, Size, Requests or Hits.
+     */
+    public Object getCacheMetric(String cacheType, String metricName)
+    {
+        try
+        {
+            switch(metricName)
+            {
+                case "Capacity":
+                case "Entries":
+                case "HitRate":
+                case "Size":
+                    return JMX.newMBeanProxy(mbeanServerConn,
+                            new ObjectName("org.apache.cassandra.metrics:type=Cache,scope=" + cacheType + ",name=" + metricName),
+                            CassandraMetricsRegistry.JmxGaugeMBean.class).getValue();
+                case "Requests":
+                case "Hits":
+                    return JMX.newMBeanProxy(mbeanServerConn,
+                            new ObjectName("org.apache.cassandra.metrics:type=Cache,scope=" + cacheType + ",name=" + metricName),
+                            CassandraMetricsRegistry.JmxMeterMBean.class).getCount();
+                default:
+                    throw new RuntimeException("Unknown cache metric name.");
+
+            }
+        }
+        catch (MalformedObjectNameException e)
+        {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public Object getThreadPoolMetric(Stage stage, String metricName)
+    {
+        return ThreadPoolMetrics.getJmxMetric(mbeanServerConn, stage.getJmxType(), stage.getJmxName(), metricName);
+    }
+
+    /**
+     * Retrieve ColumnFamily metrics
+     * @param ks Keyspace for which stats are to be displayed.
+     * @param cf ColumnFamily for which stats are to be displayed.
+     * @param metricName View {@link org.apache.cassandra.metrics.ColumnFamilyMetrics}.
+     */
+    public Object getColumnFamilyMetric(String ks, String cf, String metricName)
+    {
+        try
+        {
+            String type = cf.contains(".") ? "IndexColumnFamily": "ColumnFamily";
+            ObjectName oName = new ObjectName(String.format("org.apache.cassandra.metrics:type=%s,keyspace=%s,scope=%s,name=%s", type, ks, cf, metricName));
+            switch(metricName)
+            {
+                case "BloomFilterDiskSpaceUsed":
+                case "BloomFilterFalsePositives":
+                case "BloomFilterFalseRatio":
+                case "BloomFilterOffHeapMemoryUsed":
+                case "IndexSummaryOffHeapMemoryUsed":
+                case "CompressionMetadataOffHeapMemoryUsed":
+                case "CompressionRatio":
+                case "EstimatedColumnCountHistogram":
+                case "EstimatedRowSizeHistogram":
+                case "KeyCacheHitRate":
+                case "LiveSSTableCount":
+                case "MaxRowSize":
+                case "MeanRowSize":
+                case "MemtableColumnsCount":
+                case "MemtableLiveDataSize":
+                case "MemtableOffHeapSize":
+                case "MinRowSize":
+                case "RecentBloomFilterFalsePositives":
+                case "RecentBloomFilterFalseRatio":
+                case "SnapshotsSize":
+                    return JMX.newMBeanProxy(mbeanServerConn, oName, CassandraMetricsRegistry.JmxGaugeMBean.class).getValue();
+                case "LiveDiskSpaceUsed":
+                case "MemtableSwitchCount":
+                case "SpeculativeRetries":
+                case "TotalDiskSpaceUsed":
+                case "WriteTotalLatency":
+                case "ReadTotalLatency":
+                case "PendingFlushes":
+                    return JMX.newMBeanProxy(mbeanServerConn, oName, CassandraMetricsRegistry.JmxCounterMBean.class).getCount();
+                case "CoordinatorReadLatency":
+                case "CoordinatorScanLatency":
+                case "ReadLatency":
+                case "WriteLatency":
+                    return JMX.newMBeanProxy(mbeanServerConn, oName, CassandraMetricsRegistry.JmxTimerMBean.class);
+                case "LiveScannedHistogram":
+                case "SSTablesPerReadHistogram":
+                case "TombstoneScannedHistogram":
+                    return JMX.newMBeanProxy(mbeanServerConn, oName, CassandraMetricsRegistry.JmxHistogramMBean.class);
+                default:
+                    throw new RuntimeException("Unknown table metric.");
+            }
+        }
+        catch (MalformedObjectNameException e)
+        {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Retrieve Proxy metrics
+     * @param scope RangeSlice, Read or Write
+     */
+    public CassandraMetricsRegistry.JmxTimerMBean getProxyMetric(String scope)
+    {
+        try
+        {
+            return JMX.newMBeanProxy(mbeanServerConn,
+                    new ObjectName("org.apache.cassandra.metrics:type=ClientRequest,scope=" + scope + ",name=Latency"),
+                    CassandraMetricsRegistry.JmxTimerMBean.class);
+        }
+        catch (MalformedObjectNameException e)
+        {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Retrieve Proxy metrics
+     * @param metricName CompletedTasks, PendingTasks, BytesCompacted or TotalCompactionsCompleted.
+     */
+    public Object getCompactionMetric(String metricName)
+    {
+        try
+        {
+            switch(metricName)
+            {
+                case "BytesCompacted":
+                    return JMX.newMBeanProxy(mbeanServerConn,
+                            new ObjectName("org.apache.cassandra.metrics:type=Compaction,name=" + metricName),
+                            CassandraMetricsRegistry.JmxCounterMBean.class);
+                case "CompletedTasks":
+                case "PendingTasks":
+                    return JMX.newMBeanProxy(mbeanServerConn,
+                            new ObjectName("org.apache.cassandra.metrics:type=Compaction,name=" + metricName),
+                            CassandraMetricsRegistry.JmxGaugeMBean.class).getValue();
+                case "TotalCompactionsCompleted":
+                    return JMX.newMBeanProxy(mbeanServerConn,
+                            new ObjectName("org.apache.cassandra.metrics:type=Compaction,name=" + metricName),
+                            CassandraMetricsRegistry.JmxMeterMBean.class);
+                default:
+                    throw new RuntimeException("Unknown compaction metric.");
+            }
+        }
+        catch (MalformedObjectNameException e)
+        {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Retrieve Proxy metrics
+     * @param metricName Exceptions, Load, TotalHints or TotalHintsInProgress.
+     */
+    public long getStorageMetric(String metricName)
+    {
+        try
+        {
+            return JMX.newMBeanProxy(mbeanServerConn,
+                    new ObjectName("org.apache.cassandra.metrics:type=Storage,name=" + metricName),
+                    CassandraMetricsRegistry.JmxCounterMBean.class).getCount();
+        }
+        catch (MalformedObjectNameException e)
+        {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public double[] metricPercentilesAsArray(CassandraMetricsRegistry.JmxHistogramMBean metric)
+    {
+        return new double[]{ metric.get50thPercentile(),
+                metric.get75thPercentile(),
+                metric.get95thPercentile(),
+                metric.get98thPercentile(),
+                metric.get99thPercentile(),
+                metric.getMin(),
+                metric.getMax()};
+    }
+
+    public double[] metricPercentilesAsArray(CassandraMetricsRegistry.JmxTimerMBean metric)
+    {
+        return new double[]{ metric.get50thPercentile(),
+                metric.get75thPercentile(),
+                metric.get95thPercentile(),
+                metric.get98thPercentile(),
+                metric.get99thPercentile(),
+                metric.getMin(),
+                metric.getMax()};
+    }
+
+    public TabularData getCompactionHistory()
+    {
+        return compactionProxy.getCompactionHistory();
+    }
+
+    public void reloadTriggers()
+    {
+        spProxy.reloadTriggerClasses();
+    }
+
+    public void setLoggingLevel(String classQualifier, String level)
+    {
+        try
+        {
+            ssProxy.setLoggingLevel(classQualifier, level);
+        }
+        catch (Exception e)
+        {
+          throw new RuntimeException("Error setting log for " + classQualifier +" on level " + level +". Please check logback configuration and ensure to have <jmxConfigurator /> set", e);
+        }
+    }
+
+    public Map<String, String> getLoggingLevels()
+    {
+        return ssProxy.getLoggingLevels();
+    }
+
+    public void resumeBootstrap(PrintStream out) throws IOException
+    {
+        BootstrapMonitor monitor = new BootstrapMonitor(out);
+        try
+        {
+            jmxc.addConnectionNotificationListener(monitor, null, null);
+            ssProxy.addNotificationListener(monitor, null, null);
+            if (ssProxy.resumeBootstrap())
+            {
+                out.println("Resuming bootstrap");
+                monitor.awaitCompletion();
+            }
+            else
+            {
+                out.println("Node is already bootstrapped.");
+            }
+        }
+        catch (Exception e)
+        {
+            throw new IOException(e);
+        }
+        finally
+        {
+            try
+            {
+                ssProxy.removeNotificationListener(monitor);
+                jmxc.removeConnectionNotificationListener(monitor);
+            }
+            catch (Throwable e)
+            {
+                out.println("Exception occurred during clean-up. " + e);
+            }
+        }
+    }
 }
 
 class ColumnFamilyStoreMBeanIterator implements Iterator<Map.Entry<String, ColumnFamilyStoreMBean>>
@@ -847,14 +1288,14 @@ class ColumnFamilyStoreMBeanIterator implements Iterator<Map.Entry<String, Colum
             public int compare(Entry<String, ColumnFamilyStoreMBean> e1, Entry<String, ColumnFamilyStoreMBean> e2)
             {
                 //compare keyspace, then CF name, then normal vs. index
-                int tableCmp = e1.getKey().compareTo(e2.getKey());
-                if(tableCmp != 0)
-                    return tableCmp;
+                int keyspaceNameCmp = e1.getKey().compareTo(e2.getKey());
+                if(keyspaceNameCmp != 0)
+                    return keyspaceNameCmp;
 
                 // get CF name and split it for index name
                 String e1CF[] = e1.getValue().getColumnFamilyName().split("\\.");
-                String e2CF[] = e1.getValue().getColumnFamilyName().split("\\.");
-                assert e1CF.length <= 2 && e2CF.length <= 2 : "unexpected split count for column family name";
+                String e2CF[] = e2.getValue().getColumnFamilyName().split("\\.");
+                assert e1CF.length <= 2 && e2CF.length <= 2 : "unexpected split count for table name";
 
                 //if neither are indexes, just compare CF names
                 if(e1CF.length == 1 && e2CF.length == 1)
@@ -884,9 +1325,9 @@ class ColumnFamilyStoreMBeanIterator implements Iterator<Map.Entry<String, Colum
         List<Entry<String, ColumnFamilyStoreMBean>> mbeans = new ArrayList<Entry<String, ColumnFamilyStoreMBean>>(cfObjects.size());
         for(ObjectName n : cfObjects)
         {
-            String tableName = n.getKeyProperty("keyspace");
+            String keyspaceName = n.getKeyProperty("keyspace");
             ColumnFamilyStoreMBean cfsProxy = JMX.newMBeanProxy(mbeanServerConn, n, ColumnFamilyStoreMBean.class);
-            mbeans.add(new AbstractMap.SimpleImmutableEntry<String, ColumnFamilyStoreMBean>(tableName, cfsProxy));
+            mbeans.add(new AbstractMap.SimpleImmutableEntry<String, ColumnFamilyStoreMBean>(keyspaceName, cfsProxy));
         }
         return mbeans;
     }
@@ -904,105 +1345,5 @@ class ColumnFamilyStoreMBeanIterator implements Iterator<Map.Entry<String, Colum
     public void remove()
     {
         throw new UnsupportedOperationException();
-    }
-}
-
-class ThreadPoolProxyMBeanIterator implements Iterator<Map.Entry<String, JMXEnabledThreadPoolExecutorMBean>>
-{
-    private final Iterator<ObjectName> resIter;
-    private final MBeanServerConnection mbeanServerConn;
-
-    public ThreadPoolProxyMBeanIterator(MBeanServerConnection mbeanServerConn)
-    throws MalformedObjectNameException, NullPointerException, IOException
-    {
-        Set<ObjectName> requests = mbeanServerConn.queryNames(new ObjectName("org.apache.cassandra.request:type=*"), null);
-        Set<ObjectName> internal = mbeanServerConn.queryNames(new ObjectName("org.apache.cassandra.internal:type=*"), null);
-        resIter = Iterables.concat(requests, internal).iterator();
-        this.mbeanServerConn = mbeanServerConn;
-    }
-
-    public boolean hasNext()
-    {
-        return resIter.hasNext();
-    }
-
-    public Map.Entry<String, JMXEnabledThreadPoolExecutorMBean> next()
-    {
-        ObjectName objectName = resIter.next();
-        String poolName = objectName.getKeyProperty("type");
-        JMXEnabledThreadPoolExecutorMBean threadPoolProxy = JMX.newMBeanProxy(mbeanServerConn, objectName, JMXEnabledThreadPoolExecutorMBean.class);
-        return new AbstractMap.SimpleImmutableEntry<String, JMXEnabledThreadPoolExecutorMBean>(poolName, threadPoolProxy);
-    }
-
-    public void remove()
-    {
-        throw new UnsupportedOperationException();
-    }
-}
-
-class RepairRunner implements NotificationListener
-{
-    private final SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss,SSS");
-    private final Condition condition = new SimpleCondition();
-    private final PrintStream out;
-    private final String keyspace;
-    private final String[] columnFamilies;
-    private int cmd;
-    private boolean success = true;
-
-    RepairRunner(PrintStream out, String keyspace, String... columnFamilies)
-    {
-        this.out = out;
-        this.keyspace = keyspace;
-        this.columnFamilies = columnFamilies;
-    }
-
-    public boolean repairAndWait(StorageServiceMBean ssProxy, boolean isSequential, boolean isLocal, boolean primaryRangeOnly) throws InterruptedException
-    {
-        cmd = ssProxy.forceRepairAsync(keyspace, isSequential, isLocal, primaryRangeOnly, columnFamilies);
-        if (cmd > 0)
-        {
-            condition.await();
-        }
-        else
-        {
-            String message = String.format("[%s] Nothing to repair for keyspace '%s'", format.format(System.currentTimeMillis()), keyspace);
-            out.println(message);
-        }
-        return success;
-    }
-
-    public boolean repairRangeAndWait(StorageServiceMBean ssProxy, boolean isSequential, boolean isLocal, String startToken, String endToken) throws InterruptedException
-    {
-        cmd = ssProxy.forceRepairRangeAsync(startToken, endToken, keyspace, isSequential, isLocal, columnFamilies);
-        if (cmd > 0)
-        {
-            condition.await();
-        }
-        else
-        {
-            String message = String.format("[%s] Nothing to repair for keyspace '%s'", format.format(System.currentTimeMillis()), keyspace);
-            out.println(message);
-        }
-        return success;
-    }
-
-    public void handleNotification(Notification notification, Object handback)
-    {
-        if ("repair".equals(notification.getType()))
-        {
-            int[] status = (int[]) notification.getUserData();
-            assert status.length == 2;
-            if (cmd == status[0])
-            {
-                String message = String.format("[%s] %s", format.format(notification.getTimeStamp()), notification.getMessage());
-                out.println(message);
-                // repair status is int array with [0] = cmd number, [1] = status
-                if (status[1] == ActiveRepairService.Status.SESSION_FAILED.ordinal())
-                    success = false;
-                else if (status[1] == ActiveRepairService.Status.FINISHED.ordinal())
-                    condition.signalAll();
-            }
-        }
     }
 }

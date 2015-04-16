@@ -17,8 +17,6 @@
  */
 package org.apache.cassandra.db;
 
-import java.io.IOException;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,36 +34,23 @@ public class CounterMutationVerbHandler implements IVerbHandler<CounterMutation>
 
     public void doVerb(final MessageIn<CounterMutation> message, final int id)
     {
-        try
-        {
-            final CounterMutation cm = message.payload;
-            if (logger.isDebugEnabled())
-              logger.debug("Applying forwarded " + cm);
+        final CounterMutation cm = message.payload;
+        logger.debug("Applying forwarded {}", cm);
 
-            String localDataCenter = DatabaseDescriptor.getEndpointSnitch().getDatacenter(FBUtilities.getBroadcastAddress());
-            // We should not wait for the result of the write in this thread,
-            // otherwise we could have a distributed deadlock between replicas
-            // running this VerbHandler (see #4578).
-            // Instead, we use a callback to send the response. Note that the callback
-            // will not be called if the request timeout, but this is ok
-            // because the coordinator of the counter mutation will timeout on
-            // it's own in that case.
-            StorageProxy.applyCounterMutationOnLeader(cm, localDataCenter, new Runnable(){
-                public void run()
-                {
-                    WriteResponse response = new WriteResponse();
-                    MessagingService.instance().sendReply(response.createMessage(), id, message.from);
-                }
-            });
-        }
-        catch (RequestExecutionException e)
+        String localDataCenter = DatabaseDescriptor.getEndpointSnitch().getDatacenter(FBUtilities.getBroadcastAddress());
+        // We should not wait for the result of the write in this thread,
+        // otherwise we could have a distributed deadlock between replicas
+        // running this VerbHandler (see #4578).
+        // Instead, we use a callback to send the response. Note that the callback
+        // will not be called if the request timeout, but this is ok
+        // because the coordinator of the counter mutation will timeout on
+        // it's own in that case.
+        StorageProxy.applyCounterMutationOnLeader(cm, localDataCenter, new Runnable()
         {
-            // The coordinator will timeout on it's own so ignore
-            logger.debug("counter error", e);
-        }
-        catch (IOException e)
-        {
-            logger.error("Error in counter mutation", e);
-        }
+            public void run()
+            {
+                MessagingService.instance().sendReply(new WriteResponse().createMessage(), id, message.from);
+            }
+        });
     }
 }

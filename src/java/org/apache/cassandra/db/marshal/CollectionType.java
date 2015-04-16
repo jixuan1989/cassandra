@@ -20,22 +20,57 @@ package org.apache.cassandra.db.marshal;
 import java.nio.ByteBuffer;
 import java.util.List;
 
+import org.apache.cassandra.db.Cell;
+import org.apache.cassandra.transport.Server;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.cassandra.cql3.CQL3Type;
-import org.apache.cassandra.db.Column;
+import org.apache.cassandra.cql3.ColumnSpecification;
+import org.apache.cassandra.cql3.Lists;
+import org.apache.cassandra.cql3.Maps;
+import org.apache.cassandra.cql3.Sets;
+
+import org.apache.cassandra.serializers.CollectionSerializer;
+import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.utils.ByteBufferUtil;
-import org.apache.cassandra.utils.Pair;
 
 /**
- * The abstract validator that is the base for maps, sets and lists.
+ * The abstract validator that is the base for maps, sets and lists (both frozen and non-frozen).
  *
  * Please note that this comparator shouldn't be used "manually" (through thrift for instance).
- *
  */
 public abstract class CollectionType<T> extends AbstractType<T>
 {
+    private static final Logger logger = LoggerFactory.getLogger(CollectionType.class);
+
+    public static final int MAX_ELEMENTS = 65535;
+
     public enum Kind
     {
-        MAP, SET, LIST
+        MAP
+        {
+            public ColumnSpecification makeCollectionReceiver(ColumnSpecification collection, boolean isKey)
+            {
+                return isKey ? Maps.keySpecOf(collection) : Maps.valueSpecOf(collection);
+            }
+        },
+        SET
+        {
+            public ColumnSpecification makeCollectionReceiver(ColumnSpecification collection, boolean isKey)
+            {
+                return Sets.valueSpecOf(collection);
+            }
+        },
+        LIST
+        {
+            public ColumnSpecification makeCollectionReceiver(ColumnSpecification collection, boolean isKey)
+            {
+                return Lists.valueSpecOf(collection);
+            }
+        };
+
+        public abstract ColumnSpecification makeCollectionReceiver(ColumnSpecification collection, boolean isKey);
     }
 
     public final Kind kind;
@@ -48,21 +83,12 @@ public abstract class CollectionType<T> extends AbstractType<T>
     public abstract AbstractType<?> nameComparator();
     public abstract AbstractType<?> valueComparator();
 
-    protected abstract void appendToStringBuilder(StringBuilder sb);
-
-    public abstract ByteBuffer serialize(List<Pair<ByteBuffer, Column>> columns);
-
     @Override
-    public String toString()
-    {
-        StringBuilder sb = new StringBuilder();
-        appendToStringBuilder(sb);
-        return sb.toString();
-    }
+    public abstract CollectionSerializer<T> getSerializer();
 
-    public int compare(ByteBuffer o1, ByteBuffer o2)
+    public ColumnSpecification makeCollectionReceiver(ColumnSpecification collection, boolean isKey)
     {
-        throw new UnsupportedOperationException("CollectionType should not be use directly as a comparator");
+        return kind.makeCollectionReceiver(collection, isKey);
     }
 
     public String getString(ByteBuffer bytes)
@@ -82,45 +108,110 @@ public abstract class CollectionType<T> extends AbstractType<T>
         }
     }
 
-    public void validate(ByteBuffer bytes)
-    {
-        valueComparator().validate(bytes);
-    }
-
     public boolean isCollection()
     {
         return true;
     }
 
-    // Utilitary method
-    protected static ByteBuffer pack(List<ByteBuffer> buffers, int elements, int size)
+    @Override
+    public void validateCellValue(ByteBuffer cellValue) throws MarshalException
     {
-        ByteBuffer result = ByteBuffer.allocate(2 + size);
-        result.putShort((short)elements);
-        for (ByteBuffer bb : buffers)
-        {
-            result.putShort((short)bb.remaining());
-            result.put(bb.duplicate());
-        }
-        return (ByteBuffer)result.flip();
+        if (isMultiCell())
+            valueComparator().validate(cellValue);
+        else
+            super.validateCellValue(cellValue);
     }
 
-    public static ByteBuffer pack(List<ByteBuffer> buffers, int elements)
+    /**
+     * Checks if this collection is Map.
+     * @return <code>true</code> if this collection is a Map, <code>false</code> otherwise.
+     */
+    public boolean isMap()
     {
-        int size = 0;
-        for (ByteBuffer bb : buffers)
-            size += 2 + bb.remaining();
-        return pack(buffers, elements, size);
+        return kind == Kind.MAP;
     }
 
-    protected static int getUnsignedShort(ByteBuffer bb)
+    public List<Cell> enforceLimit(List<Cell> cells, int version)
     {
-        int length = (bb.get() & 0xFF) << 8;
-        return length | (bb.get() & 0xFF);
+        assert isMultiCell();
+
+        if (version >= Server.VERSION_3 || cells.size() <= MAX_ELEMENTS)
+            return cells;
+
+        logger.error("Detected collection with {} elements, more than the {} limit. Only the first {} elements will be returned to the client. "
+                   + "Please see http://cassandra.apache.org/doc/cql3/CQL.html#collections for more details.", cells.size(), MAX_ELEMENTS, MAX_ELEMENTS);
+        return cells.subList(0, MAX_ELEMENTS);
     }
+
+    public abstract List<ByteBuffer> serializedValues(List<Cell> cells);
+
+    public ByteBuffer serializeForNativeProtocol(List<Cell> cells, int version)
+    {
+        assert isMultiCell();
+        cells = enforceLimit(cells, version);
+        List<ByteBuffer> values = serializedValues(cells);
+        return CollectionSerializer.pack(values, cells.size(), version);
+    }
+
+    @Override
+    public boolean isCompatibleWith(AbstractType<?> previous)
+    {
+        if (this == previous)
+            return true;
+
+        if (!getClass().equals(previous.getClass()))
+            return false;
+
+        CollectionType tprev = (CollectionType) previous;
+        if (this.isMultiCell() != tprev.isMultiCell())
+            return false;
+
+        // subclasses should handle compatibility checks for frozen collections
+        if (!this.isMultiCell())
+            return isCompatibleWithFrozen(tprev);
+
+        if (!this.nameComparator().isCompatibleWith(tprev.nameComparator()))
+            return false;
+
+        // the value comparator is only used for Cell values, so sorting doesn't matter
+        return this.valueComparator().isValueCompatibleWith(tprev.valueComparator());
+    }
+
+    @Override
+    public boolean isValueCompatibleWithInternal(AbstractType<?> previous)
+    {
+        // for multi-cell collections, compatibility and value-compatibility are the same
+        if (this.isMultiCell())
+            return isCompatibleWith(previous);
+
+        if (this == previous)
+            return true;
+
+        if (!getClass().equals(previous.getClass()))
+            return false;
+
+        CollectionType tprev = (CollectionType) previous;
+        if (this.isMultiCell() != tprev.isMultiCell())
+            return false;
+
+        // subclasses should handle compatibility checks for frozen collections
+        return isValueCompatibleWithFrozen(tprev);
+    }
+
+    /** A version of isCompatibleWith() to deal with non-multicell (frozen) collections */
+    protected abstract boolean isCompatibleWithFrozen(CollectionType<?> previous);
+
+    /** A version of isValueCompatibleWith() to deal with non-multicell (frozen) collections */
+    protected abstract boolean isValueCompatibleWithFrozen(CollectionType<?> previous);
 
     public CQL3Type asCQL3Type()
     {
         return new CQL3Type.Collection(this);
+    }
+
+    @Override
+    public String toString()
+    {
+        return this.toString(false);
     }
 }

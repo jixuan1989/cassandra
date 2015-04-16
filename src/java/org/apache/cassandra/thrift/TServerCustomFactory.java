@@ -24,7 +24,7 @@ import org.slf4j.LoggerFactory;
 import org.apache.thrift.server.TServer;
 
 /**
- * Helper implementation to create a thrift TServer based on one of the common types we support (sync, async, hsha),
+ * Helper implementation to create a thrift TServer based on one of the common types we support (sync, hsha),
  * or a custom type by setting the fully qualified java class name in the rpc_server_type setting.
  */
 public class TServerCustomFactory implements TServerFactory
@@ -44,7 +44,6 @@ public class TServerCustomFactory implements TServerFactory
         if (ThriftServer.SYNC.equalsIgnoreCase(serverType))
         {
             server = new CustomTThreadPoolServer.Factory().buildTServer(args);
-            logger.info(String.format("Using synchronous/threadpool thrift server on %s : %s", args.addr.getHostName(), args.addr.getPort()));
         }
         else if(ThriftServer.ASYNC.equalsIgnoreCase(serverType))
         {
@@ -53,7 +52,7 @@ public class TServerCustomFactory implements TServerFactory
         }
         else if(ThriftServer.HSHA.equalsIgnoreCase(serverType))
         {
-            server = new CustomTHsHaServer.Factory().buildTServer(args);
+            server = new THsHaDisruptorServer.Factory().buildTServer(args);
             logger.info(String.format("Using custom half-sync/half-async thrift server on %s : %s", args.addr.getHostName(), args.addr.getPort()));
         }
         else

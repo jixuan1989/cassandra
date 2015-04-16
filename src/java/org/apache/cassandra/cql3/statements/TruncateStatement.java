@@ -18,13 +18,10 @@
 package org.apache.cassandra.cql3.statements;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.List;
 import java.util.concurrent.TimeoutException;
 
 import org.apache.cassandra.auth.Permission;
 import org.apache.cassandra.cql3.*;
-import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.exceptions.*;
 import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.service.ClientState;
@@ -37,6 +34,11 @@ public class TruncateStatement extends CFStatement implements CQLStatement
     public TruncateStatement(CFName name)
     {
         super(name);
+    }
+
+    public int getBoundTerms()
+    {
+        return 0;
     }
 
     public Prepared prepare() throws InvalidRequestException
@@ -54,28 +56,20 @@ public class TruncateStatement extends CFStatement implements CQLStatement
         ThriftValidation.validateColumnFamily(keyspace(), columnFamily());
     }
 
-    public ResultMessage execute(ConsistencyLevel cl, QueryState state, List<ByteBuffer> variables) throws InvalidRequestException, TruncateException
+    public ResultMessage execute(QueryState state, QueryOptions options) throws InvalidRequestException, TruncateException
     {
         try
         {
             StorageProxy.truncateBlocking(keyspace(), columnFamily());
         }
-        catch (UnavailableException e)
-        {
-            throw new TruncateException(e);
-        }
-        catch (TimeoutException e)
-        {
-            throw new TruncateException(e);
-        }
-        catch (IOException e)
+        catch (UnavailableException | TimeoutException | IOException e)
         {
             throw new TruncateException(e);
         }
         return null;
     }
 
-    public ResultMessage executeInternal(QueryState state)
+    public ResultMessage executeInternal(QueryState state, QueryOptions options)
     {
         throw new UnsupportedOperationException();
     }

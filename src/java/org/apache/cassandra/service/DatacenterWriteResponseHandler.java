@@ -20,9 +20,7 @@ package org.apache.cassandra.service;
 import java.net.InetAddress;
 import java.util.Collection;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.db.Table;
-import org.apache.cassandra.locator.IEndpointSnitch;
+import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.WriteType;
@@ -30,28 +28,37 @@ import org.apache.cassandra.db.WriteType;
 /**
  * This class blocks for a quorum of responses _in the local datacenter only_ (CL.LOCAL_QUORUM).
  */
-public class DatacenterWriteResponseHandler extends WriteResponseHandler
+public class DatacenterWriteResponseHandler<T> extends WriteResponseHandler<T>
 {
-    private static final IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
-
     public DatacenterWriteResponseHandler(Collection<InetAddress> naturalEndpoints,
                                           Collection<InetAddress> pendingEndpoints,
                                           ConsistencyLevel consistencyLevel,
-                                          Table table,
+                                          Keyspace keyspace,
                                           Runnable callback,
                                           WriteType writeType)
     {
-        super(naturalEndpoints, pendingEndpoints, consistencyLevel, table, callback, writeType);
-        assert consistencyLevel == ConsistencyLevel.LOCAL_QUORUM;
+        super(naturalEndpoints, pendingEndpoints, consistencyLevel, keyspace, callback, writeType);
+        assert consistencyLevel.isDatacenterLocal();
     }
 
     @Override
-    public void response(MessageIn message)
+    public void response(MessageIn<T> message)
     {
-        if (message == null || DatabaseDescriptor.getLocalDataCenter().equals(snitch.getDatacenter(message.from)))
-        {
-            if (responses.decrementAndGet() == 0)
-                signal();
-        }
+        if (message == null || waitingFor(message.from))
+            super.response(message);
+    }
+
+    @Override
+    protected int totalBlockFor()
+    {
+        // during bootstrap, include pending endpoints (only local here) in the count
+        // or we may fail the consistency level guarantees (see #833, #8058)
+        return consistencyLevel.blockFor(keyspace) + consistencyLevel.countLocalEndpoints(pendingEndpoints);
+    }
+
+    @Override
+    protected boolean waitingFor(InetAddress from)
+    {
+        return consistencyLevel.isLocal(from);
     }
 }

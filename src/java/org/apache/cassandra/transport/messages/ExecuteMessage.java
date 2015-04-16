@@ -18,20 +18,23 @@
 package org.apache.cassandra.transport.messages;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 
-import org.jboss.netty.buffer.ChannelBuffer;
+import com.google.common.collect.ImmutableMap;
+import io.netty.buffer.ByteBuf;
 
 import org.apache.cassandra.cql3.CQLStatement;
-import org.apache.cassandra.cql3.QueryProcessor;
+import org.apache.cassandra.cql3.QueryHandler;
+import org.apache.cassandra.cql3.QueryOptions;
+import org.apache.cassandra.cql3.statements.ParsedStatement;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.exceptions.PreparedQueryNotFoundException;
+import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.transport.*;
+import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.MD5Digest;
 import org.apache.cassandra.utils.UUIDGen;
 
@@ -39,70 +42,76 @@ public class ExecuteMessage extends Message.Request
 {
     public static final Message.Codec<ExecuteMessage> codec = new Message.Codec<ExecuteMessage>()
     {
-        public ExecuteMessage decode(ChannelBuffer body)
+        public ExecuteMessage decode(ByteBuf body, int version)
         {
             byte[] id = CBUtil.readBytes(body);
-
-            int count = body.readUnsignedShort();
-            List<ByteBuffer> values = new ArrayList<ByteBuffer>(count);
-            for (int i = 0; i < count; i++)
-                values.add(CBUtil.readValue(body));
-
-            ConsistencyLevel consistency = CBUtil.readConsistencyLevel(body);
-            return new ExecuteMessage(id, values, consistency);
+            if (version == 1)
+            {
+                List<ByteBuffer> values = CBUtil.readValueList(body);
+                ConsistencyLevel consistency = CBUtil.readConsistencyLevel(body);
+                return new ExecuteMessage(MD5Digest.wrap(id), QueryOptions.fromProtocolV1(consistency, values));
+            }
+            else
+            {
+                return new ExecuteMessage(MD5Digest.wrap(id), QueryOptions.codec.decode(body, version));
+            }
         }
 
-        public ChannelBuffer encode(ExecuteMessage msg)
+        public void encode(ExecuteMessage msg, ByteBuf dest, int version)
         {
-            // We have:
-            //   - statementId
-            //   - Number of values
-            //   - The values
-            //   - options
-            int vs = msg.values.size();
-            CBUtil.BufferBuilder builder = new CBUtil.BufferBuilder(3, 0, vs);
-            builder.add(CBUtil.bytesToCB(msg.statementId.bytes));
-            builder.add(CBUtil.shortToCB(vs));
+            CBUtil.writeBytes(msg.statementId.bytes, dest);
+            if (version == 1)
+            {
+                CBUtil.writeValueList(msg.options.getValues(), dest);
+                CBUtil.writeConsistencyLevel(msg.options.getConsistency(), dest);
+            }
+            else
+            {
+                QueryOptions.codec.encode(msg.options, dest, version);
+            }
+        }
 
-            // Values
-            for (ByteBuffer value : msg.values)
-                builder.addValue(value);
-
-            builder.add(CBUtil.consistencyLevelToCB(msg.consistency));
-            return builder.build();
+        public int encodedSize(ExecuteMessage msg, int version)
+        {
+            int size = 0;
+            size += CBUtil.sizeOfBytes(msg.statementId.bytes);
+            if (version == 1)
+            {
+                size += CBUtil.sizeOfValueList(msg.options.getValues());
+                size += CBUtil.sizeOfConsistencyLevel(msg.options.getConsistency());
+            }
+            else
+            {
+                size += QueryOptions.codec.encodedSize(msg.options, version);
+            }
+            return size;
         }
     };
 
     public final MD5Digest statementId;
-    public final List<ByteBuffer> values;
-    public final ConsistencyLevel consistency;
+    public final QueryOptions options;
 
-    public ExecuteMessage(byte[] statementId, List<ByteBuffer> values, ConsistencyLevel consistency)
-    {
-        this(MD5Digest.wrap(statementId), values, consistency);
-    }
-
-    public ExecuteMessage(MD5Digest statementId, List<ByteBuffer> values, ConsistencyLevel consistency)
+    public ExecuteMessage(MD5Digest statementId, QueryOptions options)
     {
         super(Message.Type.EXECUTE);
         this.statementId = statementId;
-        this.values = values;
-        this.consistency = consistency;
-    }
-
-    public ChannelBuffer encode()
-    {
-        return codec.encode(this);
+        this.options = options;
     }
 
     public Message.Response execute(QueryState state)
     {
         try
         {
-            CQLStatement statement = QueryProcessor.getPrepared(statementId);
-
-            if (statement == null)
+            QueryHandler handler = ClientState.getCQLQueryHandler();
+            ParsedStatement.Prepared prepared = handler.getPrepared(statementId);
+            if (prepared == null)
                 throw new PreparedQueryNotFoundException(statementId);
+
+            options.prepare(prepared.boundNames);
+            CQLStatement statement = prepared.statement;
+
+            if (options.getPageSize() == 0)
+                throw new ProtocolException("The page size cannot be 0");
 
             UUID tracingId = null;
             if (isTracingRequested())
@@ -113,12 +122,19 @@ public class ExecuteMessage extends Message.Request
 
             if (state.traceNextQuery())
             {
-                state.createTracingSession();
+                state.createTracingSession(connection);
+
+                ImmutableMap.Builder<String, String> builder = ImmutableMap.builder();
+                if (options.getPageSize() > 0)
+                    builder.put("page_size", Integer.toString(options.getPageSize()));
+
                 // TODO we don't have [typed] access to CQL bind variables here.  CASSANDRA-4560 is open to add support.
-                Tracing.instance().begin("Execute CQL3 prepared query", Collections.<String, String>emptyMap());
+                Tracing.instance.begin("Execute CQL3 prepared query", state.getClientAddress(), builder.build());
             }
 
-            Message.Response response = QueryProcessor.processPrepared(statement, consistency, state, values);
+            Message.Response response = handler.processPrepared(statement, state, options, getCustomPayload());
+            if (options.skipMetadata() && response instanceof ResultMessage.Rows)
+                ((ResultMessage.Rows)response).result.metadata.setSkipMetadata();
 
             if (tracingId != null)
                 response.setTracingId(tracingId);
@@ -127,17 +143,18 @@ public class ExecuteMessage extends Message.Request
         }
         catch (Exception e)
         {
+            JVMStabilityInspector.inspectThrowable(e);
             return ErrorMessage.fromException(e);
         }
         finally
         {
-            Tracing.instance().stopSession();
+            Tracing.instance.stopSession();
         }
     }
 
     @Override
     public String toString()
     {
-        return "EXECUTE " + statementId + " with " + values.size() + " values at consistency " + consistency;
+        return "EXECUTE " + statementId + " with " + options.getValues().size() + " values at consistency " + options.getConsistency();
     }
 }

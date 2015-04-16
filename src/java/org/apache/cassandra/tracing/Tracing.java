@@ -21,101 +21,71 @@ package org.apache.cassandra.tracing;
 
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
-import java.util.Arrays;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.concurrent.Stage;
-import org.apache.cassandra.concurrent.StageManager;
-import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.cql3.ColumnNameBuilder;
-import org.apache.cassandra.db.*;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.marshal.TimeUUIDType;
 import org.apache.cassandra.net.MessageIn;
-import org.apache.cassandra.service.StorageProxy;
-import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.transport.Connection;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.UUIDGen;
-import org.apache.cassandra.utils.WrappedRunnable;
 
-import static org.apache.cassandra.utils.ByteBufferUtil.bytes;
 
 /**
  * A trace session context. Able to track and store trace sessions. A session is usually a user initiated query, and may
- * have multiple local and remote events before it is completed. All events and sessions are stored at table.
+ * have multiple local and remote events before it is completed. All events and sessions are stored at keyspace.
  */
 public class Tracing
 {
-    public static final String TRACE_KS = "system_traces";
-    public static final String EVENTS_CF = "events";
-    public static final String SESSIONS_CF = "sessions";
     public static final String TRACE_HEADER = "TraceSession";
+    public static final String TRACE_TYPE = "TraceType";
 
-    private static final int TTL = 24 * 3600;
-
-    private static Tracing instance = new Tracing();
-
-    public static final Logger logger = LoggerFactory.getLogger(Tracing.class);
-
-    /**
-     * Fetches and lazy initializes the trace context.
-     */
-    public static Tracing instance()
+    public enum TraceType
     {
-        return instance;
-    }
+        NONE,
+        QUERY,
+        REPAIR;
 
-    private InetAddress localAddress = FBUtilities.getLocalAddress();
+        private static final TraceType[] ALL_VALUES = values();
 
-    private final ThreadLocal<TraceState> state = new ThreadLocal<TraceState>();
-
-    private final Map<UUID, TraceState> sessions = new ConcurrentHashMap<UUID, TraceState>();
-
-    public static void addColumn(ColumnFamily cf, ByteBuffer name, InetAddress address)
-    {
-        addColumn(cf, name, ByteBufferUtil.bytes(address));
-    }
-
-    public static void addColumn(ColumnFamily cf, ByteBuffer name, int value)
-    {
-        addColumn(cf, name, ByteBufferUtil.bytes(value));
-    }
-
-    public static void addColumn(ColumnFamily cf, ByteBuffer name, long value)
-    {
-        addColumn(cf, name, ByteBufferUtil.bytes(value));
-    }
-
-    public static void addColumn(ColumnFamily cf, ByteBuffer name, String value)
-    {
-        addColumn(cf, name, ByteBufferUtil.bytes(value));
-    }
-
-    private static void addColumn(ColumnFamily cf, ByteBuffer name, ByteBuffer value)
-    {
-        cf.addColumn(new ExpiringColumn(name, value, System.currentTimeMillis(), TTL));
-    }
-
-    public void addParameterColumns(ColumnFamily cf, Map<String, String> rawPayload)
-    {
-        for (Map.Entry<String, String> entry : rawPayload.entrySet())
+        public static TraceType deserialize(byte b)
         {
-            cf.addColumn(new ExpiringColumn(buildName(cf.metadata(), bytes("parameters"), bytes(entry.getKey())),
-                                            bytes(entry.getValue()), System.currentTimeMillis(), TTL));
+            if (b < 0 || ALL_VALUES.length <= b)
+                return NONE;
+            return ALL_VALUES[b];
+        }
+
+        public static byte serialize(TraceType value)
+        {
+            return (byte) value.ordinal();
+        }
+
+        private static final int[] TTLS = { DatabaseDescriptor.getTracetypeQueryTTL(),
+                                            DatabaseDescriptor.getTracetypeQueryTTL(),
+                                            DatabaseDescriptor.getTracetypeRepairTTL() };
+
+        public int getTTL()
+        {
+            return TTLS[ordinal()];
         }
     }
 
-    public static ByteBuffer buildName(CFMetaData meta, ByteBuffer... args)
-    {
-        ColumnNameBuilder builder = meta.getCfDef().getColumnNameBuilder();
-        for (ByteBuffer arg : args)
-            builder.add(arg);
-        return builder.build();
-    }
+    static final Logger logger = LoggerFactory.getLogger(Tracing.class);
+
+    private final InetAddress localAddress = FBUtilities.getLocalAddress();
+
+    private final ThreadLocal<TraceState> state = new ThreadLocal<>();
+
+    private final ConcurrentMap<UUID, TraceState> sessions = new ConcurrentHashMap<>();
+
+    public static final Tracing instance = new Tracing();
 
     public UUID getSessionId()
     {
@@ -123,33 +93,60 @@ public class Tracing
         return state.get().sessionId;
     }
 
+    public TraceType getTraceType()
+    {
+        assert isTracing();
+        return state.get().traceType;
+    }
+
+    public int getTTL()
+    {
+        assert isTracing();
+        return state.get().ttl;
+    }
+
     /**
      * Indicates if the current thread's execution is being traced.
      */
     public static boolean isTracing()
     {
-        return instance != null && instance.state.get() != null;
+        return instance.state.get() != null;
     }
 
-    public UUID newSession()
+    public UUID newSession(Connection connection)
     {
-        return newSession(TimeUUIDType.instance.compose(ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes())));
+        return newSession(connection, TraceType.QUERY);
     }
 
-    public UUID newSession(UUID sessionId)
+    public UUID newSession(TraceType traceType)
+    {
+        return newSession(null, traceType);
+    }
+
+    public UUID newSession(Connection connection, TraceType traceType)
+    {
+        return newSession(connection, TimeUUIDType.instance.compose(ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes())), traceType, false);
+    }
+
+    public UUID newSession(Connection connection, UUID sessionId)
+    {
+        return newSession(connection, sessionId, TraceType.QUERY, true);
+    }
+
+    private UUID newSession(Connection connection, UUID sessionId, TraceType traceType, boolean withFinishEvent)
     {
         assert state.get() == null;
 
-        TraceState ts = new TraceState(localAddress, sessionId, true);
+        TraceState ts = new TraceState(localAddress, connection, sessionId, traceType, withFinishEvent);
         state.set(ts);
         sessions.put(sessionId, ts);
 
         return sessionId;
     }
 
-    public void stopIfNonLocal(TraceState state)
+    public void doneWithNonLocalSession(TraceState state)
     {
-        if (!state.isLocallyOwned)
+        if (state.releaseReference() == 0)
             sessions.remove(state.sessionId);
     }
 
@@ -166,20 +163,12 @@ public class Tracing
         else
         {
             final int elapsed = state.elapsed();
-            final ByteBuffer sessionIdBytes = state.sessionIdBytes;
+            final ByteBuffer sessionId = state.sessionIdBytes;
+            final int ttl = state.ttl;
 
-            StageManager.getStage(Stage.TRACING).execute(new WrappedRunnable()
-            {
-                public void runMayThrow() throws Exception
-                {
-                    CFMetaData cfMeta = CFMetaData.TraceSessionsCf;
-                    ColumnFamily cf = ArrayBackedSortedColumns.factory.create(cfMeta);
-                    addColumn(cf, buildName(cfMeta, bytes("duration")), elapsed);
-                    RowMutation mutation = new RowMutation(TRACE_KS, sessionIdBytes, cf);
-                    StorageProxy.mutate(Arrays.asList(mutation), ConsistencyLevel.ANY);
-                }
-            });
+            state.executeMutation(TraceKeyspace.makeStopSessionMutation(sessionId, elapsed, ttl));
 
+            state.stop();
             sessions.remove(state.sessionId);
             this.state.set(null);
         }
@@ -200,63 +189,77 @@ public class Tracing
         state.set(tls);
     }
 
-    public void begin(final String request, final Map<String, String> parameters)
+    public TraceState begin(final String request, final Map<String, String> parameters)
+    {
+        return begin(request, null, parameters);
+    }
+
+    public TraceState begin(final String request, final InetAddress client, final Map<String, String> parameters)
     {
         assert isTracing();
 
-        final long started_at = System.currentTimeMillis();
-        final ByteBuffer sessionIdBytes = state.get().sessionIdBytes;
+        final TraceState state = this.state.get();
+        final long startedAt = System.currentTimeMillis();
+        final ByteBuffer sessionId = state.sessionIdBytes;
+        final String command = state.traceType.toString();
+        final int ttl = state.ttl;
 
-        StageManager.getStage(Stage.TRACING).execute(new WrappedRunnable()
-        {
-            public void runMayThrow() throws Exception
-            {
-                CFMetaData cfMeta = CFMetaData.TraceSessionsCf;
-                ColumnFamily cf = ArrayBackedSortedColumns.factory.create(cfMeta);
-                addColumn(cf, buildName(cfMeta, bytes("coordinator")), FBUtilities.getBroadcastAddress());
-                addColumn(cf, buildName(cfMeta, bytes("request")), request);
-                addColumn(cf, buildName(cfMeta, bytes("started_at")), started_at);
-                addParameterColumns(cf, parameters);
-                RowMutation mutation = new RowMutation(TRACE_KS, sessionIdBytes, cf);
-                StorageProxy.mutate(Arrays.asList(mutation), ConsistencyLevel.ANY);
-            }
-        });
+        state.executeMutation(TraceKeyspace.makeStartSessionMutation(sessionId, client, parameters, request, startedAt, command, ttl));
+
+        return state;
     }
 
     /**
-     * Updates the threads query context from a message
+     * Determines the tracing context from a message.  Does NOT set the threadlocal state.
      * 
-     * @param message
-     *            The internode message
+     * @param message The internode message
      */
-    public void initializeFromMessage(final MessageIn<?> message)
+    public TraceState initializeFromMessage(final MessageIn<?> message)
     {
-        final byte[] sessionBytes = message.parameters.get(Tracing.TRACE_HEADER);
+        final byte[] sessionBytes = message.parameters.get(TRACE_HEADER);
 
-        // if the message has no session context header don't do tracing
         if (sessionBytes == null)
-        {
-            state.set(null);
-            return;
-        }
+            return null;
 
         assert sessionBytes.length == 16;
         UUID sessionId = UUIDGen.getUUID(ByteBuffer.wrap(sessionBytes));
         TraceState ts = sessions.get(sessionId);
-        if (ts == null)
+        if (ts != null && ts.acquireReference())
+            return ts;
+
+        byte[] tmpBytes;
+        TraceType traceType = TraceType.QUERY;
+        if ((tmpBytes = message.parameters.get(TRACE_TYPE)) != null)
+            traceType = TraceType.deserialize(tmpBytes[0]);
+
+        if (message.verb == MessagingService.Verb.REQUEST_RESPONSE)
         {
-            ts = new TraceState(message.from, sessionId, false);
-            sessions.put(sessionId, ts);
+            // received a message for a session we've already closed out.  see CASSANDRA-5668
+            return new ExpiredTraceState(sessionId, traceType);
         }
-        state.set(ts);
+        else
+        {
+            ts = new TraceState(message.from, sessionId, traceType);
+            sessions.put(sessionId, ts);
+            return ts;
+        }
     }
 
-    public static void trace(String message)
+
+    // repair just gets a varargs method since it's so heavyweight anyway
+    public static void traceRepair(String format, Object... args)
     {
-        if (Tracing.instance() == null) // instance might not be built at the time this is called
+        final TraceState state = instance.get();
+        if (state == null) // inline isTracing to avoid implicit two calls to state.get()
             return;
 
-        final TraceState state = Tracing.instance().get();
+        state.trace(format, args);
+    }
+
+    // normal traces get zero-, one-, and two-argument overloads so common case doesn't need to create varargs array
+    public static void trace(String message)
+    {
+        final TraceState state = instance.get();
         if (state == null) // inline isTracing to avoid implicit two calls to state.get()
             return;
 
@@ -265,10 +268,7 @@ public class Tracing
 
     public static void trace(String format, Object arg)
     {
-        if (Tracing.instance() == null) // instance might not be built at the time this is called
-            return;
-
-        final TraceState state = Tracing.instance().get();
+        final TraceState state = instance.get();
         if (state == null) // inline isTracing to avoid implicit two calls to state.get()
             return;
 
@@ -277,22 +277,16 @@ public class Tracing
 
     public static void trace(String format, Object arg1, Object arg2)
     {
-        if (Tracing.instance() == null) // instance might not be built at the time this is called
-            return;
-
-        final TraceState state = Tracing.instance().get();
+        final TraceState state = instance.get();
         if (state == null) // inline isTracing to avoid implicit two calls to state.get()
             return;
 
         state.trace(format, arg1, arg2);
     }
 
-    public static void trace(String format, Object[] args)
+    public static void trace(String format, Object... args)
     {
-        if (Tracing.instance() == null) // instance might not be built at the time this is called
-            return;
-
-        final TraceState state = Tracing.instance().get();
+        final TraceState state = instance.get();
         if (state == null) // inline isTracing to avoid implicit two calls to state.get()
             return;
 

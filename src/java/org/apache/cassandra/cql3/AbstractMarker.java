@@ -17,9 +17,12 @@
  */
 package org.apache.cassandra.cql3;
 
-import org.apache.cassandra.db.marshal.CollectionType;
-import org.apache.cassandra.exceptions.InvalidRequestException;
+import java.util.Collections;
 
+import org.apache.cassandra.cql3.functions.Function;
+import org.apache.cassandra.db.marshal.CollectionType;
+import org.apache.cassandra.db.marshal.ListType;
+import org.apache.cassandra.exceptions.InvalidRequestException;
 
 /**
  * A single bind marker.
@@ -35,9 +38,19 @@ public abstract class AbstractMarker extends Term.NonTerminal
         this.receiver = receiver;
     }
 
-    public void collectMarkerSpecification(ColumnSpecification[] boundNames)
+    public void collectMarkerSpecification(VariableSpecifications boundNames)
     {
-        boundNames[bindIndex] = receiver;
+        boundNames.add(bindIndex, receiver);
+    }
+
+    public boolean containsBindMarker()
+    {
+        return true;
+    }
+
+    public Iterable<Function> getFunctions()
+    {
+        return Collections.emptySet();
     }
 
     /**
@@ -52,7 +65,7 @@ public abstract class AbstractMarker extends Term.NonTerminal
             this.bindIndex = bindIndex;
         }
 
-        public AbstractMarker prepare(ColumnSpecification receiver) throws InvalidRequestException
+        public NonTerminal prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException
         {
             if (!(receiver.type instanceof CollectionType))
                 return new Constants.Marker(bindIndex, receiver);
@@ -66,15 +79,41 @@ public abstract class AbstractMarker extends Term.NonTerminal
             throw new AssertionError();
         }
 
-        public boolean isAssignableTo(ColumnSpecification receiver)
+        public AssignmentTestable.TestResult testAssignment(String keyspace, ColumnSpecification receiver)
         {
-            return true;
+            return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
         }
 
         @Override
         public String toString()
         {
             return "?";
+        }
+    }
+
+    /**
+     * A raw placeholder for multiple values of the same type for a single column.
+     * For example, "SELECT ... WHERE user_id IN ?'.
+     *
+     * Because a single type is used, a List is used to represent the values.
+     */
+    public static class INRaw extends Raw
+    {
+        public INRaw(int bindIndex)
+        {
+            super(bindIndex);
+        }
+
+        private static ColumnSpecification makeInReceiver(ColumnSpecification receiver)
+        {
+            ColumnIdentifier inName = new ColumnIdentifier("in(" + receiver.name + ")", true);
+            return new ColumnSpecification(receiver.ksName, receiver.cfName, inName, ListType.getInstance(receiver.type, false));
+        }
+
+        @Override
+        public AbstractMarker prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException
+        {
+            return new Lists.Marker(bindIndex, makeInReceiver(receiver));
         }
     }
 }

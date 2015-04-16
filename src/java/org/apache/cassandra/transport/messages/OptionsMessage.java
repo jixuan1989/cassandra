@@ -22,8 +22,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.jboss.netty.buffer.ChannelBuffer;
-import org.jboss.netty.buffer.ChannelBuffers;
+import io.netty.buffer.ByteBuf;
 
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.service.QueryState;
@@ -37,25 +36,24 @@ public class OptionsMessage extends Message.Request
 {
     public static final Message.Codec<OptionsMessage> codec = new Message.Codec<OptionsMessage>()
     {
-        public OptionsMessage decode(ChannelBuffer body)
+        public OptionsMessage decode(ByteBuf body, int version)
         {
             return new OptionsMessage();
         }
 
-        public ChannelBuffer encode(OptionsMessage msg)
+        public void encode(OptionsMessage msg, ByteBuf dest, int version)
         {
-            return ChannelBuffers.EMPTY_BUFFER;
+        }
+
+        public int encodedSize(OptionsMessage msg, int version)
+        {
+            return 0;
         }
     };
 
     public OptionsMessage()
     {
         super(Message.Type.OPTIONS);
-    }
-
-    public ChannelBuffer encode()
-    {
-        return codec.encode(this);
     }
 
     public Message.Response execute(QueryState state)
@@ -66,6 +64,8 @@ public class OptionsMessage extends Message.Request
         List<String> compressions = new ArrayList<String>();
         if (FrameCompressor.SnappyCompressor.instance != null)
             compressions.add("snappy");
+        // LZ4 is always available since worst case scenario it default to a pure JAVA implem.
+        compressions.add("lz4");
 
         Map<String, List<String>> supported = new HashMap<String, List<String>>();
         supported.put(StartupMessage.CQL_VERSION, cqlVersions);

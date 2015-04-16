@@ -21,9 +21,9 @@ import java.net.InetAddress;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,63 +31,68 @@ import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ReadCommand;
-import org.apache.cassandra.db.Table;
+import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.exceptions.ReadFailureException;
 import org.apache.cassandra.exceptions.ReadTimeoutException;
 import org.apache.cassandra.exceptions.UnavailableException;
-import org.apache.cassandra.net.IAsyncCallback;
+import org.apache.cassandra.metrics.ReadRepairMetrics;
+import org.apache.cassandra.net.IAsyncCallbackWithFailure;
 import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.SimpleCondition;
+import org.apache.cassandra.utils.concurrent.SimpleCondition;
 
-public class ReadCallback<TMessage, TResolved> implements IAsyncCallback<TMessage>
+public class ReadCallback<TMessage, TResolved> implements IAsyncCallbackWithFailure<TMessage>
 {
     protected static final Logger logger = LoggerFactory.getLogger( ReadCallback.class );
 
     public final IResponseResolver<TMessage, TResolved> resolver;
     private final SimpleCondition condition = new SimpleCondition();
-    final long startTime;
-    private final int blockfor;
+    final long start;
+    final int blockfor;
     final List<InetAddress> endpoints;
     private final IReadCommand command;
     private final ConsistencyLevel consistencyLevel;
-    private final AtomicInteger received = new AtomicInteger(0);
-    private final Table table; // TODO push this into ConsistencyLevel?
+    private static final AtomicIntegerFieldUpdater<ReadCallback> recievedUpdater
+            = AtomicIntegerFieldUpdater.newUpdater(ReadCallback.class, "received");
+    private volatile int received = 0;
+    private static final AtomicIntegerFieldUpdater<ReadCallback> failuresUpdater
+            = AtomicIntegerFieldUpdater.newUpdater(ReadCallback.class, "failures");
+    private volatile int failures = 0;
+
+    private final Keyspace keyspace; // TODO push this into ConsistencyLevel?
 
     /**
      * Constructor when response count has to be calculated and blocked for.
      */
     public ReadCallback(IResponseResolver<TMessage, TResolved> resolver, ConsistencyLevel consistencyLevel, IReadCommand command, List<InetAddress> filteredEndpoints)
     {
-        this(resolver, consistencyLevel, consistencyLevel.blockFor(Table.open(command.getKeyspace())), command, Table.open(command.getKeyspace()), filteredEndpoints);
+        this(resolver, consistencyLevel, consistencyLevel.blockFor(Keyspace.open(command.getKeyspace())), command, Keyspace.open(command.getKeyspace()), filteredEndpoints);
         if (logger.isTraceEnabled())
             logger.trace(String.format("Blockfor is %s; setting up requests to %s", blockfor, StringUtils.join(this.endpoints, ",")));
     }
 
-    private ReadCallback(IResponseResolver<TMessage, TResolved> resolver, ConsistencyLevel consistencyLevel, int blockfor, IReadCommand command, Table table, List<InetAddress> endpoints)
+    public ReadCallback(IResponseResolver<TMessage, TResolved> resolver, ConsistencyLevel consistencyLevel, int blockfor, IReadCommand command, Keyspace keyspace, List<InetAddress> endpoints)
     {
         this.command = command;
-        this.table = table;
+        this.keyspace = keyspace;
         this.blockfor = blockfor;
         this.consistencyLevel = consistencyLevel;
         this.resolver = resolver;
-        this.startTime = System.currentTimeMillis();
+        this.start = System.nanoTime();
         this.endpoints = endpoints;
+        // we don't support read repair (or rapid read protection) for range scans yet (CASSANDRA-6897)
+        assert !(resolver instanceof RangeSliceResponseResolver) || blockfor >= endpoints.size();
     }
 
-    public ReadCallback<TMessage, TResolved> withNewResolver(IResponseResolver<TMessage, TResolved> newResolver)
+    public boolean await(long timePastStart, TimeUnit unit)
     {
-        return new ReadCallback<TMessage, TResolved>(newResolver, consistencyLevel, blockfor, command, table, endpoints);
-    }
-
-    public boolean await(long interimTimeout)
-    {
-        long timeout = interimTimeout - (System.currentTimeMillis() - startTime);
+        long time = unit.toNanos(timePastStart) - (System.nanoTime() - start);
         try
         {
-            return condition.await(timeout, TimeUnit.MILLISECONDS);
+            return condition.await(time, TimeUnit.NANOSECONDS);
         }
         catch (InterruptedException ex)
         {
@@ -95,40 +100,62 @@ public class ReadCallback<TMessage, TResolved> implements IAsyncCallback<TMessag
         }
     }
 
-    public TResolved get() throws ReadTimeoutException, DigestMismatchException
+    public TResolved get() throws ReadFailureException, ReadTimeoutException, DigestMismatchException
     {
-        long timeout = command.getTimeout() - (System.currentTimeMillis() - startTime);
-        if (!await(timeout))
+        if (!await(command.getTimeout(), TimeUnit.MILLISECONDS))
         {
-            ReadTimeoutException ex = new ReadTimeoutException(consistencyLevel, received.get(), blockfor, resolver.isDataPresent());
+            // Same as for writes, see AbstractWriteResponseHandler
+            ReadTimeoutException ex = new ReadTimeoutException(consistencyLevel, received, blockfor, resolver.isDataPresent());
+
             if (logger.isDebugEnabled())
                 logger.debug("Read timeout: {}", ex.toString());
             throw ex;
         }
+
+        if (blockfor + failures > endpoints.size())
+        {
+            ReadFailureException ex = new ReadFailureException(consistencyLevel, received, failures, blockfor, resolver.isDataPresent());
+
+            if (logger.isDebugEnabled())
+                logger.debug("Read failure: {}", ex.toString());
+            throw ex;
+        }
+
         return blockfor == 1 ? resolver.getData() : resolver.resolve();
     }
 
     public void response(MessageIn<TMessage> message)
     {
-        boolean hasAdded = resolver.preprocess(message);
-        int n = (waitingFor(message) && hasAdded)
-              ? received.incrementAndGet()
-              : received.get();
+        resolver.preprocess(message);
+        int n = waitingFor(message.from)
+              ? recievedUpdater.incrementAndGet(this)
+              : received;
         if (n >= blockfor && resolver.isDataPresent())
         {
-            condition.signal();
-            maybeResolveForRepair();
+            condition.signalAll();
+            // kick off a background digest comparison if this is a result that (may have) arrived after
+            // the original resolve that get() kicks off as soon as the condition is signaled
+            if (blockfor < endpoints.size() && n == endpoints.size())
+                StageManager.getStage(Stage.READ_REPAIR).execute(new AsyncRepairRunner());
         }
     }
 
     /**
      * @return true if the message counts towards the blockfor threshold
      */
-    private boolean waitingFor(MessageIn message)
+    private boolean waitingFor(InetAddress from)
     {
-        return consistencyLevel == ConsistencyLevel.LOCAL_QUORUM
-             ? DatabaseDescriptor.getLocalDataCenter().equals(DatabaseDescriptor.getEndpointSnitch().getDatacenter(message.from))
+        return consistencyLevel.isDatacenterLocal()
+             ? DatabaseDescriptor.getLocalDataCenter().equals(DatabaseDescriptor.getEndpointSnitch().getDatacenter(from))
              : true;
+    }
+
+    /**
+     * @return the current number of received responses
+     */
+    public int getReceivedCount()
+    {
+        return received;
     }
 
     public void response(TMessage result)
@@ -141,22 +168,9 @@ public class ReadCallback<TMessage, TResolved> implements IAsyncCallback<TMessag
         response(message);
     }
 
-    /**
-     * Check digests in the background on the Repair stage if we've received replies
-     * too all the requests we sent.
-     */
-    protected void maybeResolveForRepair()
-    {
-        if (blockfor < endpoints.size() && received.get() == endpoints.size())
-        {
-            assert resolver.isDataPresent();
-            StageManager.getStage(Stage.READ_REPAIR).execute(new AsyncRepairRunner());
-        }
-    }
-
     public void assureSufficientLiveNodes() throws UnavailableException
     {
-        consistencyLevel.assureSufficientLiveNodes(table, endpoints);
+        consistencyLevel.assureSufficientLiveNodes(keyspace, endpoints);
     }
 
     public boolean isLatencyForSnitch()
@@ -181,9 +195,11 @@ public class ReadCallback<TMessage, TResolved> implements IAsyncCallback<TMessag
 
                 if (logger.isDebugEnabled())
                     logger.debug("Digest mismatch:", e);
-
+                
+                ReadRepairMetrics.repairedBackground.mark();
+                
                 ReadCommand readCommand = (ReadCommand) command;
-                final RowDataResolver repairResolver = new RowDataResolver(readCommand.table, readCommand.key, readCommand.filter());
+                final RowDataResolver repairResolver = new RowDataResolver(readCommand.ksName, readCommand.key, readCommand.filter(), readCommand.timestamp, endpoints.size());
                 AsyncRepairCallback repairHandler = new AsyncRepairCallback(repairResolver, endpoints.size());
 
                 MessageOut<ReadCommand> message = ((ReadCommand) command).createMessage();
@@ -191,5 +207,16 @@ public class ReadCallback<TMessage, TResolved> implements IAsyncCallback<TMessag
                     MessagingService.instance().sendRR(message, endpoint, repairHandler);
             }
         }
+    }
+
+    @Override
+    public void onFailure(InetAddress from)
+    {
+        int n = waitingFor(from)
+              ? failuresUpdater.incrementAndGet(this)
+              : failures;
+
+        if (blockfor + n > endpoints.size())
+            condition.signalAll();
     }
 }

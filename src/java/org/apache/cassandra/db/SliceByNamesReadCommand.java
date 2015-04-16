@@ -20,13 +20,13 @@ package org.apache.cassandra.db;
 import java.io.*;
 import java.nio.ByteBuffer;
 
+import com.google.common.base.Objects;
+
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.filter.*;
-import org.apache.cassandra.db.marshal.AbstractType;
-import org.apache.cassandra.db.marshal.CompositeType;
 import org.apache.cassandra.io.IVersionedSerializer;
-import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
@@ -36,34 +36,33 @@ public class SliceByNamesReadCommand extends ReadCommand
 
     public final NamesQueryFilter filter;
 
-    public SliceByNamesReadCommand(String table, ByteBuffer key, String cfName, NamesQueryFilter filter)
+    public SliceByNamesReadCommand(String keyspaceName, ByteBuffer key, String cfName, long timestamp, NamesQueryFilter filter)
     {
-        super(table, key, cfName, Type.GET_BY_NAMES);
+        super(keyspaceName, key, cfName, timestamp, Type.GET_BY_NAMES);
         this.filter = filter;
     }
 
     public ReadCommand copy()
     {
-        ReadCommand readCommand= new SliceByNamesReadCommand(table, key, cfName, filter);
-        readCommand.setDigestQuery(isDigestQuery());
-        return readCommand;
+        return new SliceByNamesReadCommand(ksName, key, cfName, timestamp, filter).setIsDigestQuery(isDigestQuery());
     }
 
-    public Row getRow(Table table)
+    public Row getRow(Keyspace keyspace)
     {
         DecoratedKey dk = StorageService.getPartitioner().decorateKey(key);
-        return table.getRow(new QueryFilter(dk, cfName, filter));
+        return keyspace.getRow(new QueryFilter(dk, cfName, filter, timestamp));
     }
 
     @Override
     public String toString()
     {
-        return "SliceByNamesReadCommand(" +
-               "table='" + table + '\'' +
-               ", key=" + ByteBufferUtil.bytesToHex(key) +
-               ", cfName='" + cfName + '\'' +
-               ", filter=" + filter +
-               ')';
+        return Objects.toStringHelper(this)
+                      .add("ksName", ksName)
+                      .add("cfName", cfName)
+                      .add("key", ByteBufferUtil.bytesToHex(key))
+                      .add("filter", filter)
+                      .add("timestamp", timestamp)
+                      .toString();
     }
 
     public IDiskAtomFilter filter()
@@ -74,106 +73,46 @@ public class SliceByNamesReadCommand extends ReadCommand
 
 class SliceByNamesReadCommandSerializer implements IVersionedSerializer<ReadCommand>
 {
-    public void serialize(ReadCommand cmd, DataOutput out, int version) throws IOException
-    {
-        serialize(cmd, null, out, version);
-    }
-
-    public void serialize(ReadCommand cmd, ByteBuffer superColumn, DataOutput out, int version) throws IOException
+    public void serialize(ReadCommand cmd, DataOutputPlus out, int version) throws IOException
     {
         SliceByNamesReadCommand command = (SliceByNamesReadCommand) cmd;
         out.writeBoolean(command.isDigestQuery());
-        out.writeUTF(command.table);
+        out.writeUTF(command.ksName);
         ByteBufferUtil.writeWithShortLength(command.key, out);
+        out.writeUTF(command.cfName);
+        out.writeLong(cmd.timestamp);
 
-        if (version < MessagingService.VERSION_20)
-            new QueryPath(command.cfName, superColumn).serialize(out);
-        else
-            out.writeUTF(command.cfName);
-
-        NamesQueryFilter.serializer.serialize(command.filter, out, version);
+        CFMetaData metadata = Schema.instance.getCFMetaData(cmd.ksName, cmd.cfName);
+        metadata.comparator.namesQueryFilterSerializer().serialize(command.filter, out, version);
     }
 
     public ReadCommand deserialize(DataInput in, int version) throws IOException
     {
         boolean isDigest = in.readBoolean();
-        String table = in.readUTF();
+        String keyspaceName = in.readUTF();
         ByteBuffer key = ByteBufferUtil.readWithShortLength(in);
-
-        String cfName;
-        ByteBuffer sc = null;
-        if (version < MessagingService.VERSION_20)
-        {
-            QueryPath path = QueryPath.deserialize(in);
-            cfName = path.columnFamilyName;
-            sc = path.superColumnName;
-        }
-        else
-        {
-            cfName = in.readUTF();
-        }
-
-        CFMetaData metadata = Schema.instance.getCFMetaData(table, cfName);
-        ReadCommand command;
-        if (version < MessagingService.VERSION_20)
-        {
-            AbstractType<?> comparator;
-            if (metadata.cfType == ColumnFamilyType.Super)
-            {
-                CompositeType type = (CompositeType)metadata.comparator;
-                comparator = sc == null ? type.types.get(0) : type.types.get(1);
-            }
-            else
-            {
-                comparator = metadata.comparator;
-            }
-
-            IDiskAtomFilter filter = NamesQueryFilter.serializer.deserialize(in, version, comparator);
-
-            if (metadata.cfType == ColumnFamilyType.Super)
-                filter = SuperColumns.fromSCFilter((CompositeType)metadata.comparator, sc, filter);
-
-            // Due to SC compat, it's possible we get back a slice filter at this point
-            if (filter instanceof NamesQueryFilter)
-                command = new SliceByNamesReadCommand(table, key, cfName, (NamesQueryFilter)filter);
-            else
-                command = new SliceFromReadCommand(table, key, cfName, (SliceQueryFilter)filter);
-        }
-        else
-        {
-            NamesQueryFilter filter = NamesQueryFilter.serializer.deserialize(in, version, metadata.comparator);
-            command = new SliceByNamesReadCommand(table, key, cfName, filter);
-        }
-
-        command.setDigestQuery(isDigest);
-        return command;
+        String cfName = in.readUTF();
+        long timestamp = in.readLong();
+        CFMetaData metadata = Schema.instance.getCFMetaData(keyspaceName, cfName);
+        NamesQueryFilter filter = metadata.comparator.namesQueryFilterSerializer().deserialize(in, version);
+        return new SliceByNamesReadCommand(keyspaceName, key, cfName, timestamp, filter).setIsDigestQuery(isDigest);
     }
 
     public long serializedSize(ReadCommand cmd, int version)
-    {
-        return serializedSize(cmd, null, version);
-    }
-
-    public long serializedSize(ReadCommand cmd, ByteBuffer superColumn, int version)
     {
         TypeSizes sizes = TypeSizes.NATIVE;
         SliceByNamesReadCommand command = (SliceByNamesReadCommand) cmd;
         int size = sizes.sizeof(command.isDigestQuery());
         int keySize = command.key.remaining();
 
-        size += sizes.sizeof(command.table);
+        CFMetaData metadata = Schema.instance.getCFMetaData(cmd.ksName, cmd.cfName);
+
+        size += sizes.sizeof(command.ksName);
         size += sizes.sizeof((short)keySize) + keySize;
+        size += sizes.sizeof(command.cfName);
+        size += sizes.sizeof(cmd.timestamp);
+        size += metadata.comparator.namesQueryFilterSerializer().serializedSize(command.filter, version);
 
-        if (version < MessagingService.VERSION_20)
-        {
-            size += new QueryPath(command.cfName, superColumn).serializedSize(sizes);
-        }
-        else
-        {
-            size += sizes.sizeof(command.cfName);
-        }
-
-        size += NamesQueryFilter.serializer.serializedSize(command.filter, version);
         return size;
     }
 }

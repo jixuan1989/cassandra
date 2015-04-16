@@ -18,24 +18,26 @@
 package org.apache.cassandra.io.compress;
 
 import java.io.DataInput;
-import java.io.DataOutput;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.Collections;
 import java.util.AbstractSet;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
-import org.apache.commons.lang.builder.EqualsBuilder;
-import org.apache.commons.lang.builder.HashCodeBuilder;
 
-import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.commons.lang3.builder.EqualsBuilder;
+import org.apache.commons.lang3.builder.HashCodeBuilder;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ParameterizedClass;
 import org.apache.cassandra.db.TypeSizes;
+import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataOutputPlus;
 
 public class CompressionParameters
 {
@@ -53,6 +55,7 @@ public class CompressionParameters
     private final Integer chunkLength;
     private volatile double crcCheckChance;
     public final Map<String, String> otherOptions; // Unrecognized options, can be use by the compressor
+    private CFMetaData liveMetadata;
 
     public static CompressionParameters create(Map<? extends CharSequence, ? extends CharSequence> opts) throws ConfigurationException
     {
@@ -89,15 +92,32 @@ public class CompressionParameters
         this.crcCheckChance = (chance == null) ? DEFAULT_CRC_CHECK_CHANCE : parseCrcCheckChance(chance);
     }
 
+    public CompressionParameters copy()
+    {
+        return new CompressionParameters(sstableCompressor, chunkLength, new HashMap<>(otherOptions));
+    }
+
+    public void setLiveMetadata(final CFMetaData liveMetadata)
+    {
+        if (liveMetadata == null)
+            return;
+
+        assert this.liveMetadata == null || this.liveMetadata == liveMetadata;
+        this.liveMetadata = liveMetadata;
+    }
+
     public void setCrcCheckChance(double crcCheckChance) throws ConfigurationException
     {
         validateCrcCheckChance(crcCheckChance);
         this.crcCheckChance = crcCheckChance;
+
+        if (liveMetadata != null)
+            liveMetadata.compressionParameters.setCrcCheckChance(crcCheckChance);
     }
 
     public double getCrcCheckChance()
     {
-        return this.crcCheckChance;
+        return liveMetadata == null ? this.crcCheckChance : liveMetadata.compressionParameters.crcCheckChance;
     }
 
     private static double parseCrcCheckChance(String crcCheckChance) throws ConfigurationException
@@ -125,7 +145,7 @@ public class CompressionParameters
         return chunkLength == null ? DEFAULT_CHUNK_LENGTH : chunkLength;
     }
 
-    private static Class<? extends ICompressor> parseCompressorClass(String className) throws ConfigurationException
+    private static Class<?> parseCompressorClass(String className) throws ConfigurationException
     {
         if (className == null || className.isEmpty())
             return null;
@@ -133,7 +153,7 @@ public class CompressionParameters
         className = className.contains(".") ? className : "org.apache.cassandra.io.compress." + className;
         try
         {
-            return (Class<? extends ICompressor>)Class.forName(className);
+            return Class.forName(className);
         }
         catch (Exception e)
         {
@@ -141,7 +161,7 @@ public class CompressionParameters
         }
     }
 
-    private static ICompressor createCompressor(Class<? extends ICompressor> compressorClass, Map<String, String> compressionOptions) throws ConfigurationException
+    private static ICompressor createCompressor(Class<?> compressorClass, Map<String, String> compressionOptions) throws ConfigurationException
     {
         if (compressorClass == null)
         {
@@ -187,6 +207,10 @@ public class CompressionParameters
         }
     }
 
+    public static ICompressor createCompressor(ParameterizedClass compression) throws ConfigurationException {
+        return createCompressor(parseCompressorClass(compression.class_name), copyOptions(compression.parameters));
+    }
+
     private static Map<String, String> copyOptions(Map<? extends CharSequence, ? extends CharSequence> co)
     {
         if (co == null || co.isEmpty())
@@ -202,8 +226,12 @@ public class CompressionParameters
 
     /**
      * Parse the chunk length (in KB) and returns it as bytes.
+     * 
+     * @param chLengthKB the length of the chunk to parse
+     * @return the chunk length in bytes
+     * @throws ConfigurationException if the chunk size is too large
      */
-    private static Integer parseChunkLength(String chLengthKB) throws ConfigurationException
+    public static Integer parseChunkLength(String chLengthKB) throws ConfigurationException
     {
         if (chLengthKB == null)
             return null;
@@ -224,7 +252,7 @@ public class CompressionParameters
     // chunkLength must be a power of 2 because we assume so when
     // computing the chunk number from an uncompressed file offset (see
     // CompressedRandomAccessReader.decompresseChunk())
-    private void validate() throws ConfigurationException
+    public void validate() throws ConfigurationException
     {
         // if chunk length was not set (chunkLength == null), this is fine, default will be used
         if (chunkLength != null)
@@ -299,7 +327,7 @@ public class CompressionParameters
 
     static class Serializer implements IVersionedSerializer<CompressionParameters>
     {
-        public void serialize(CompressionParameters parameters, DataOutput out, int version) throws IOException
+        public void serialize(CompressionParameters parameters, DataOutputPlus out, int version) throws IOException
         {
             out.writeUTF(parameters.sstableCompressor.getClass().getSimpleName());
             out.writeInt(parameters.otherOptions.size());

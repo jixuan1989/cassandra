@@ -25,6 +25,7 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataOutputPlus;
 
 import org.cliffc.high_scale_lib.NonBlockingHashMap;
 
@@ -50,7 +51,7 @@ public class EndpointState
     EndpointState(HeartBeatState initialHbState)
     {
         hbState = initialHbState;
-        updateTimestamp = System.currentTimeMillis();
+        updateTimestamp = System.nanoTime();
         isAlive = true;
     }
 
@@ -85,6 +86,9 @@ public class EndpointState
     }
 
     /* getters and setters */
+    /**
+     * @return System.nanoTime() when state was updated last time.
+     */
     public long getUpdateTimestamp()
     {
         return updateTimestamp;
@@ -92,7 +96,7 @@ public class EndpointState
 
     void updateTimestamp()
     {
-        updateTimestamp = System.currentTimeMillis();
+        updateTimestamp = System.nanoTime();
     }
 
     public boolean isAlive()
@@ -109,11 +113,33 @@ public class EndpointState
     {
         isAlive = false;
     }
+
+    public boolean isRpcReady()
+    {
+        VersionedValue rpcState = getApplicationState(ApplicationState.RPC_READY);
+        return rpcState != null && Boolean.parseBoolean(rpcState.value);
+    }
+
+    public String getStatus()
+    {
+        VersionedValue status = getApplicationState(ApplicationState.STATUS);
+        if (status == null)
+            return "";
+
+        String[] pieces = status.value.split(VersionedValue.DELIMITER_STR, -1);
+        assert (pieces.length > 0);
+        return pieces[0];
+    }
+
+    public String toString()
+    {
+        return "EndpointState: HeartBeatState = " + hbState + ", AppStateMap = " + applicationState;
+    }
 }
 
 class EndpointStateSerializer implements IVersionedSerializer<EndpointState>
 {
-    public void serialize(EndpointState epState, DataOutput out, int version) throws IOException
+    public void serialize(EndpointState epState, DataOutputPlus out, int version) throws IOException
     {
         /* serialize the HeartBeatState */
         HeartBeatState hbState = epState.getHeartBeatState();

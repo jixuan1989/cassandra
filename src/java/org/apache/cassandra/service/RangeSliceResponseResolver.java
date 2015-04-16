@@ -19,15 +19,19 @@ package org.apache.cassandra.service;
 
 import java.net.InetAddress;
 import java.util.*;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+
 import com.google.common.collect.AbstractIterator;
 
-import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.ColumnFamily;
+import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.RangeSliceReply;
+import org.apache.cassandra.db.Row;
 import org.apache.cassandra.net.AsyncOneResponse;
 import org.apache.cassandra.net.MessageIn;
-import org.apache.cassandra.utils.Pair;
 import org.apache.cassandra.utils.CloseableIterator;
 import org.apache.cassandra.utils.MergeIterator;
+import org.apache.cassandra.utils.Pair;
 
 /**
  * Turns RangeSliceReply objects into row (string -> CF) maps, resolving
@@ -43,14 +47,16 @@ public class RangeSliceResponseResolver implements IResponseResolver<RangeSliceR
         }
     };
 
-    private final String table;
+    private final String keyspaceName;
+    private final long timestamp;
     private List<InetAddress> sources;
-    protected final Collection<MessageIn<RangeSliceReply>> responses = new LinkedBlockingQueue<MessageIn<RangeSliceReply>>();;
+    protected final Collection<MessageIn<RangeSliceReply>> responses = new ConcurrentLinkedQueue<MessageIn<RangeSliceReply>>();
     public final List<AsyncOneResponse> repairResults = new ArrayList<AsyncOneResponse>();
 
-    public RangeSliceResponseResolver(String table)
+    public RangeSliceResponseResolver(String keyspaceName, long timestamp)
     {
-        this.table = table;
+        this.keyspaceName = keyspaceName;
+        this.timestamp = timestamp;
     }
 
     public void setSources(List<InetAddress> endpoints)
@@ -87,10 +93,9 @@ public class RangeSliceResponseResolver implements IResponseResolver<RangeSliceR
         return resolvedRows;
     }
 
-    public boolean preprocess(MessageIn message)
+    public void preprocess(MessageIn message)
     {
         responses.add(message);
-        return true;
     }
 
     public boolean isDataPresent()
@@ -138,7 +143,7 @@ public class RangeSliceResponseResolver implements IResponseResolver<RangeSliceR
         protected Row getReduced()
         {
             ColumnFamily resolved = versions.size() > 1
-                                  ? RowDataResolver.resolveSuperset(versions)
+                                  ? RowDataResolver.resolveSuperset(versions, timestamp)
                                   : versions.get(0);
             if (versions.size() < sources.size())
             {
@@ -154,7 +159,7 @@ public class RangeSliceResponseResolver implements IResponseResolver<RangeSliceR
             }
             // resolved can be null even if versions doesn't have all nulls because of the call to removeDeleted in resolveSuperSet
             if (resolved != null)
-                repairResults.addAll(RowDataResolver.scheduleRepairs(resolved, table, key, versions, versionSources));
+                repairResults.addAll(RowDataResolver.scheduleRepairs(resolved, keyspaceName, key, versions, versionSources));
             versions.clear();
             versionSources.clear();
             return new Row(key, resolved);

@@ -17,12 +17,143 @@
  */
 package org.apache.cassandra.cql3;
 
+import java.nio.ByteBuffer;
+import java.util.Collections;
+
+import com.google.common.collect.Iterables;
+
+import org.apache.cassandra.cql3.functions.Function;
+import org.apache.cassandra.db.ExpiringCell;
+import org.apache.cassandra.db.marshal.Int32Type;
+import org.apache.cassandra.db.marshal.LongType;
+import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.serializers.MarshalException;
+
 /**
  * Utility class for the Parser to gather attributes for modification
  * statements.
  */
 public class Attributes
 {
-    public Long timestamp;
-    public int timeToLive;
+    private final Term timestamp;
+    private final Term timeToLive;
+
+    public static Attributes none()
+    {
+        return new Attributes(null, null);
+    }
+
+    private Attributes(Term timestamp, Term timeToLive)
+    {
+        this.timestamp = timestamp;
+        this.timeToLive = timeToLive;
+    }
+
+    public boolean usesFunction(String ksName, String functionName)
+    {
+        return (timestamp != null && timestamp.usesFunction(ksName, functionName))
+            || (timeToLive != null && timeToLive.usesFunction(ksName, functionName));
+    }
+
+    public Iterable<Function> getFunctions()
+    {
+        if (timestamp != null && timeToLive != null)
+            return Iterables.concat(timestamp.getFunctions(), timeToLive.getFunctions());
+        else if (timestamp != null)
+            return timestamp.getFunctions();
+        else if (timeToLive != null)
+            return timeToLive.getFunctions();
+        else
+            return Collections.emptySet();
+    }
+
+    public boolean isTimestampSet()
+    {
+        return timestamp != null;
+    }
+
+    public boolean isTimeToLiveSet()
+    {
+        return timeToLive != null;
+    }
+
+    public long getTimestamp(long now, QueryOptions options) throws InvalidRequestException
+    {
+        if (timestamp == null)
+            return now;
+
+        ByteBuffer tval = timestamp.bindAndGet(options);
+        if (tval == null)
+            throw new InvalidRequestException("Invalid null value of timestamp");
+
+        try
+        {
+            LongType.instance.validate(tval);
+        }
+        catch (MarshalException e)
+        {
+            throw new InvalidRequestException("Invalid timestamp value: " + tval);
+        }
+
+        return LongType.instance.compose(tval);
+    }
+
+    public int getTimeToLive(QueryOptions options) throws InvalidRequestException
+    {
+        if (timeToLive == null)
+            return 0;
+
+        ByteBuffer tval = timeToLive.bindAndGet(options);
+        if (tval == null)
+            throw new InvalidRequestException("Invalid null value of TTL");
+
+        try
+        {
+            Int32Type.instance.validate(tval);
+        }
+        catch (MarshalException e)
+        {
+            throw new InvalidRequestException("Invalid timestamp value: " + tval);
+        }
+
+        int ttl = Int32Type.instance.compose(tval);
+        if (ttl < 0)
+            throw new InvalidRequestException("A TTL must be greater or equal to 0, but was " + ttl);
+
+        if (ttl > ExpiringCell.MAX_TTL)
+            throw new InvalidRequestException(String.format("ttl is too large. requested (%d) maximum (%d)", ttl, ExpiringCell.MAX_TTL));
+
+        return ttl;
+    }
+
+    public void collectMarkerSpecification(VariableSpecifications boundNames)
+    {
+        if (timestamp != null)
+            timestamp.collectMarkerSpecification(boundNames);
+        if (timeToLive != null)
+            timeToLive.collectMarkerSpecification(boundNames);
+    }
+
+    public static class Raw
+    {
+        public Term.Raw timestamp;
+        public Term.Raw timeToLive;
+
+        public Attributes prepare(String ksName, String cfName) throws InvalidRequestException
+        {
+            Term ts = timestamp == null ? null : timestamp.prepare(ksName, timestampReceiver(ksName, cfName));
+            Term ttl = timeToLive == null ? null : timeToLive.prepare(ksName, timeToLiveReceiver(ksName, cfName));
+            return new Attributes(ts, ttl);
+        }
+
+        private ColumnSpecification timestampReceiver(String ksName, String cfName)
+        {
+            return new ColumnSpecification(ksName, cfName, new ColumnIdentifier("[timestamp]", true), LongType.instance);
+        }
+
+        private ColumnSpecification timeToLiveReceiver(String ksName, String cfName)
+        {
+            return new ColumnSpecification(ksName, cfName, new ColumnIdentifier("[ttl]", true), Int32Type.instance);
+        }
+    }
 }

@@ -17,50 +17,96 @@
  */
 package org.apache.cassandra.io.util;
 
+import com.google.common.util.concurrent.RateLimiter;
+
 import org.apache.cassandra.io.compress.CompressedRandomAccessReader;
+import org.apache.cassandra.io.compress.CompressedSequentialWriter;
+import org.apache.cassandra.io.compress.CompressedThrottledReader;
 import org.apache.cassandra.io.compress.CompressionMetadata;
 
-public class CompressedSegmentedFile extends PoolingSegmentedFile
+public class CompressedSegmentedFile extends SegmentedFile implements ICompressedFile
 {
     public final CompressionMetadata metadata;
 
-    public CompressedSegmentedFile(String path, CompressionMetadata metadata)
+    public CompressedSegmentedFile(ChannelProxy channel, CompressionMetadata metadata)
     {
-        super(path, metadata.dataLength, metadata.compressedFileLength);
+        super(new Cleanup(channel, metadata), channel, metadata.dataLength, metadata.compressedFileLength);
         this.metadata = metadata;
+    }
+
+    private CompressedSegmentedFile(CompressedSegmentedFile copy)
+    {
+        super(copy);
+        this.metadata = copy.metadata;
+    }
+
+    private static final class Cleanup extends SegmentedFile.Cleanup
+    {
+        final CompressionMetadata metadata;
+        protected Cleanup(ChannelProxy channel, CompressionMetadata metadata)
+        {
+            super(channel);
+            this.metadata = metadata;
+        }
+        public void tidy()
+        {
+            super.tidy();
+            metadata.close();
+        }
+    }
+
+    public CompressedSegmentedFile sharedCopy()
+    {
+        return new CompressedSegmentedFile(this);
     }
 
     public static class Builder extends SegmentedFile.Builder
     {
-        /**
-         * Adds a position that would be a safe place for a segment boundary in the file. For a block/row based file
-         * format, safe boundaries are block/row edges.
-         * @param boundary The absolute position of the potential boundary in the file.
-         */
+        protected final CompressedSequentialWriter writer;
+        public Builder(CompressedSequentialWriter writer)
+        {
+            this.writer = writer;
+        }
+
         public void addPotentialBoundary(long boundary)
         {
             // only one segment in a standard-io file
         }
 
-        /**
-         * Called after all potential boundaries have been added to apply this Builder to a concrete file on disk.
-         * @param path The file on disk.
-         */
-        public SegmentedFile complete(String path)
+        protected CompressionMetadata metadata(String path, long overrideLength, boolean isFinal)
         {
-            return new CompressedSegmentedFile(path, CompressionMetadata.create(path));
+            if (writer == null)
+                return CompressionMetadata.create(path);
+
+            return writer.open(overrideLength, isFinal);
+        }
+
+        public SegmentedFile complete(ChannelProxy channel, long overrideLength, boolean isFinal)
+        {
+            assert !isFinal || overrideLength <= 0;
+            return new CompressedSegmentedFile(channel, metadata(channel.filePath(), overrideLength, isFinal));
         }
     }
 
-    protected RandomAccessReader createReader(String path)
+    public void dropPageCache(long before)
     {
-        return CompressedRandomAccessReader.open(path, metadata, this);
+        if (before >= metadata.dataLength)
+            super.dropPageCache(0);
+        super.dropPageCache(metadata.chunkFor(before).offset);
     }
 
-    @Override
-    public void cleanup()
+    public RandomAccessReader createReader()
     {
-        super.cleanup();
-        metadata.close();
+        return CompressedRandomAccessReader.open(channel, metadata);
+    }
+
+    public RandomAccessReader createThrottledReader(RateLimiter limiter)
+    {
+        return CompressedThrottledReader.open(channel, metadata, limiter);
+    }
+
+    public CompressionMetadata getMetadata()
+    {
+        return metadata;
     }
 }

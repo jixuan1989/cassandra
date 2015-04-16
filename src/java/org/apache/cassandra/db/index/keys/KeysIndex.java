@@ -20,27 +20,33 @@ package org.apache.cassandra.db.index.keys;
 import java.nio.ByteBuffer;
 import java.util.Set;
 
+import org.apache.cassandra.db.Cell;
+import org.apache.cassandra.db.composites.CellName;
+import org.apache.cassandra.db.composites.CellNames;
 import org.apache.cassandra.db.ColumnFamily;
-import org.apache.cassandra.db.Column;
 import org.apache.cassandra.db.index.AbstractSimplePerColumnSecondaryIndex;
 import org.apache.cassandra.db.index.SecondaryIndexSearcher;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.exceptions.ConfigurationException;
 
 /**
- * Implements a secondary index for a column family using a second column family
- * in which the row keys are indexed values, and column names are base row keys.
+ * Implements a secondary index for a column family using a second column family.
+ * The design uses inverted index http://en.wikipedia.org/wiki/Inverted_index.
+ * The row key is the indexed value. For example, if we're indexing a column named
+ * city, the index value of city is the row key.
+ * The column names are the keys of the records. To see a detailed example, please
+ * refer to wikipedia.
  */
 public class KeysIndex extends AbstractSimplePerColumnSecondaryIndex
 {
-    protected ByteBuffer getIndexedValue(ByteBuffer rowKey, Column column)
+    protected ByteBuffer getIndexedValue(ByteBuffer rowKey, Cell cell)
     {
-        return column.value();
+        return cell.value();
     }
 
-    protected ByteBuffer makeIndexColumnName(ByteBuffer rowKey, Column column)
+    protected CellName makeIndexColumnName(ByteBuffer rowKey, Cell cell)
     {
-        return rowKey;
+        return CellNames.simpleDense(rowKey);
     }
 
     public SecondaryIndexSearcher createSecondaryIndexSearcher(Set<ByteBuffer> columns)
@@ -48,14 +54,10 @@ public class KeysIndex extends AbstractSimplePerColumnSecondaryIndex
         return new KeysSearcher(baseCfs.indexManager, columns);
     }
 
-    public boolean isIndexEntryStale(ByteBuffer indexedValue, ColumnFamily data)
+    public boolean isIndexEntryStale(ByteBuffer indexedValue, ColumnFamily data, long now)
     {
-        Column liveColumn = data.getColumn(columnDef.name);
-        if (liveColumn == null || liveColumn.isMarkedForDelete())
-            return true;
-
-        ByteBuffer liveValue = liveColumn.value();
-        return columnDef.getValidator().compare(indexedValue, liveValue) != 0;
+        Cell cell = data.getColumn(data.getComparator().makeCellName(columnDef.name.bytes));
+        return cell == null || !cell.isLive(now) || columnDef.type.compare(indexedValue, cell.value()) != 0;
     }
 
     public void validateOptions() throws ConfigurationException
@@ -63,8 +65,15 @@ public class KeysIndex extends AbstractSimplePerColumnSecondaryIndex
         // no options used
     }
 
+    public boolean indexes(CellName name)
+    {
+        // This consider the full cellName directly
+        AbstractType<?> comparator = baseCfs.metadata.getColumnDefinitionComparator(columnDef);
+        return comparator.compare(columnDef.name.bytes, name.toByteBuffer()) == 0;
+    }
+
     protected AbstractType getExpressionComparator()
     {
-        return baseCfs.getComparator();
+        return baseCfs.getComparator().asAbstractType();
     }
 }

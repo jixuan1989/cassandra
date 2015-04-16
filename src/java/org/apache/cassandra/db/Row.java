@@ -18,9 +18,11 @@
 package org.apache.cassandra.db;
 
 import java.io.*;
+import java.nio.ByteBuffer;
 
 import org.apache.cassandra.db.filter.IDiskAtomFilter;
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
@@ -39,6 +41,11 @@ public class Row
         this.cf = cf;
     }
 
+    public Row(ByteBuffer key, ColumnFamily updates)
+    {
+        this(StorageService.getPartitioner().decorateKey(key), updates);
+    }
+
     @Override
     public String toString()
     {
@@ -48,16 +55,16 @@ public class Row
                ')';
     }
 
-    public int getLiveCount(IDiskAtomFilter filter)
+    public int getLiveCount(IDiskAtomFilter filter, long now)
     {
-        return cf == null ? 0 : filter.getLiveCount(cf);
+        return cf == null ? 0 : filter.getLiveCount(cf, now);
     }
 
     public static class RowSerializer implements IVersionedSerializer<Row>
     {
-        public void serialize(Row row, DataOutput out, int version) throws IOException
+        public void serialize(Row row, DataOutputPlus out, int version) throws IOException
         {
-            ByteBufferUtil.writeWithShortLength(row.key.key, out);
+            ByteBufferUtil.writeWithShortLength(row.key.getKey(), out);
             ColumnFamily.serializer.serialize(row.cf, out, version);
         }
 
@@ -74,7 +81,7 @@ public class Row
 
         public long serializedSize(Row row, int version)
         {
-            int keySize = row.key.key.remaining();
+            int keySize = row.key.getKey().remaining();
             return TypeSizes.NATIVE.sizeof((short) keySize) + keySize + ColumnFamily.serializer.serializedSize(row.cf, TypeSizes.NATIVE, version);
         }
     }

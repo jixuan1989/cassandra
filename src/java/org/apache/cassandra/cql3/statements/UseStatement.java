@@ -17,11 +17,8 @@
  */
 package org.apache.cassandra.cql3.statements;
 
-import java.nio.ByteBuffer;
-import java.util.List;
-
 import org.apache.cassandra.cql3.CQLStatement;
-import org.apache.cassandra.db.ConsistencyLevel;
+import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.exceptions.UnauthorizedException;
 import org.apache.cassandra.transport.messages.ResultMessage;
@@ -35,6 +32,11 @@ public class UseStatement extends ParsedStatement implements CQLStatement
     public UseStatement(String keyspace)
     {
         this.keyspace = keyspace;
+    }
+
+    public int getBoundTerms()
+    {
+        return 0;
     }
 
     public Prepared prepare() throws InvalidRequestException
@@ -51,15 +53,16 @@ public class UseStatement extends ParsedStatement implements CQLStatement
     {
     }
 
-    public ResultMessage execute(ConsistencyLevel cl, QueryState state, List<ByteBuffer> variables) throws InvalidRequestException
+    public ResultMessage execute(QueryState state, QueryOptions options) throws InvalidRequestException
     {
         state.getClientState().setKeyspace(keyspace);
         return new ResultMessage.SetKeyspace(keyspace);
     }
 
-    public ResultMessage executeInternal(QueryState state)
+    public ResultMessage executeInternal(QueryState state, QueryOptions options) throws InvalidRequestException
     {
-        // Internal queries are exclusively on the system keyspace and 'use' is thus useless
-        throw new UnsupportedOperationException();
+        // In production, internal queries are exclusively on the system keyspace and 'use' is thus useless
+        // but for some unit tests we need to set the keyspace (e.g. for tests with DROP INDEX)
+        return execute(state, options);
     }
 }

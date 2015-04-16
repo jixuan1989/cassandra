@@ -25,21 +25,28 @@ import org.apache.cassandra.exceptions.UnauthorizedException;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.MigrationManager;
 import org.apache.cassandra.thrift.ThriftValidation;
-import org.apache.cassandra.transport.messages.ResultMessage;
+import org.apache.cassandra.transport.Event;
 
 public class DropKeyspaceStatement extends SchemaAlteringStatement
 {
     private final String keyspace;
+    private final boolean ifExists;
 
-    public DropKeyspaceStatement(String keyspace)
+    public DropKeyspaceStatement(String keyspace, boolean ifExists)
     {
         super();
         this.keyspace = keyspace;
+        this.ifExists = ifExists;
     }
 
     public void checkAccess(ClientState state) throws UnauthorizedException, InvalidRequestException
     {
         state.hasKeyspaceAccess(keyspace, Permission.DROP);
+    }
+
+    public void validate(ClientState state) throws RequestValidationException
+    {
+        ThriftValidation.validateKeyspaceNotSystem(keyspace);
     }
 
     @Override
@@ -48,20 +55,23 @@ public class DropKeyspaceStatement extends SchemaAlteringStatement
         return keyspace;
     }
 
-    @Override
-    public void validate(ClientState state) throws RequestValidationException
+    public boolean announceMigration(boolean isLocalOnly) throws ConfigurationException
     {
-        super.validate(state);
-        ThriftValidation.validateKeyspaceNotSystem(keyspace);
+        try
+        {
+            MigrationManager.announceKeyspaceDrop(keyspace, isLocalOnly);
+            return true;
+        }
+        catch(ConfigurationException e)
+        {
+            if (ifExists)
+                return false;
+            throw e;
+        }
     }
 
-    public void announceMigration() throws ConfigurationException
+    public Event.SchemaChange changeEvent()
     {
-        MigrationManager.announceKeyspaceDrop(keyspace);
-    }
-
-    public ResultMessage.SchemaChange.Change changeType()
-    {
-        return ResultMessage.SchemaChange.Change.DROPPED;
+        return new Event.SchemaChange(Event.SchemaChange.Change.DROPPED, keyspace());
     }
 }

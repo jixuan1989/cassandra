@@ -23,9 +23,11 @@ import java.util.List;
 import java.util.Map;
 
 import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.cql3.statements.ColumnGroupMap;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.utils.Pair;
+import org.apache.cassandra.db.composites.CellName;
+import org.apache.cassandra.db.filter.ColumnSlice;
+import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.utils.FBUtilities;
 
 /**
  * A simple container that simplify passing parameters for collections methods.
@@ -33,50 +35,68 @@ import org.apache.cassandra.utils.Pair;
 public class UpdateParameters
 {
     public final CFMetaData metadata;
-    public final List<ByteBuffer> variables;
+    public final QueryOptions options;
     public final long timestamp;
     private final int ttl;
     public final int localDeletionTime;
 
     // For lists operation that require a read-before-write. Will be null otherwise.
-    private final Map<ByteBuffer, ColumnGroupMap> prefetchedLists;
+    private final Map<ByteBuffer, CQL3Row> prefetchedLists;
 
-    public UpdateParameters(CFMetaData metadata, List<ByteBuffer> variables, long timestamp, int ttl, Map<ByteBuffer, ColumnGroupMap> prefetchedLists)
+    public UpdateParameters(CFMetaData metadata, QueryOptions options, long timestamp, int ttl, Map<ByteBuffer, CQL3Row> prefetchedLists)
+    throws InvalidRequestException
     {
         this.metadata = metadata;
-        this.variables = variables;
+        this.options = options;
         this.timestamp = timestamp;
         this.ttl = ttl;
         this.localDeletionTime = (int)(System.currentTimeMillis() / 1000);
         this.prefetchedLists = prefetchedLists;
+
+        // We use MIN_VALUE internally to mean the absence of of timestamp (in Selection, in sstable stats, ...), so exclude
+        // it to avoid potential confusion.
+        if (timestamp == Long.MIN_VALUE)
+            throw new InvalidRequestException(String.format("Out of bound timestamp, must be in [%d, %d]", Long.MIN_VALUE + 1, Long.MAX_VALUE));
     }
 
-    public Column makeColumn(ByteBuffer name, ByteBuffer value)
+    public Cell makeColumn(CellName name, ByteBuffer value) throws InvalidRequestException
     {
-        return Column.create(name, value, timestamp, ttl, metadata);
+        QueryProcessor.validateCellName(name, metadata.comparator);
+        return AbstractCell.create(name, value, timestamp, ttl, metadata);
     }
 
-    public Column makeTombstone(ByteBuffer name)
+     public Cell makeCounter(CellName name, long delta) throws InvalidRequestException
+     {
+         QueryProcessor.validateCellName(name, metadata.comparator);
+         return new BufferCounterUpdateCell(name, delta, FBUtilities.timestampMicros());
+     }
+
+    public Cell makeTombstone(CellName name) throws InvalidRequestException
     {
-        return new DeletedColumn(name, localDeletionTime, timestamp);
+        QueryProcessor.validateCellName(name, metadata.comparator);
+        return new BufferDeletedCell(name, localDeletionTime, timestamp);
     }
 
-    public RangeTombstone makeRangeTombstone(ByteBuffer start, ByteBuffer end)
+    public RangeTombstone makeRangeTombstone(ColumnSlice slice) throws InvalidRequestException
     {
-        return new RangeTombstone(start, end, timestamp, localDeletionTime);
+        QueryProcessor.validateComposite(slice.start, metadata.comparator);
+        QueryProcessor.validateComposite(slice.finish, metadata.comparator);
+        return new RangeTombstone(slice.start, slice.finish, timestamp, localDeletionTime);
     }
 
-    public RangeTombstone makeTombstoneForOverwrite(ByteBuffer start, ByteBuffer end)
+    public RangeTombstone makeTombstoneForOverwrite(ColumnSlice slice) throws InvalidRequestException
     {
-        return new RangeTombstone(start, end, timestamp - 1, localDeletionTime);
+        QueryProcessor.validateComposite(slice.start, metadata.comparator);
+        QueryProcessor.validateComposite(slice.finish, metadata.comparator);
+        return new RangeTombstone(slice.start, slice.finish, timestamp - 1, localDeletionTime);
     }
 
-    public List<Pair<ByteBuffer, Column>> getPrefetchedList(ByteBuffer rowKey, ByteBuffer cql3ColumnName)
+    public List<Cell> getPrefetchedList(ByteBuffer rowKey, ColumnIdentifier cql3ColumnName)
     {
         if (prefetchedLists == null)
             return Collections.emptyList();
 
-        ColumnGroupMap m = prefetchedLists.get(rowKey);
-        return m == null ? Collections.<Pair<ByteBuffer, Column>>emptyList() : m.getCollection(cql3ColumnName);
+        CQL3Row row = prefetchedLists.get(rowKey);
+        return row == null ? Collections.<Cell>emptyList() : row.getMultiCellColumn(cql3ColumnName);
     }
 }

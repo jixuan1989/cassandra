@@ -18,7 +18,7 @@
 package org.apache.cassandra.cache;
 
 import java.io.IOException;
-import java.util.Set;
+import java.util.Iterator;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -68,7 +68,7 @@ public class SerializingCache<K, V> implements ICache<K, V>
 
     public static <K, V> SerializingCache<K, V> create(long weightedCapacity, Weigher<RefCountedMemory> weigher, ISerializer<V> serializer)
     {
-        return new SerializingCache<K, V>(weightedCapacity, weigher, serializer);
+        return new SerializingCache<>(weightedCapacity, weigher, serializer);
     }
 
     public static <K, V> SerializingCache<K, V> create(long weightedCapacity, ISerializer<V> serializer)
@@ -92,7 +92,7 @@ public class SerializingCache<K, V> implements ICache<K, V>
         }
         catch (IOException e)
         {
-            logger.debug("Cannot fetch in memory data, we will failback to read from disk ", e);
+            logger.debug("Cannot fetch in memory data, we will fallback to read from disk ", e);
             return null;
         }
     }
@@ -119,6 +119,7 @@ public class SerializingCache<K, V> implements ICache<K, V>
         }
         catch (IOException e)
         {
+            freeableMemory.unreference();
             throw new RuntimeException(e);
         }
         return freeableMemory;
@@ -154,7 +155,7 @@ public class SerializingCache<K, V> implements ICache<K, V>
         map.clear();
     }
 
-    public V get(Object key)
+    public V get(K key)
     {
         RefCountedMemory mem = map.get(key);
         if (mem == null)
@@ -177,7 +178,17 @@ public class SerializingCache<K, V> implements ICache<K, V>
         if (mem == null)
             return; // out of memory.  never mind.
 
-        RefCountedMemory old = map.put(key, mem);
+        RefCountedMemory old;
+        try
+        {
+            old = map.put(key, mem);
+        }
+        catch (Throwable t)
+        {
+            mem.unreference();
+            throw t;
+        }
+
         if (old != null)
             old.unreference();
     }
@@ -188,7 +199,17 @@ public class SerializingCache<K, V> implements ICache<K, V>
         if (mem == null)
             return false; // out of memory.  never mind.
 
-        RefCountedMemory old = map.putIfAbsent(key, mem);
+        RefCountedMemory old;
+        try
+        {
+            old = map.putIfAbsent(key, mem);
+        }
+        catch (Throwable t)
+        {
+            mem.unreference();
+            throw t;
+        }
+
         if (old != null)
             // the new value was not put, we've uselessly allocated some memory, free it
             mem.unreference();
@@ -202,24 +223,32 @@ public class SerializingCache<K, V> implements ICache<K, V>
         if (old == null)
             return false;
 
+        V oldValue;
+        // reference old guy before de-serializing
+        if (!old.reference())
+            return false; // we have already freed hence noop.
+
+        oldValue = deserialize(old);
+        old.unreference();
+
+        if (!oldValue.equals(oldToReplace))
+            return false;
+
         // see if the old value matches the one we want to replace
         RefCountedMemory mem = serialize(value);
         if (mem == null)
             return false; // out of memory.  never mind.
 
-        V oldValue;
-        // reference old guy before de-serializing
-        if (!old.reference())
-            return false; // we have already freed hence noop.
+        boolean success;
         try
         {
-             oldValue = deserialize(old);
+            success = map.replace(key, old, mem);
         }
-        finally
+        catch (Throwable t)
         {
-            old.unreference();
+            mem.unreference();
+            throw t;
         }
-        boolean success = oldValue.equals(oldToReplace) && map.replace(key, old, mem);
 
         if (success)
             old.unreference(); // so it will be eventually be cleaned
@@ -235,23 +264,18 @@ public class SerializingCache<K, V> implements ICache<K, V>
             mem.unreference();
     }
 
-    public Set<K> keySet()
+    public Iterator<K> keyIterator()
     {
-        return map.keySet();
+        return map.keySet().iterator();
     }
 
-    public Set<K> hotKeySet(int n)
+    public Iterator<K> hotKeyIterator(int n)
     {
-        return map.descendingKeySetWithLimit(n);
+        return map.descendingKeySetWithLimit(n).iterator();
     }
 
     public boolean containsKey(K key)
     {
         return map.containsKey(key);
-    }
-
-    public boolean isPutCopying()
-    {
-        return true;
     }
 }

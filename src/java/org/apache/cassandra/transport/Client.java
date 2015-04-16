@@ -21,33 +21,32 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
 
 import com.google.common.base.Splitter;
 
+import org.apache.cassandra.auth.PasswordAuthenticator;
+import org.apache.cassandra.config.Config;
+import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.db.marshal.Int32Type;
 import org.apache.cassandra.db.marshal.UTF8Type;
-import org.apache.cassandra.transport.messages.CredentialsMessage;
-import org.apache.cassandra.transport.messages.ExecuteMessage;
-import org.apache.cassandra.transport.messages.OptionsMessage;
-import org.apache.cassandra.transport.messages.PrepareMessage;
-import org.apache.cassandra.transport.messages.QueryMessage;
-import org.apache.cassandra.transport.messages.RegisterMessage;
-import org.apache.cassandra.transport.messages.StartupMessage;
+import org.apache.cassandra.transport.messages.*;
 import org.apache.cassandra.utils.Hex;
+import org.apache.cassandra.utils.JVMStabilityInspector;
+import org.apache.cassandra.utils.MD5Digest;
+
 import static org.apache.cassandra.config.EncryptionOptions.ClientEncryptionOptions;
 
 public class Client extends SimpleClient
 {
-    public Client(String host, int port, ClientEncryptionOptions encryptionOptions)
+    private final SimpleEventHandler eventHandler = new SimpleEventHandler();
+
+    public Client(String host, int port, int version, ClientEncryptionOptions encryptionOptions)
     {
-        super(host, port, encryptionOptions);
+        super(host, port, version, encryptionOptions);
+        setEventHandler(eventHandler);
     }
 
     public void run() throws IOException
@@ -61,6 +60,12 @@ public class Client extends SimpleClient
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
         for (;;)
         {
+            Event event;
+            while ((event = eventHandler.queue.poll()) != null)
+            {
+                System.out.println("<< " + event);
+            }
+
             System.out.print(">> ");
             System.out.flush();
             String line = in.readLine();
@@ -81,6 +86,7 @@ public class Client extends SimpleClient
             }
             catch (Exception e)
             {
+                JVMStabilityInspector.inspectThrowable(e);
                 System.err.println("ERROR: " + e.getMessage());
             }
         }
@@ -112,8 +118,24 @@ public class Client extends SimpleClient
         }
         else if (msgType.equals("QUERY"))
         {
-            String query = line.substring(6);
-            return new QueryMessage(query, ConsistencyLevel.ONE);
+            line = line.substring(6);
+            // Ugly hack to allow setting a page size, but that's playground code anyway
+            String query = line;
+            int pageSize = -1;
+            if (line.matches(".+ !\\d+$"))
+            {
+                int idx = line.lastIndexOf('!');
+                query = line.substring(0, idx-1);
+                try
+                {
+                    pageSize = Integer.parseInt(line.substring(idx+1, line.length()));
+                }
+                catch (NumberFormatException e)
+                {
+                    return null;
+                }
+            }
+            return new QueryMessage(query, QueryOptions.create(ConsistencyLevel.ONE, Collections.<ByteBuffer>emptyList(), false, pageSize, null, null));
         }
         else if (msgType.equals("PREPARE"))
         {
@@ -141,7 +163,7 @@ public class Client extends SimpleClient
                     }
                     values.add(bb);
                 }
-                return new ExecuteMessage(id, values, ConsistencyLevel.ONE);
+                return new ExecuteMessage(MD5Digest.wrap(id), QueryOptions.forInternalCalls(ConsistencyLevel.ONE, values));
             }
             catch (Exception e)
             {
@@ -154,16 +176,20 @@ public class Client extends SimpleClient
         }
         else if (msgType.equals("CREDENTIALS"))
         {
+            System.err.println("[WARN] CREDENTIALS command is deprecated, use AUTHENTICATE instead");
             CredentialsMessage msg = new CredentialsMessage();
-            while (iter.hasNext())
-            {
-                String next = iter.next();
-                String[] kv = next.split("=");
-                if (kv.length != 2)
-                    return null;
-                msg.credentials.put(kv[0], kv[1]);
-            }
+            msg.credentials.putAll(readCredentials(iter));
             return msg;
+        }
+        else if (msgType.equals("AUTHENTICATE"))
+        {
+            Map<String, String> credentials = readCredentials(iter);
+            if(!credentials.containsKey(PasswordAuthenticator.USERNAME_KEY) || !credentials.containsKey(PasswordAuthenticator.PASSWORD_KEY))
+            {
+                System.err.println("[ERROR] Authentication requires both 'username' and 'password'");
+                return null;
+            }
+            return new AuthResponse(encodeCredentialsForSasl(credentials));
         }
         else if (msgType.equals("REGISTER"))
         {
@@ -181,23 +207,55 @@ public class Client extends SimpleClient
         return null;
     }
 
+    private Map<String, String> readCredentials(Iterator<String> iter)
+    {
+        final Map<String, String> credentials = new HashMap<String, String>();
+        while (iter.hasNext())
+        {
+            String next = iter.next();
+            String[] kv = next.split("=");
+            if (kv.length != 2)
+            {
+                System.err.println("[ERROR] Default authentication requires username & password");
+                return null;
+            }
+            credentials.put(kv[0], kv[1]);
+        }
+        return credentials;
+    }
+
+    private byte[] encodeCredentialsForSasl(Map<String, String> credentials)
+    {
+        byte[] username = credentials.get(PasswordAuthenticator.USERNAME_KEY).getBytes(StandardCharsets.UTF_8);
+        byte[] password = credentials.get(PasswordAuthenticator.PASSWORD_KEY).getBytes(StandardCharsets.UTF_8);
+        byte[] initialResponse = new byte[username.length + password.length + 2];
+        initialResponse[0] = 0;
+        System.arraycopy(username, 0, initialResponse, 1, username.length);
+        initialResponse[username.length + 1] = 0;
+        System.arraycopy(password, 0, initialResponse, username.length + 2, password.length);
+        return initialResponse;
+    }
+
     public static void main(String[] args) throws Exception
     {
+        Config.setClientMode(true);
+
         // Print usage if no argument is specified.
-        if (args.length != 2)
+        if (args.length < 2 || args.length > 3)
         {
-            System.err.println("Usage: " + Client.class.getSimpleName() + " <host> <port>");
+            System.err.println("Usage: " + Client.class.getSimpleName() + " <host> <port> [<version>]");
             return;
         }
 
         // Parse options.
         String host = args[0];
         int port = Integer.parseInt(args[1]);
+        int version = args.length == 3 ? Integer.parseInt(args[2]) : Server.CURRENT_VERSION;
 
         ClientEncryptionOptions encryptionOptions = new ClientEncryptionOptions();
-        System.out.println("CQL binary protocol console " + host + "@" + port);
+        System.out.println("CQL binary protocol console " + host + "@" + port + " using native protocol version " + version);
 
-        new Client(host, port, encryptionOptions).run();
+        new Client(host, port, version, encryptionOptions).run();
         System.exit(0);
     }
 }

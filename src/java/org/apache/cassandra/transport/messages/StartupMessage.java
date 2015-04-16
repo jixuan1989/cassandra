@@ -17,14 +17,12 @@
  */
 package org.apache.cassandra.transport.messages;
 
+import java.util.HashMap;
 import java.util.Map;
 
-import org.jboss.netty.buffer.ChannelBuffer;
-import org.jboss.netty.buffer.ChannelBuffers;
+import io.netty.buffer.ByteBuf;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.exceptions.InvalidRequestException;
-import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.transport.*;
 import org.apache.cassandra.utils.SemanticVersion;
@@ -40,16 +38,19 @@ public class StartupMessage extends Message.Request
 
     public static final Message.Codec<StartupMessage> codec = new Message.Codec<StartupMessage>()
     {
-        public StartupMessage decode(ChannelBuffer body)
+        public StartupMessage decode(ByteBuf body, int version)
         {
-            return new StartupMessage(CBUtil.readStringMap(body));
+            return new StartupMessage(upperCaseKeys(CBUtil.readStringMap(body)));
         }
 
-        public ChannelBuffer encode(StartupMessage msg)
+        public void encode(StartupMessage msg, ByteBuf dest, int version)
         {
-            ChannelBuffer cb = ChannelBuffers.dynamicBuffer();
-            CBUtil.writeStringMap(cb, msg.options);
-            return cb;
+            CBUtil.writeStringMap(msg.options, dest);
+        }
+
+        public int encodedSize(StartupMessage msg, int version)
+        {
+            return CBUtil.sizeOfStringMap(msg.options);
         }
     };
 
@@ -61,29 +62,21 @@ public class StartupMessage extends Message.Request
         this.options = options;
     }
 
-    public ChannelBuffer encode()
-    {
-        return codec.encode(this);
-    }
-
     public Message.Response execute(QueryState state)
     {
-        ClientState cState = state.getClientState();
         String cqlVersion = options.get(CQL_VERSION);
         if (cqlVersion == null)
             throw new ProtocolException("Missing value CQL_VERSION in STARTUP message");
 
         try 
         {
-            cState.setCQLVersion(cqlVersion);
+            if (new SemanticVersion(cqlVersion).compareTo(new SemanticVersion("2.99.0")) < 0)
+                throw new ProtocolException(String.format("CQL version %s is not supported by the binary protocol (supported version are >= 3.0.0)", cqlVersion));
         }
-        catch (InvalidRequestException e)
+        catch (IllegalArgumentException e)
         {
             throw new ProtocolException(e.getMessage());
         }
-
-        if (cState.getCQLVersion().compareTo(new SemanticVersion("2.99.0")) < 0)
-            throw new ProtocolException(String.format("CQL version %s is not supported by the binary protocol (supported version are >= 3.0.0)", cqlVersion));
 
         if (options.containsKey(COMPRESSION))
         {
@@ -93,6 +86,10 @@ public class StartupMessage extends Message.Request
                 if (FrameCompressor.SnappyCompressor.instance == null)
                     throw new ProtocolException("This instance does not support Snappy compression");
                 connection.setCompressor(FrameCompressor.SnappyCompressor.instance);
+            }
+            else if (compression.equals("lz4"))
+            {
+                connection.setCompressor(FrameCompressor.LZ4Compressor.instance);
             }
             else
             {
@@ -104,6 +101,14 @@ public class StartupMessage extends Message.Request
             return new AuthenticateMessage(DatabaseDescriptor.getAuthenticator().getClass().getName());
         else
             return new ReadyMessage();
+    }
+
+    private static Map<String, String> upperCaseKeys(Map<String, String> options)
+    {
+        Map<String, String> newMap = new HashMap<String, String>(options.size());
+        for (Map.Entry<String, String> entry : options.entrySet())
+            newMap.put(entry.getKey().toUpperCase(), entry.getValue());
+        return newMap;
     }
 
     @Override

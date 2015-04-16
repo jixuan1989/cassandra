@@ -18,17 +18,24 @@
 */
 package org.apache.cassandra.dht;
 
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.SchemaLoader;
 
-public class OrderPreservingPartitionerTest extends PartitionerTestCase<StringToken>
+public class OrderPreservingPartitionerTest extends PartitionerTestCase
 {
+    @BeforeClass
+    public static void cleanStatesFromPreviousTest()
+    {
+        // Since OrderPreservingPartitioner#describeOwnership tries to read SSTables,
+        // we need to clear data dir to clear garbage from previous test before running tests.
+        SchemaLoader.cleanupAndLeaveDirs();
+    }
+
     public void initPartitioner()
     {
-        partitioner = new OrderPreservingPartitioner();
-        // need to clear data dir
-        SchemaLoader.cleanupAndLeaveDirs();
+        partitioner = OrderPreservingPartitioner.instance;
     }
 
     @Test

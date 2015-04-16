@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.utils;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.util.*;
 
@@ -26,37 +27,39 @@ import com.google.common.collect.AbstractIterator;
 public abstract class MergeIterator<In,Out> extends AbstractIterator<Out> implements IMergeIterator<In, Out>
 {
     protected final Reducer<In,Out> reducer;
-    protected final List<? extends CloseableIterator<In>> iterators;
+    protected final List<? extends Iterator<In>> iterators;
 
-    protected MergeIterator(List<? extends CloseableIterator<In>> iters, Reducer<In, Out> reducer)
+    protected MergeIterator(List<? extends Iterator<In>> iters, Reducer<In, Out> reducer)
     {
         this.iterators = iters;
         this.reducer = reducer;
     }
 
-    public static <In, Out> IMergeIterator<In, Out> get(final List<? extends CloseableIterator<In>> sources,
-                                                    Comparator<In> comparator,
-                                                    final Reducer<In, Out> reducer)
+    public static <In, Out> IMergeIterator<In, Out> get(List<? extends Iterator<In>> sources,
+                                                        Comparator<In> comparator,
+                                                        Reducer<In, Out> reducer)
     {
         if (sources.size() == 1)
+        {
             return reducer.trivialReduceIsTrivial()
-                   ? new TrivialOneToOne<In, Out>(sources, reducer)
-                   : new OneToOne<In, Out>(sources, reducer);
-        return new ManyToOne<In, Out>(sources, comparator, reducer);
+                 ? new TrivialOneToOne<>(sources, reducer)
+                 : new OneToOne<>(sources, reducer);
+        }
+        return new ManyToOne<>(sources, comparator, reducer);
     }
 
-    public Iterable<? extends CloseableIterator<In>> iterators()
+    public Iterable<? extends Iterator<In>> iterators()
     {
         return iterators;
     }
 
     public void close()
     {
-        for (CloseableIterator<In> iterator : this.iterators)
+        for (Iterator<In> iterator : this.iterators)
         {
             try
             {
-                iterator.close();
+                ((Closeable)iterator).close();
             }
             catch (IOException e)
             {
@@ -76,19 +79,19 @@ public abstract class MergeIterator<In,Out> extends AbstractIterator<Out> implem
         // TODO: if we had our own PriorityQueue implementation we could stash items
         // at the end of its array, so we wouldn't need this storage
         protected final ArrayDeque<Candidate<In>> candidates;
-        public ManyToOne(List<? extends CloseableIterator<In>> iters, Comparator<In> comp, Reducer<In,Out> reducer)
+        public ManyToOne(List<? extends Iterator<In>> iters, Comparator<In> comp, Reducer<In, Out> reducer)
         {
             super(iters, reducer);
-            this.queue = new PriorityQueue<Candidate<In>>(Math.max(1, iters.size()));
-            for (CloseableIterator<In> iter : iters)
+            this.queue = new PriorityQueue<>(Math.max(1, iters.size()));
+            for (Iterator<In> iter : iters)
             {
-                Candidate<In> candidate = new Candidate<In>(iter, comp);
+                Candidate<In> candidate = new Candidate<>(iter, comp);
                 if (!candidate.advance())
                     // was empty
                     continue;
                 this.queue.add(candidate);
             }
-            this.candidates = new ArrayDeque<Candidate<In>>(queue.size());
+            this.candidates = new ArrayDeque<>(queue.size());
         }
 
         protected final Out computeNext()
@@ -127,11 +130,11 @@ public abstract class MergeIterator<In,Out> extends AbstractIterator<Out> implem
     // Holds and is comparable by the head item of an iterator it owns
     protected static final class Candidate<In> implements Comparable<Candidate<In>>
     {
-        private final CloseableIterator<In> iter;
+        private final Iterator<In> iter;
         private final Comparator<In> comp;
         private In item;
 
-        public Candidate(CloseableIterator<In> iter, Comparator<In> comp)
+        public Candidate(Iterator<In> iter, Comparator<In> comp)
         {
             this.iter = iter;
             this.comp = comp;
@@ -173,8 +176,8 @@ public abstract class MergeIterator<In,Out> extends AbstractIterator<Out> implem
         protected abstract Out getReduced();
 
         /**
-         * Called at the begining of each new key, before any reduce is called.
-         * To be overriden by implementing classes.
+         * Called at the beginning of each new key, before any reduce is called.
+         * To be overridden by implementing classes.
          */
         protected void onKeyChange() {}
 
@@ -186,9 +189,9 @@ public abstract class MergeIterator<In,Out> extends AbstractIterator<Out> implem
 
     private static class OneToOne<In, Out> extends MergeIterator<In, Out>
     {
-        private final CloseableIterator<In> source;
+        private final Iterator<In> source;
 
-        public OneToOne(List<? extends CloseableIterator<In>> sources, Reducer<In, Out> reducer)
+        public OneToOne(List<? extends Iterator<In>> sources, Reducer<In, Out> reducer)
         {
             super(sources, reducer);
             source = sources.get(0);
@@ -206,14 +209,15 @@ public abstract class MergeIterator<In,Out> extends AbstractIterator<Out> implem
 
     private static class TrivialOneToOne<In, Out> extends MergeIterator<In, Out>
     {
-        private final CloseableIterator<?> source;
+        private final Iterator<In> source;
 
-        public TrivialOneToOne(List<? extends CloseableIterator<In>> sources, Reducer<In, Out> reducer)
+        public TrivialOneToOne(List<? extends Iterator<In>> sources, Reducer<In, Out> reducer)
         {
             super(sources, reducer);
             source = sources.get(0);
         }
 
+        @SuppressWarnings("unchecked")
         protected Out computeNext()
         {
             if (!source.hasNext())

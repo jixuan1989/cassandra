@@ -17,8 +17,9 @@
  */
 package org.apache.cassandra.io.util;
 
-import java.io.DataOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.WritableByteChannel;
 
 
 /**
@@ -27,7 +28,7 @@ import java.io.IOException;
  *
  * This class is completely thread unsafe.
  */
-public final class DataOutputBuffer extends DataOutputStream
+public class DataOutputBuffer extends BufferedDataOutputStreamPlus
 {
     public DataOutputBuffer()
     {
@@ -36,47 +37,88 @@ public final class DataOutputBuffer extends DataOutputStream
 
     public DataOutputBuffer(int size)
     {
-        super(new FastByteArrayOutputStream(size));
+        super(ByteBuffer.allocate(size));
+    }
+
+    protected DataOutputBuffer(ByteBuffer buffer)
+    {
+        super(buffer);
     }
 
     @Override
-    public void write(int b)
+    public void flush() throws IOException
     {
-        try
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    protected void doFlush() throws IOException
+    {
+        reallocate(buffer.capacity() * 2);
+    }
+
+    protected void reallocate(long newSize)
+    {
+        assert newSize <= Integer.MAX_VALUE;
+        ByteBuffer newBuffer = ByteBuffer.allocate((int) newSize);
+        buffer.flip();
+        newBuffer.put(buffer);
+        buffer = newBuffer;
+    }
+
+    @Override
+    protected WritableByteChannel newDefaultChannel()
+    {
+        return new GrowingChannel();
+    }
+
+    private final class GrowingChannel implements WritableByteChannel
+    {
+        public int write(ByteBuffer src) throws IOException
         {
-            super.write(b);
+            int count = src.remaining();
+            reallocate(Math.max((buffer.capacity() * 3) / 2, buffer.capacity() + count));
+            buffer.put(src);
+            return count;
         }
-        catch (IOException e)
+
+        public boolean isOpen()
         {
-            throw new AssertionError(e); // FBOS does not throw IOE
+            return true;
+        }
+
+        public void close() throws IOException
+        {
         }
     }
 
     @Override
-    public void write(byte[] b, int off, int len)
+    public void close() throws IOException
     {
-        try
-        {
-            super.write(b, off, len);
-        }
-        catch (IOException e)
-        {
-            throw new AssertionError(e); // FBOS does not throw IOE
-        }
     }
 
-    /**
-     * Returns the current contents of the buffer. Data is only valid to
-     * {@link #getLength()}.
-     */
+    public ByteBuffer buffer()
+    {
+        ByteBuffer result = buffer.duplicate();
+        result.flip();
+        return result;
+    }
+
     public byte[] getData()
     {
-        return ((FastByteArrayOutputStream) out).buf;
+        return buffer.array();
     }
 
-    /** Returns the length of the valid data currently in the buffer. */
     public int getLength()
     {
-        return ((FastByteArrayOutputStream) out).count;
+        return buffer.position();
+    }
+
+    public byte[] toByteArray()
+    {
+        ByteBuffer buffer = buffer();
+        byte[] result = new byte[buffer.remaining()];
+        buffer.get(result);
+        return result;
     }
 }

@@ -19,49 +19,168 @@ package org.apache.cassandra.tracing;
 
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
-import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.google.common.base.Stopwatch;
 import org.slf4j.helpers.MessageFormatter;
 
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
-import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.ConsistencyLevel;
+import org.apache.cassandra.db.Mutation;
+import org.apache.cassandra.exceptions.OverloadedException;
 import org.apache.cassandra.service.StorageProxy;
-import org.apache.cassandra.utils.*;
+import org.apache.cassandra.transport.Connection;
+import org.apache.cassandra.transport.Event;
+import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.utils.WrappedRunnable;
+import org.apache.cassandra.utils.progress.ProgressEvent;
+import org.apache.cassandra.utils.progress.ProgressEventNotifier;
+import org.apache.cassandra.utils.progress.ProgressListener;
 
 /**
  * ThreadLocal state for a tracing session. The presence of an instance of this class as a ThreadLocal denotes that an
  * operation is being traced.
  */
-public class TraceState
+public class TraceState implements ProgressEventNotifier
 {
     public final UUID sessionId;
     public final InetAddress coordinator;
     public final Stopwatch watch;
     public final ByteBuffer sessionIdBytes;
-    public final boolean isLocallyOwned;
+    public final Tracing.TraceType traceType;
+    public final int ttl;
 
-    public TraceState(InetAddress coordinator, UUID sessionId, boolean locallyOwned)
+    private boolean notify;
+    private final List<ProgressListener> listeners = new CopyOnWriteArrayList<>();
+    private String tag;
+
+    private final boolean withFinishEvent;
+    private final AtomicInteger pendingMutations = new AtomicInteger();
+    private final Connection connection;
+
+    public enum Status
+    {
+        IDLE,
+        ACTIVE,
+        STOPPED
+    }
+
+    private volatile Status status;
+
+    // Multiple requests can use the same TraceState at a time, so we need to reference count.
+    // See CASSANDRA-7626 for more details.
+    private final AtomicInteger references = new AtomicInteger(1);
+
+    public TraceState(InetAddress coordinator, UUID sessionId, Tracing.TraceType traceType)
+    {
+        this(coordinator, null, sessionId, traceType, false);
+    }
+
+    public TraceState(InetAddress coordinator, Connection connection, UUID sessionId, Tracing.TraceType traceType, boolean withFinishEvent)
     {
         assert coordinator != null;
         assert sessionId != null;
 
         this.coordinator = coordinator;
+        this.connection = connection;
         this.sessionId = sessionId;
-        this.isLocallyOwned = locallyOwned;
         sessionIdBytes = ByteBufferUtil.bytes(sessionId);
-        watch = new Stopwatch();
-        watch.start();
+        this.traceType = traceType;
+        this.ttl = traceType.getTTL();
+        watch = Stopwatch.createStarted();
+        this.status = Status.IDLE;
+        this.withFinishEvent = withFinishEvent;
+    }
+
+    /**
+     * Activate notification with provided {@code tag} name.
+     *
+     * @param tag Tag name to add when emitting notification
+     */
+    public void enableActivityNotification(String tag)
+    {
+        assert traceType == Tracing.TraceType.REPAIR;
+        notify = true;
+        this.tag = tag;
+    }
+
+    @Override
+    public void addProgressListener(ProgressListener listener)
+    {
+        assert traceType == Tracing.TraceType.REPAIR;
+        listeners.add(listener);
+    }
+
+    @Override
+    public void removeProgressListener(ProgressListener listener)
+    {
+        assert traceType == Tracing.TraceType.REPAIR;
+        listeners.remove(listener);
     }
 
     public int elapsed()
     {
-        long elapsed = watch.elapsedTime(TimeUnit.MICROSECONDS);
+        long elapsed = watch.elapsed(TimeUnit.MICROSECONDS);
         return elapsed < Integer.MAX_VALUE ? (int) elapsed : Integer.MAX_VALUE;
+    }
+
+    public synchronized void stop()
+    {
+        status = Status.STOPPED;
+        notifyAll();
+        pushEventIfStopped();
+    }
+
+    private void pushEventIfStopped()
+    {
+        if (status == Status.STOPPED && pendingMutations.get() == 0)
+        {
+            // poor-man's prevention of duplicate tracing-finished events
+            pendingMutations.set(Integer.MIN_VALUE);
+
+            if (connection != null && withFinishEvent)
+                connection.sendIfRegistered(new Event.TraceComplete(sessionId));
+        }
+    }
+
+    /*
+     * Returns immediately if there has been trace activity since the last
+     * call, otherwise waits until there is trace activity, or until the
+     * timeout expires.
+     * @param timeout timeout in milliseconds
+     * @return activity status
+     */
+    public synchronized Status waitActivity(long timeout)
+    {
+        if (status == Status.IDLE)
+        {
+            try
+            {
+                wait(timeout);
+            }
+            catch (InterruptedException e)
+            {
+                throw new RuntimeException();
+            }
+        }
+        if (status == Status.ACTIVE)
+        {
+            status = Status.IDLE;
+            return Status.ACTIVE;
+        }
+        return status;
+    }
+
+    private synchronized void notifyActivity()
+    {
+        status = Status.ACTIVE;
+        notifyAll();
     }
 
     public void trace(String format, Object arg)
@@ -79,26 +198,86 @@ public class TraceState
         trace(MessageFormatter.arrayFormat(format, args).getMessage());
     }
 
-    public void trace(final String message)
+    public void trace(String message)
     {
-        final int elapsed = elapsed();
-        final ByteBuffer eventId = ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes());
+        if (notify)
+            notifyActivity();
 
+        final String threadName = Thread.currentThread().getName();
+        final int elapsed = elapsed();
+
+        executeMutation(TraceKeyspace.makeEventMutation(sessionIdBytes, message, elapsed, threadName, ttl));
+
+        for (ProgressListener listener : listeners)
+        {
+            listener.progress(tag, ProgressEvent.createNotification(message));
+        }
+    }
+
+    void executeMutation(final Mutation mutation)
+    {
+        pendingMutations.incrementAndGet();
+
+        StageManager.getStage(Stage.TRACING).execute(new WrappedRunnable()
+        {
+            protected void runMayThrow() throws Exception
+            {
+                try
+                {
+                    mutateWithCatch(mutation);
+                }
+                finally
+                {
+                    if (pendingMutations.decrementAndGet() == 0)
+                        pushEventIfStopped();
+                }
+            }
+        });
+    }
+
+    /**
+     * Called from {@link org.apache.cassandra.net.OutboundTcpConnection} for non-local traces (traces
+     * that are not initiated by local node == coordinator).
+     */
+    public static void mutateWithTracing(final ByteBuffer sessionId, final String message, final int elapsed, final int ttl)
+    {
         final String threadName = Thread.currentThread().getName();
 
         StageManager.getStage(Stage.TRACING).execute(new WrappedRunnable()
         {
-            public void runMayThrow() throws Exception
+            public void runMayThrow()
             {
-                CFMetaData cfMeta = CFMetaData.TraceEventsCf;
-                ColumnFamily cf = ArrayBackedSortedColumns.factory.create(cfMeta);
-                Tracing.addColumn(cf, Tracing.buildName(cfMeta, eventId, ByteBufferUtil.bytes("activity")), message);
-                Tracing.addColumn(cf, Tracing.buildName(cfMeta, eventId, ByteBufferUtil.bytes("source")), FBUtilities.getBroadcastAddress());
-                Tracing.addColumn(cf, Tracing.buildName(cfMeta, eventId, ByteBufferUtil.bytes("source_elapsed")), elapsed);
-                Tracing.addColumn(cf, Tracing.buildName(cfMeta, eventId, ByteBufferUtil.bytes("thread")), threadName);
-                RowMutation mutation = new RowMutation(Tracing.TRACE_KS, sessionIdBytes, cf);
-                StorageProxy.mutate(Arrays.asList(mutation), ConsistencyLevel.ANY);
+                mutateWithCatch(TraceKeyspace.makeEventMutation(sessionId, message, elapsed, threadName, ttl));
             }
         });
+    }
+
+    static void mutateWithCatch(Mutation mutation)
+    {
+        try
+        {
+            StorageProxy.mutate(Collections.singletonList(mutation), ConsistencyLevel.ANY);
+        }
+        catch (OverloadedException e)
+        {
+            Tracing.logger.warn("Too many nodes are overloaded to save trace events");
+        }
+    }
+
+    public boolean acquireReference()
+    {
+        while (true)
+        {
+            int n = references.get();
+            if (n <= 0)
+                return false;
+            if (references.compareAndSet(n, n + 1))
+                return true;
+        }
+    }
+
+    public int releaseReference()
+    {
+        return references.decrementAndGet();
     }
 }

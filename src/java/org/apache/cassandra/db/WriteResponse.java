@@ -18,19 +18,15 @@
 package org.apache.cassandra.db;
 
 import java.io.DataInput;
-import java.io.DataOutput;
 import java.io.IOException;
 
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.utils.ByteBufferUtil;
-
 
 /*
- * This message is sent back the row mutation verb handler
- * and basically specifies if the write succeeded or not for a particular
- * key in a table
+ * This empty response is sent by a replica to inform the coordinator that the write succeeded
  */
 public class WriteResponse
 {
@@ -43,32 +39,17 @@ public class WriteResponse
 
     public static class WriteResponseSerializer implements IVersionedSerializer<WriteResponse>
     {
-        public void serialize(WriteResponse wm, DataOutput out, int version) throws IOException
+        public void serialize(WriteResponse wm, DataOutputPlus out, int version) throws IOException
         {
-            if (version < MessagingService.VERSION_12)
-            {
-                out.writeUTF("");
-                ByteBufferUtil.writeWithShortLength(ByteBufferUtil.EMPTY_BYTE_BUFFER, out);
-                out.writeBoolean(true);
-            }
         }
 
         public WriteResponse deserialize(DataInput in, int version) throws IOException
         {
-            if (version < MessagingService.VERSION_12)
-            {
-                in.readUTF();
-                ByteBufferUtil.readWithShortLength(in);
-                in.readBoolean();
-            }
             return new WriteResponse();
         }
 
         public long serializedSize(WriteResponse response, int version)
         {
-            TypeSizes sizes = TypeSizes.NATIVE;
-            if (version < MessagingService.VERSION_12)
-                return sizes.sizeof("") + sizes.sizeof((short) 0) + sizes.sizeof(true);
             return 0;
         }
     }

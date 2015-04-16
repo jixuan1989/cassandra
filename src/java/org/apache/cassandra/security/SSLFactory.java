@@ -23,6 +23,9 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.security.KeyStore;
+import java.security.cert.X509Certificate;
+import java.util.Date;
+import java.util.Enumeration;
 import java.util.Set;
 
 import javax.net.ssl.KeyManagerFactory;
@@ -34,7 +37,7 @@ import javax.net.ssl.TrustManagerFactory;
 
 import org.apache.cassandra.config.EncryptionOptions;
 import org.apache.cassandra.io.util.FileUtils;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,6 +50,8 @@ import com.google.common.collect.Sets;
 public final class SSLFactory
 {
     private static final Logger logger = LoggerFactory.getLogger(SSLFactory.class);
+    public static final String[] ACCEPTED_PROTOCOLS = new String[] {"SSLv2Hello", "TLSv1", "TLSv1.1", "TLSv1.2"};
+    private static boolean checkedExpiry = false;
 
     public static SSLServerSocket getServerSocket(EncryptionOptions options, InetAddress address, int port) throws IOException
     {
@@ -56,7 +61,8 @@ public final class SSLFactory
         String[] suits = filterCipherSuites(serverSocket.getSupportedCipherSuites(), options.cipher_suites);
         serverSocket.setEnabledCipherSuites(suits);
         serverSocket.setNeedClientAuth(options.require_client_auth);
-        serverSocket.bind(new InetSocketAddress(address, port), 100);
+        serverSocket.setEnabledProtocols(ACCEPTED_PROTOCOLS);
+        serverSocket.bind(new InetSocketAddress(address, port), 500);
         return serverSocket;
     }
 
@@ -67,6 +73,7 @@ public final class SSLFactory
         SSLSocket socket = (SSLSocket) ctx.getSocketFactory().createSocket(address, port, localAddress, localPort);
         String[] suits = filterCipherSuites(socket.getSupportedCipherSuites(), options.cipher_suites);
         socket.setEnabledCipherSuites(suits);
+        socket.setEnabledProtocols(ACCEPTED_PROTOCOLS);
         return socket;
     }
 
@@ -77,6 +84,7 @@ public final class SSLFactory
         SSLSocket socket = (SSLSocket) ctx.getSocketFactory().createSocket(address, port);
         String[] suits = filterCipherSuites(socket.getSupportedCipherSuites(), options.cipher_suites);
         socket.setEnabledCipherSuites(suits);
+        socket.setEnabledProtocols(ACCEPTED_PROTOCOLS);
         return socket;
     }
 
@@ -87,6 +95,7 @@ public final class SSLFactory
         SSLSocket socket = (SSLSocket) ctx.getSocketFactory().createSocket();
         String[] suits = filterCipherSuites(socket.getSupportedCipherSuites(), options.cipher_suites);
         socket.setEnabledCipherSuites(suits);
+        socket.setEnabledProtocols(ACCEPTED_PROTOCOLS);
         return socket;
     }
 
@@ -114,6 +123,20 @@ public final class SSLFactory
             KeyManagerFactory kmf = KeyManagerFactory.getInstance(options.algorithm);
             KeyStore ks = KeyStore.getInstance(options.store_type);
             ks.load(ksf, options.keystore_password.toCharArray());
+            if (!checkedExpiry)
+            {
+                for (Enumeration<String> aliases = ks.aliases(); aliases.hasMoreElements(); )
+                {
+                    String alias = aliases.nextElement();
+                    if (ks.getCertificate(alias).getType().equals("X.509"))
+                    {
+                        Date expires = ((X509Certificate) ks.getCertificate(alias)).getNotAfter();
+                        if (expires.before(new Date()))
+                            logger.warn("Certificate for {} expired on {}", alias, expires);
+                    }
+                }
+                checkedExpiry = true;
+            }
             kmf.init(ks, options.keystore_password.toCharArray());
 
             ctx.init(kmf.getKeyManagers(), trustManagers, null);

@@ -93,8 +93,10 @@ DEFAULT_VALUE_COLORS = dict(
     default=YELLOW,
     text=YELLOW,
     error=RED,
-    hex=DARK_MAGENTA,
+    blob=DARK_MAGENTA,
     timestamp=GREEN,
+    date=GREEN,
+    time=GREEN,
     int=GREEN,
     float=GREEN,
     decimal=GREEN,
@@ -107,6 +109,6 @@ DEFAULT_VALUE_COLORS = dict(
 
 COLUMN_NAME_COLORS = defaultdict(lambda: MAGENTA,
     error=RED,
-    hex=DARK_MAGENTA,
+    blob=DARK_MAGENTA,
     reset=ANSI_RESET,
 )

@@ -19,44 +19,40 @@ package org.apache.cassandra.utils;
 
 import java.io.*;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.math.BigInteger;
-import java.net.InetAddress;
-import java.net.NetworkInterface;
-import java.net.SocketException;
-import java.net.URL;
-import java.net.UnknownHostException;
+import java.net.*;
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
+import java.util.zip.Adler32;
 import java.util.zip.Checksum;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.AbstractIterator;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.cache.IRowCacheProvider;
-import org.apache.cassandra.concurrent.CreationTimeAwareFuture;
-import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.auth.IAuthenticator;
+import org.apache.cassandra.auth.IAuthorizer;
+import org.apache.cassandra.auth.IRoleManager;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.compress.CompressionParameters;
 import org.apache.cassandra.io.util.DataOutputBuffer;
-import org.apache.cassandra.io.util.IAllocator;
+import org.apache.cassandra.io.util.DataOutputBufferFixed;
+import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.net.AsyncOneResponse;
-import org.apache.thrift.TBase;
-import org.apache.thrift.TDeserializer;
-import org.apache.thrift.TException;
-import org.apache.thrift.TSerializer;
+import org.apache.thrift.*;
 import org.codehaus.jackson.JsonFactory;
 import org.codehaus.jackson.map.ObjectMapper;
 
@@ -64,9 +60,14 @@ public class FBUtilities
 {
     private static final Logger logger = LoggerFactory.getLogger(FBUtilities.class);
 
-    private static ObjectMapper jsonMapper = new ObjectMapper(new JsonFactory());
+    private static final ObjectMapper jsonMapper = new ObjectMapper(new JsonFactory());
 
     public static final BigInteger TWO = new BigInteger("2");
+    private static final String DEFAULT_TRIGGER_DIR = "triggers";
+
+    private static final String OPERATING_SYSTEM = System.getProperty("os.name").toLowerCase();
+    private static final boolean IS_WINDOWS = OPERATING_SYSTEM.contains("windows");
+    private static final boolean HAS_PROCFS = !IS_WINDOWS && (new File(File.separator + "proc")).exists();
 
     private static volatile InetAddress localInetAddress;
     private static volatile InetAddress broadcastInetAddress;
@@ -96,15 +97,6 @@ public class FBUtilities
         }
     };
 
-    private static final ThreadLocal<Random> localRandom = new ThreadLocal<Random>()
-    {
-        @Override
-        protected Random initialValue()
-        {
-            return new Random();
-        }
-    };
-
     public static final int MAX_UNSIGNED_SHORT = 0xFFFF;
 
     public static MessageDigest threadLocalMD5Digest()
@@ -122,11 +114,6 @@ public class FBUtilities
         {
             throw new RuntimeException("the requested digest algorithm (" + algorithm + ") is not available", nsae);
         }
-    }
-
-    public static Random threadLocalRandom()
-    {
-        return localRandom.get();
     }
 
     /**
@@ -209,7 +196,12 @@ public class FBUtilities
 
     public static int compareUnsigned(byte[] bytes1, byte[] bytes2, int offset1, int offset2, int len1, int len2)
     {
-        return FastByteComparisons.compareTo(bytes1, offset1, len1, bytes2, offset2, len2);
+        return FastByteOperations.compareUnsigned(bytes1, offset1, len1, bytes2, offset2, len2);
+    }
+
+    public static int compareUnsigned(byte[] bytes1, byte[] bytes2)
+    {
+        return compareUnsigned(bytes1, bytes2, 0, 0, bytes1.length, bytes2.length);
     }
 
     /**
@@ -236,13 +228,6 @@ public class FBUtilities
         return out;
     }
 
-    public static BigInteger hashToBigInteger(ByteBuffer data)
-    {
-        byte[] result = hash(data);
-        BigInteger hash = new BigInteger(result);
-        return hash.abs();
-    }
-
     public static byte[] hash(ByteBuffer... data)
     {
         MessageDigest messageDigest = localMD5Digest.get();
@@ -255,6 +240,11 @@ public class FBUtilities
         }
 
         return messageDigest.digest();
+    }
+
+    public static BigInteger hashToBigInteger(ByteBuffer data)
+    {
+        return new BigInteger(hash(data)).abs();
     }
 
     @Deprecated
@@ -306,8 +296,8 @@ public class FBUtilities
             {
                 public int compare(DecoratedKey o1, DecoratedKey o2)
                 {
-                    if ((right.compareTo(o1.token) < 0 && right.compareTo(o2.token) < 0)
-                        || (right.compareTo(o1.token) > 0 && right.compareTo(o2.token) > 0))
+                    if ((right.compareTo(o1.getToken()) < 0 && right.compareTo(o2.getToken()) < 0)
+                        || (right.compareTo(o1.getToken()) > 0 && right.compareTo(o2.getToken()) > 0))
                     {
                         // both tokens are on the same side of the wrap point
                         return o1.compareTo(o2);
@@ -331,17 +321,39 @@ public class FBUtilities
         if (scpurl == null)
             throw new ConfigurationException("unable to locate " + filename);
 
-        return scpurl.getFile();
+        return new File(scpurl.getFile()).getAbsolutePath();
+    }
+
+    public static File cassandraTriggerDir()
+    {
+        File triggerDir = null;
+        if (System.getProperty("cassandra.triggers_dir") != null)
+        {
+            triggerDir = new File(System.getProperty("cassandra.triggers_dir"));
+        }
+        else
+        {
+            URL confDir = FBUtilities.class.getClassLoader().getResource(DEFAULT_TRIGGER_DIR);
+            if (confDir != null)
+                triggerDir = new File(confDir.getFile());
+        }
+        if (triggerDir == null || !triggerDir.exists())
+        {
+            logger.warn("Trigger directory doesn't exist, please create it and try again.");
+            return null;
+        }
+        return triggerDir;
     }
 
     public static String getReleaseVersionString()
     {
+        InputStream in = null;
         try
         {
-            InputStream in = FBUtilities.class.getClassLoader().getResourceAsStream("org/apache/cassandra/config/version.properties");
+            in = FBUtilities.class.getClassLoader().getResourceAsStream("org/apache/cassandra/config/version.properties");
             if (in == null)
             {
-                return "Unknown";
+                return System.getProperty("cassandra.releaseVersion", "Unknown");
             }
             Properties props = new Properties();
             props.load(in);
@@ -349,8 +361,13 @@ public class FBUtilities
         }
         catch (Exception e)
         {
+            JVMStabilityInspector.inspectThrowable(e);
             logger.warn("Unable to load version.properties", e);
             return "debug version";
+        }
+        finally
+        {
+            FileUtils.closeQuietly(in);
         }
     }
 
@@ -367,11 +384,11 @@ public class FBUtilities
             waitOnFuture(f);
     }
 
-    public static void waitOnFuture(Future<?> future)
+    public static <T> T waitOnFuture(Future<T> future)
     {
         try
         {
-            future.get();
+            return future.get();
         }
         catch (ExecutionException ee)
         {
@@ -389,44 +406,32 @@ public class FBUtilities
             result.get(ms, TimeUnit.MILLISECONDS);
     }
 
-
-    /**
-     * Waits for the futures to complete.
-     * @param timeout the timeout expressed in <code>TimeUnit</code> units
-     * @param timeUnit TimeUnit
-     * @throws TimeoutException if the waiting time exceeds <code>timeout</code>
-     */
-    public static void waitOnFutures(List<CreationTimeAwareFuture<?>> hintFutures, long timeout, TimeUnit timeUnit) throws TimeoutException
-    {
-        for (Future<?> future : hintFutures)
-        {
-            try
-            {
-                future.get(timeout, timeUnit);
-            }
-            catch (InterruptedException ex)
-            {
-                throw new AssertionError(ex);
-            }
-            catch (ExecutionException e)
-            {
-                throw new RuntimeException(e);
-            }
-        }
-    }
-
     public static IPartitioner newPartitioner(String partitionerClassName) throws ConfigurationException
     {
         if (!partitionerClassName.contains("."))
             partitionerClassName = "org.apache.cassandra.dht." + partitionerClassName;
-        return FBUtilities.construct(partitionerClassName, "partitioner");
+        return FBUtilities.instanceOrConstruct(partitionerClassName, "partitioner");
     }
 
-    public static IAllocator newOffHeapAllocator(String offheap_allocator) throws ConfigurationException
+    public static IAuthorizer newAuthorizer(String className) throws ConfigurationException
     {
-        if (!offheap_allocator.contains("."))
-            offheap_allocator = "org.apache.cassandra.io.util." + offheap_allocator;
-        return FBUtilities.construct(offheap_allocator, "off-heap allocator");
+        if (!className.contains("."))
+            className = "org.apache.cassandra.auth." + className;
+        return FBUtilities.construct(className, "authorizer");
+    }
+
+    public static IAuthenticator newAuthenticator(String className) throws ConfigurationException
+    {
+        if (!className.contains("."))
+            className = "org.apache.cassandra.auth." + className;
+        return FBUtilities.construct(className, "authenticator");
+    }
+
+    public static IRoleManager newRoleManager(String className) throws ConfigurationException
+    {
+        if (!className.contains("."))
+            className = "org.apache.cassandra.auth." + className;
+        return FBUtilities.construct(className, "role manager");
     }
 
     /**
@@ -443,11 +448,32 @@ public class FBUtilities
         }
         catch (ClassNotFoundException e)
         {
-            throw new ConfigurationException(String.format("Unable to find %s class '%s'", readable, classname));
+            throw new ConfigurationException(String.format("Unable to find %s class '%s'", readable, classname), e);
         }
         catch (NoClassDefFoundError e)
         {
-            throw new ConfigurationException(String.format("Unable to find %s class '%s'", readable, classname));
+            throw new ConfigurationException(String.format("Unable to find %s class '%s'", readable, classname), e);
+        }
+    }
+
+    /**
+     * Constructs an instance of the given class, which must have a no-arg or default constructor.
+     * @param classname Fully qualified classname.
+     * @param readable Descriptive noun for the role the class plays.
+     * @throws ConfigurationException If the class cannot be found.
+     */
+    public static <T> T instanceOrConstruct(String classname, String readable) throws ConfigurationException
+    {
+        Class<T> cls = FBUtilities.classForName(classname, readable);
+        try
+        {
+            Field instance = cls.getField("instance");
+            return cls.cast(instance.get(null));
+        }
+        catch (NoSuchFieldException | SecurityException | IllegalArgumentException | IllegalAccessException e)
+        {
+            // Could not get instance field. Try instantiating.
+            return construct(cls, classname, readable);
         }
     }
 
@@ -460,6 +486,11 @@ public class FBUtilities
     public static <T> T construct(String classname, String readable) throws ConfigurationException
     {
         Class<T> cls = FBUtilities.classForName(classname, readable);
+        return construct(cls, classname, readable);
+    }
+
+    private static <T> T construct(Class<T> cls, String classname, String readable) throws ConfigurationException
+    {
         try
         {
             return cls.newInstance();
@@ -481,9 +512,11 @@ public class FBUtilities
         }
     }
 
-    public static <T extends Comparable> SortedSet<T> singleton(T column)
+    public static <T> SortedSet<T> singleton(T column, Comparator<? super T> comparator)
     {
-        return new TreeSet<T>(Arrays.asList(column));
+        SortedSet<T> s = new TreeSet<T>(comparator);
+        s.add(column);
+        return s;
     }
 
     public static String toString(Map<?,?> map)
@@ -500,26 +533,16 @@ public class FBUtilities
      */
     public static Field getProtectedField(Class klass, String fieldName)
     {
-        Field field;
-
         try
         {
-            field = klass.getDeclaredField(fieldName);
+            Field field = klass.getDeclaredField(fieldName);
             field.setAccessible(true);
+            return field;
         }
         catch (Exception e)
         {
             throw new AssertionError(e);
         }
-
-        return field;
-    }
-
-    public static IRowCacheProvider newCacheProvider(String cache_provider) throws ConfigurationException
-    {
-        if (!cache_provider.contains("."))
-            cache_provider = "org.apache.cassandra.cache." + cache_provider;
-        return FBUtilities.construct(cache_provider, "row cache provider");
     }
 
     public static <T> CloseableIterator<T> closeableIterator(Iterator<T> iterator)
@@ -575,34 +598,25 @@ public class FBUtilities
             int errCode = p.waitFor();
             if (errCode != 0)
             {
-                BufferedReader in = new BufferedReader(new InputStreamReader(p.getInputStream()));
-                BufferedReader err = new BufferedReader(new InputStreamReader(p.getErrorStream()));
-                StringBuilder sb = new StringBuilder();
-                String str;
-                while ((str = in.readLine()) != null)
-                    sb.append(str).append(System.getProperty("line.separator"));
-                while ((str = err.readLine()) != null)
-                    sb.append(str).append(System.getProperty("line.separator"));
-                throw new IOException("Exception while executing the command: "+ StringUtils.join(pb.command(), " ") +
-                                      ", command error Code: " + errCode +
-                                      ", command output: "+ sb.toString());
+            	try (BufferedReader in = new BufferedReader(new InputStreamReader(p.getInputStream()));
+                     BufferedReader err = new BufferedReader(new InputStreamReader(p.getErrorStream())))
+                {
+            		String lineSep = System.getProperty("line.separator");
+	                StringBuilder sb = new StringBuilder();
+	                String str;
+	                while ((str = in.readLine()) != null)
+	                    sb.append(str).append(lineSep);
+	                while ((str = err.readLine()) != null)
+	                    sb.append(str).append(lineSep);
+	                throw new IOException("Exception while executing the command: "+ StringUtils.join(pb.command(), " ") +
+	                                      ", command error Code: " + errCode +
+	                                      ", command output: "+ sb.toString());
+                }
             }
         }
         catch (InterruptedException e)
         {
             throw new AssertionError(e);
-        }
-    }
-
-    public static void sleep(int millis)
-    {
-        try
-        {
-            Thread.sleep(millis);
-        }
-        catch (InterruptedException e)
-        {
-            throw new AssertionError();
         }
     }
 
@@ -612,6 +626,74 @@ public class FBUtilities
         checksum.update((v >>> 16) & 0xFF);
         checksum.update((v >>> 8) & 0xFF);
         checksum.update((v >>> 0) & 0xFF);
+    }
+
+    private static Method directUpdate;
+    static
+    {
+        try
+        {
+            directUpdate = Adler32.class.getDeclaredMethod("update", new Class[]{ByteBuffer.class});
+            directUpdate.setAccessible(true);
+        } catch (NoSuchMethodException e)
+        {
+            logger.warn("JVM doesn't support Adler32 byte buffer access");
+            directUpdate = null;
+        }
+    }
+
+    private static final ThreadLocal<byte[]> localDigestBuffer = new ThreadLocal<byte[]>()
+    {
+        @Override
+        protected byte[] initialValue()
+        {
+            return new byte[CompressionParameters.DEFAULT_CHUNK_LENGTH];
+        }
+    };
+
+    //Java 7 has this method but it's private till Java 8. Thanks JDK!
+    public static boolean supportsDirectChecksum()
+    {
+        return directUpdate != null;
+    }
+
+    public static void directCheckSum(Adler32 checksum, ByteBuffer bb)
+    {
+        if (directUpdate != null)
+        {
+            try
+            {
+                directUpdate.invoke(checksum, bb);
+                return;
+            }
+            catch (IllegalAccessException e)
+            {
+                directUpdate = null;
+                logger.warn("JVM doesn't support Adler32 byte buffer access");
+            }
+            catch (InvocationTargetException e)
+            {
+                throw new RuntimeException(e);
+            }
+        }
+
+        //Fallback
+        byte[] buffer = localDigestBuffer.get();
+
+        int remaining;
+        while ((remaining = bb.remaining()) > 0)
+        {
+            remaining = Math.min(remaining, buffer.length);
+            ByteBufferUtil.arrayCopy(bb, bb.position(), buffer, 0, remaining);
+            bb.position(bb.position() + remaining);
+            checksum.update(buffer, 0, remaining);
+        }
+    }
+
+    public static long abs(long index)
+    {
+        long negbit = index >> 63;
+        return (index ^ negbit) - negbit;
     }
 
     private static final class WrappedCloseableIterator<T>
@@ -633,14 +715,90 @@ public class FBUtilities
         public void close() {}
     }
 
-    public static <T> byte[] serialize(T object, IVersionedSerializer<T> serializer, int version) throws IOException
+    public static <T> byte[] serialize(T object, IVersionedSerializer<T> serializer, int version)
     {
-        int size = (int) serializer.serializedSize(object, version);
-        DataOutputBuffer buffer = new DataOutputBuffer(size);
-        serializer.serialize(object, buffer, version);
-        assert buffer.getLength() == size && buffer.getData().length == size
-               : String.format("Final buffer length %s to accommodate data size of %s (predicted %s) for %s",
-                               buffer.getData().length, buffer.getLength(), size, object);
-        return buffer.getData();
+        try
+        {
+            int size = (int) serializer.serializedSize(object, version);
+            DataOutputBuffer buffer = new DataOutputBufferFixed(size);
+            serializer.serialize(object, buffer, version);
+            assert buffer.getLength() == size && buffer.getData().length == size
+                : String.format("Final buffer length %s to accommodate data size of %s (predicted %s) for %s",
+                        buffer.getData().length, buffer.getLength(), size, object);
+            return buffer.getData();
+        }
+        catch (IOException e)
+        {
+            // We're doing in-memory serialization...
+            throw new AssertionError(e);
+        }
+    }
+
+    public static long copy(InputStream from, OutputStream to, long limit) throws IOException
+    {
+        byte[] buffer = new byte[64]; // 64 byte buffer
+        long copied = 0;
+        int toCopy = buffer.length;
+        while (true)
+        {
+            if (limit < buffer.length + copied)
+                toCopy = (int) (limit - copied);
+            int sofar = from.read(buffer, 0, toCopy);
+            if (sofar == -1)
+                break;
+            to.write(buffer, 0, sofar);
+            copied += sofar;
+            if (limit == copied)
+                break;
+        }
+        return copied;
+    }
+
+    public static File getToolsOutputDirectory()
+    {
+        File historyDir = new File(System.getProperty("user.home"), ".cassandra");
+        FileUtils.createDirectory(historyDir);
+        return historyDir;
+    }
+
+    public static boolean isWindows()
+    {
+        return IS_WINDOWS;
+    }
+
+    public static boolean hasProcFS()
+    {
+        return HAS_PROCFS;
+    }
+
+    public static void updateWithShort(MessageDigest digest, int val)
+    {
+        digest.update((byte) ((val >> 8) & 0xFF));
+        digest.update((byte) (val & 0xFF));
+    }
+
+    public static void updateWithByte(MessageDigest digest, int val)
+    {
+        digest.update((byte) (val & 0xFF));
+    }
+
+    public static void updateWithInt(MessageDigest digest, int val)
+    {
+        digest.update((byte) ((val >>> 24) & 0xFF));
+        digest.update((byte) ((val >>> 16) & 0xFF));
+        digest.update((byte) ((val >>>  8) & 0xFF));
+        digest.update((byte) ((val >>> 0) & 0xFF));
+    }
+
+    public static void updateWithLong(MessageDigest digest, long val)
+    {
+        digest.update((byte) ((val >>> 56) & 0xFF));
+        digest.update((byte) ((val >>> 48) & 0xFF));
+        digest.update((byte) ((val >>> 40) & 0xFF));
+        digest.update((byte) ((val >>> 32) & 0xFF));
+        digest.update((byte) ((val >>> 24) & 0xFF));
+        digest.update((byte) ((val >>> 16) & 0xFF));
+        digest.update((byte) ((val >>>  8) & 0xFF));
+        digest.update((byte)  ((val >>> 0) & 0xFF));
     }
 }

@@ -23,14 +23,18 @@ import java.util.Map;
 
 import com.google.common.collect.ImmutableMap;
 
+import org.apache.cassandra.cql3.Term;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
+import org.apache.cassandra.serializers.TypeSerializer;
+import org.apache.cassandra.serializers.BytesSerializer;
+import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 public class ColumnToCollectionType extends AbstractType<ByteBuffer>
 {
     // interning instances
-    private static final Map<Map<ByteBuffer, CollectionType>, ColumnToCollectionType> instances = new HashMap<Map<ByteBuffer, CollectionType>, ColumnToCollectionType>();
+    private static final Map<Map<ByteBuffer, CollectionType>, ColumnToCollectionType> instances = new HashMap<>();
 
     public final Map<ByteBuffer, CollectionType> defined;
 
@@ -71,16 +75,6 @@ public class ColumnToCollectionType extends AbstractType<ByteBuffer>
         return t.nameComparator().compare(o1, o2);
     }
 
-    public ByteBuffer compose(ByteBuffer bytes)
-    {
-        return BytesType.instance.compose(bytes);
-    }
-
-    public ByteBuffer decompose(ByteBuffer value)
-    {
-        return BytesType.instance.decompose(value);
-    }
-
     public String getString(ByteBuffer bytes)
     {
         return BytesType.instance.getString(bytes);
@@ -98,9 +92,27 @@ public class ColumnToCollectionType extends AbstractType<ByteBuffer>
         }
     }
 
+    @Override
+    public Term fromJSONObject(Object parsed) throws MarshalException
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public void validate(ByteBuffer bytes)
     {
         throw new UnsupportedOperationException("ColumnToCollectionType should only be used in composite types, never alone");
+    }
+
+    public TypeSerializer<ByteBuffer> getSerializer()
+    {
+        return BytesSerializer.instance;
     }
 
     public void validateCollectionMember(ByteBuffer bytes, ByteBuffer collectionName) throws MarshalException
@@ -122,7 +134,8 @@ public class ColumnToCollectionType extends AbstractType<ByteBuffer>
         // We are compatible if we have all the definitions previous have (but we can have more).
         for (Map.Entry<ByteBuffer, CollectionType> entry : prev.defined.entrySet())
         {
-            if (!entry.getValue().isCompatibleWith(defined.get(entry.getKey())))
+            CollectionType newType = defined.get(entry.getKey());
+            if (newType == null || !newType.isCompatibleWith(entry.getValue()))
                 return false;
         }
         return true;

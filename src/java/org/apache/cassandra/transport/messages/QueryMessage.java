@@ -17,18 +17,21 @@
  */
 package org.apache.cassandra.transport.messages;
 
+import java.nio.ByteBuffer;
+import java.util.Collections;
 import java.util.UUID;
 
 import com.google.common.collect.ImmutableMap;
-import org.jboss.netty.buffer.ChannelBuffer;
-import org.jboss.netty.buffer.ChannelBuffers;
+import io.netty.buffer.ByteBuf;
 
-import org.apache.cassandra.cql3.QueryProcessor;
+import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.exceptions.*;
+import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.transport.*;
+import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.UUIDGen;
 
 /**
@@ -38,39 +41,62 @@ public class QueryMessage extends Message.Request
 {
     public static final Message.Codec<QueryMessage> codec = new Message.Codec<QueryMessage>()
     {
-        public QueryMessage decode(ChannelBuffer body)
+        public QueryMessage decode(ByteBuf body, int version)
         {
             String query = CBUtil.readLongString(body);
-            ConsistencyLevel consistency = CBUtil.readConsistencyLevel(body);
-            return new QueryMessage(query, consistency);
+            if (version == 1)
+            {
+                ConsistencyLevel consistency = CBUtil.readConsistencyLevel(body);
+                return new QueryMessage(query, QueryOptions.fromProtocolV1(consistency, Collections.<ByteBuffer>emptyList()));
+            }
+            else
+            {
+                return new QueryMessage(query, QueryOptions.codec.decode(body, version));
+            }
         }
 
-        public ChannelBuffer encode(QueryMessage msg)
+        public void encode(QueryMessage msg, ByteBuf dest, int version)
         {
+            CBUtil.writeLongString(msg.query, dest);
+            if (version == 1)
+                CBUtil.writeConsistencyLevel(msg.options.getConsistency(), dest);
+            else
+                QueryOptions.codec.encode(msg.options, dest, version);
+        }
 
-            return ChannelBuffers.wrappedBuffer(CBUtil.longStringToCB(msg.query), CBUtil.consistencyLevelToCB(msg.consistency));
+        public int encodedSize(QueryMessage msg, int version)
+        {
+            int size = CBUtil.sizeOfLongString(msg.query);
+
+            if (version == 1)
+            {
+                size += CBUtil.sizeOfConsistencyLevel(msg.options.getConsistency());
+            }
+            else
+            {
+                size += QueryOptions.codec.encodedSize(msg.options, version);
+            }
+            return size;
         }
     };
 
     public final String query;
-    public final ConsistencyLevel consistency;
+    public final QueryOptions options;
 
-    public QueryMessage(String query, ConsistencyLevel consistency)
+    public QueryMessage(String query, QueryOptions options)
     {
-        super(Message.Type.QUERY);
+        super(Type.QUERY);
         this.query = query;
-        this.consistency = consistency;
-    }
-
-    public ChannelBuffer encode()
-    {
-        return codec.encode(this);
+        this.options = options;
     }
 
     public Message.Response execute(QueryState state)
     {
         try
         {
+            if (options.getPageSize() == 0)
+                throw new ProtocolException("The page size cannot be 0");
+
             UUID tracingId = null;
             if (isTracingRequested())
             {
@@ -80,11 +106,19 @@ public class QueryMessage extends Message.Request
 
             if (state.traceNextQuery())
             {
-                state.createTracingSession();
-                Tracing.instance().begin("Execute CQL3 query", ImmutableMap.of("query", query));
+                state.createTracingSession(connection);
+
+                ImmutableMap.Builder<String, String> builder = ImmutableMap.builder();
+                builder.put("query", query);
+                if (options.getPageSize() > 0)
+                    builder.put("page_size", Integer.toString(options.getPageSize()));
+
+                Tracing.instance.begin("Execute CQL3 query", state.getClientAddress(), builder.build());
             }
 
-            Message.Response response = QueryProcessor.process(query, consistency, state);
+            Message.Response response = ClientState.getCQLQueryHandler().process(query, state, options, getCustomPayload());
+            if (options.skipMetadata() && response instanceof ResultMessage.Rows)
+                ((ResultMessage.Rows)response).result.metadata.setSkipMetadata();
 
             if (tracingId != null)
                 response.setTracingId(tracingId);
@@ -93,13 +127,14 @@ public class QueryMessage extends Message.Request
         }
         catch (Exception e)
         {
+            JVMStabilityInspector.inspectThrowable(e);
             if (!((e instanceof RequestValidationException) || (e instanceof RequestExecutionException)))
                 logger.error("Unexpected error during query", e);
             return ErrorMessage.fromException(e);
         }
         finally
         {
-            Tracing.instance().stopSession();
+            Tracing.instance.stopSession();
         }
     }
 

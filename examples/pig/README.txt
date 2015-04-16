@@ -32,7 +32,10 @@ for input and output:
 * PIG_OUTPUT_RPC_PORT : the port thrift is listening on for writing
 * PIG_OUTPUT_PARTITIONER : cluster partitioner for writing
 
-Then you can run it like this:
+CassandraStorage
+================
+
+The CassandraStorage class is for any non-CQL3 ColumnFamilies you may have.  For CQL3 support, refer to the CqlNativeStorage section.
 
 examples/pig$ bin/pig_cassandra -x local example-script.pig
 
@@ -71,8 +74,8 @@ already exist for this to work.
 
 See the example in test/ to see how schema is inferred.
 
-Advanced Options
-================
+Advanced Options for CassandraStorage
+=====================================
 
 The following environment variables default to false but can be set to true to enable them:
 
@@ -88,3 +91,28 @@ PIG_USE_SECONDARY:  this allows easy use of secondary indexes within your
                     can also be set in the LOAD url by adding the
                     'use_secondary=true' parameter.
 
+PIG_INPUT_SPLIT_SIZE: this sets the split size passed to Hadoop, controlling
+                      the amount of mapper tasks created.  This can also be set in the LOAD url by
+                      adding the 'split_size=X' parameter, where X is an integer amount for the size.
+
+CqlNativeStorage
+================
+
+The CqlNativeStorage class is somewhat similar to CassandraStorage, but it can work with CQL3-defined ColumnFamilies.  The main difference is in the URL format:
+
+cql://[username:password@]<keyspace>/<columnfamily>
+                    [?[page_size=<size>][&columns=<col1,col2>][&output_query=<prepared_statement>]
+                    [&where_clause=<clause>][&split_size=<size>][&partitioner=<partitioner>][&use_secondary=true|false]
+                    [&init_address=<host>][&native_port=<native_port>][&core_conns=<core_conns>]
+                    [&max_conns=<max_conns>][&min_simult_reqs=<min_simult_reqs>][&max_simult_reqs=<max_simult_reqs>]
+                    [&native_timeout=<native_timeout>][&native_read_timeout=<native_read_timeout>][&rec_buff_size=<rec_buff_size>]
+                    [&send_buff_size=<send_buff_size>][&solinger=<solinger>][&tcp_nodelay=<tcp_nodelay>][&reuse_address=<reuse_address>]
+                    [&keep_alive=<keep_alive>][&auth_provider=<auth_provider>][&trust_store_path=<trust_store_path>]
+                    [&key_store_path=<key_store_path>][&trust_store_password=<trust_store_password>]
+                    [&key_store_password=<key_store_password>][&cipher_suites=<cipher_suites>][&input_cql=<input_cql>]
+                    [columns=<columns>][where_clause=<where_clause>]]
+Which in grunt, the simplest example would look like:
+
+grunt> rows = LOAD 'cql://MyKeyspace/MyColumnFamily' USING CqlNativeStorage();
+
+CqlNativeStorage handles wide rows automatically and thus has no separate flag for this.

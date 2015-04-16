@@ -17,8 +17,7 @@
  */
 package org.apache.cassandra.transport.messages;
 
-import org.jboss.netty.buffer.ChannelBuffer;
-import org.jboss.netty.buffer.ChannelBuffers;
+import io.netty.buffer.ByteBuf;
 
 import org.apache.cassandra.transport.Message;
 
@@ -29,25 +28,24 @@ public class ReadyMessage extends Message.Response
 {
     public static final Message.Codec<ReadyMessage> codec = new Message.Codec<ReadyMessage>()
     {
-        public ReadyMessage decode(ChannelBuffer body)
+        public ReadyMessage decode(ByteBuf body, int version)
         {
             return new ReadyMessage();
         }
 
-        public ChannelBuffer encode(ReadyMessage msg)
+        public void encode(ReadyMessage msg, ByteBuf dest, int version)
         {
-            return ChannelBuffers.EMPTY_BUFFER;
+        }
+
+        public int encodedSize(ReadyMessage msg, int version)
+        {
+            return 0;
         }
     };
 
     public ReadyMessage()
     {
         super(Message.Type.READY);
-    }
-
-    public ChannelBuffer encode()
-    {
-        return codec.encode(this);
     }
 
     @Override

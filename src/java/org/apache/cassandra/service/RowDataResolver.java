@@ -22,6 +22,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import com.google.common.collect.Iterables;
 
@@ -38,11 +39,13 @@ public class RowDataResolver extends AbstractRowResolver
     private int maxLiveCount = 0;
     public List<AsyncOneResponse> repairResults = Collections.emptyList();
     private final IDiskAtomFilter filter;
+    private final long timestamp;
 
-    public RowDataResolver(String table, ByteBuffer key, IDiskAtomFilter qFilter)
+    public RowDataResolver(String keyspaceName, ByteBuffer key, IDiskAtomFilter qFilter, long timestamp, int maxResponseCount)
     {
-        super(key, table);
+        super(key, keyspaceName, maxResponseCount);
         this.filter = qFilter;
+        this.timestamp = timestamp;
     }
 
     /*
@@ -54,15 +57,16 @@ public class RowDataResolver extends AbstractRowResolver
     */
     public Row resolve() throws DigestMismatchException
     {
+        int replyCount = replies.size();
         if (logger.isDebugEnabled())
-            logger.debug("resolving " + replies.size() + " responses");
-        long startTime = System.currentTimeMillis();
+            logger.debug("resolving {} responses", replyCount);
+        long start = System.nanoTime();
 
         ColumnFamily resolved;
-        if (replies.size() > 1)
+        if (replyCount > 1)
         {
-            List<ColumnFamily> versions = new ArrayList<ColumnFamily>(replies.size());
-            List<InetAddress> endpoints = new ArrayList<InetAddress>(replies.size());
+            List<ColumnFamily> versions = new ArrayList<>(replyCount);
+            List<InetAddress> endpoints = new ArrayList<>(replyCount);
 
             for (MessageIn<ReadResponse> message : replies)
             {
@@ -73,27 +77,27 @@ public class RowDataResolver extends AbstractRowResolver
                 endpoints.add(message.from);
 
                 // compute maxLiveCount to prevent short reads -- see https://issues.apache.org/jira/browse/CASSANDRA-2643
-                int liveCount = cf == null ? 0 : filter.getLiveCount(cf);
+                int liveCount = cf == null ? 0 : filter.getLiveCount(cf, timestamp);
                 if (liveCount > maxLiveCount)
                     maxLiveCount = liveCount;
             }
 
-            resolved = resolveSuperset(versions);
+            resolved = resolveSuperset(versions, timestamp);
             if (logger.isDebugEnabled())
                 logger.debug("versions merged");
 
             // send updates to any replica that was missing part of the full row
             // (resolved can be null even if versions doesn't have all nulls because of the call to removeDeleted in resolveSuperSet)
             if (resolved != null)
-                repairResults = scheduleRepairs(resolved, table, key, versions, endpoints);
+                repairResults = scheduleRepairs(resolved, keyspaceName, key, versions, endpoints);
         }
         else
         {
-            resolved = replies.iterator().next().payload.row().cf;
+            resolved = replies.get(0).payload.row().cf;
         }
 
         if (logger.isDebugEnabled())
-            logger.debug("resolve: " + (System.currentTimeMillis() - startTime) + " ms.");
+            logger.debug("resolve: {} ms.", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start));
 
         return new Row(key, resolved);
     }
@@ -102,7 +106,7 @@ public class RowDataResolver extends AbstractRowResolver
      * For each row version, compare with resolved (the superset of all row versions);
      * if it is missing anything, send a mutation to the endpoint it come from.
      */
-    public static List<AsyncOneResponse> scheduleRepairs(ColumnFamily resolved, String table, DecoratedKey key, List<ColumnFamily> versions, List<InetAddress> endpoints)
+    public static List<AsyncOneResponse> scheduleRepairs(ColumnFamily resolved, String keyspaceName, DecoratedKey key, List<ColumnFamily> versions, List<InetAddress> endpoints)
     {
         List<AsyncOneResponse> results = new ArrayList<AsyncOneResponse>(versions.size());
 
@@ -112,19 +116,18 @@ public class RowDataResolver extends AbstractRowResolver
             if (diffCf == null) // no repair needs to happen
                 continue;
 
-            // create and send the row mutation message based on the diff
-            RowMutation rowMutation = new RowMutation(table, key.key, diffCf);
-            MessageOut repairMessage;
+            // create and send the mutation message based on the diff
+            Mutation mutation = new Mutation(keyspaceName, key.getKey(), diffCf);
             // use a separate verb here because we don't want these to be get the white glove hint-
             // on-timeout behavior that a "real" mutation gets
-            repairMessage = rowMutation.createMessage(MessagingService.Verb.READ_REPAIR);
-            results.add(MessagingService.instance().sendRR(repairMessage, endpoints.get(i)));
+            results.add(MessagingService.instance().sendRR(mutation.createMessage(MessagingService.Verb.READ_REPAIR),
+                                                           endpoints.get(i)));
         }
 
         return results;
     }
 
-    static ColumnFamily resolveSuperset(Iterable<ColumnFamily> versions)
+    static ColumnFamily resolveSuperset(Iterable<ColumnFamily> versions, long now)
     {
         assert Iterables.size(versions) > 0;
 
@@ -143,23 +146,21 @@ public class RowDataResolver extends AbstractRowResolver
             return null;
 
         // mimic the collectCollatedColumn + removeDeleted path that getColumnFamily takes.
-        // this will handle removing columns and subcolumns that are supressed by a row or
+        // this will handle removing columns and subcolumns that are suppressed by a row or
         // supercolumn tombstone.
-        QueryFilter filter = new QueryFilter(null, resolved.metadata().cfName, new IdentityQueryFilter());
-        List<CloseableIterator<Column>> iters = new ArrayList<CloseableIterator<Column>>();
+        QueryFilter filter = new QueryFilter(null, resolved.metadata().cfName, new IdentityQueryFilter(), now);
+        List<CloseableIterator<Cell>> iters = new ArrayList<>(Iterables.size(versions));
         for (ColumnFamily version : versions)
-        {
-            if (version == null)
-                continue;
-            iters.add(FBUtilities.closeableIterator(version.iterator()));
-        }
+            if (version != null)
+                iters.add(FBUtilities.closeableIterator(version.iterator()));
         filter.collateColumns(resolved, iters, Integer.MIN_VALUE);
         return ColumnFamilyStore.removeDeleted(resolved, Integer.MIN_VALUE);
     }
 
     public Row getData()
     {
-        return replies.iterator().next().payload.row();
+        assert !replies.isEmpty();
+        return replies.get(0).payload.row();
     }
 
     public boolean isDataPresent()

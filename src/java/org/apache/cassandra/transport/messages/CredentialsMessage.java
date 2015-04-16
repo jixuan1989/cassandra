@@ -20,13 +20,14 @@ package org.apache.cassandra.transport.messages;
 import java.util.HashMap;
 import java.util.Map;
 
-import org.jboss.netty.buffer.ChannelBuffer;
-import org.jboss.netty.buffer.ChannelBuffers;
-
+import io.netty.buffer.ByteBuf;
+import org.apache.cassandra.auth.AuthenticatedUser;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.exceptions.AuthenticationException;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.transport.CBUtil;
 import org.apache.cassandra.transport.Message;
+import org.apache.cassandra.transport.ProtocolException;
 
 /**
  * Message to indicate that the server is ready to receive requests.
@@ -35,56 +36,53 @@ public class CredentialsMessage extends Message.Request
 {
     public static final Message.Codec<CredentialsMessage> codec = new Message.Codec<CredentialsMessage>()
     {
-        public CredentialsMessage decode(ChannelBuffer body)
+        public CredentialsMessage decode(ByteBuf body, int version)
         {
-            CredentialsMessage msg = new CredentialsMessage();
-            int count = body.readUnsignedShort();
-            for (int i = 0; i < count; i++)
-            {
-                String key = CBUtil.readString(body);
-                String value = CBUtil.readString(body);
-                msg.credentials.put(key, value);
-            }
-            return msg;
+            if (version > 1)
+                throw new ProtocolException("Legacy credentials authentication is not supported in " +
+                        "protocol versions > 1. Please use SASL authentication via a SaslResponse message");
+
+            Map<String, String> credentials = CBUtil.readStringMap(body);
+            return new CredentialsMessage(credentials);
         }
 
-        public ChannelBuffer encode(CredentialsMessage msg)
+        public void encode(CredentialsMessage msg, ByteBuf dest, int version)
         {
-            ChannelBuffer cb = ChannelBuffers.dynamicBuffer();
+            CBUtil.writeStringMap(msg.credentials, dest);
+        }
 
-            cb.writeShort(msg.credentials.size());
-            for (Map.Entry<String, String> entry : msg.credentials.entrySet())
-            {
-                cb.writeBytes(CBUtil.stringToCB(entry.getKey()));
-                cb.writeBytes(CBUtil.stringToCB(entry.getValue()));
-            }
-            return cb;
+        public int encodedSize(CredentialsMessage msg, int version)
+        {
+            return CBUtil.sizeOfStringMap(msg.credentials);
         }
     };
 
-    public final Map<String, String> credentials = new HashMap<String, String>();
+    public final Map<String, String> credentials;
 
     public CredentialsMessage()
     {
-        super(Message.Type.CREDENTIALS);
+        this(new HashMap<String, String>());
     }
 
-    public ChannelBuffer encode()
+    private CredentialsMessage(Map<String, String> credentials)
     {
-        return codec.encode(this);
+        super(Message.Type.CREDENTIALS);
+        this.credentials = credentials;
     }
 
     public Message.Response execute(QueryState state)
     {
         try
         {
-            state.getClientState().login(credentials);
-            return new ReadyMessage();
+            AuthenticatedUser user = DatabaseDescriptor.getAuthenticator().legacyAuthenticate(credentials);
+            state.getClientState().login(user);
         }
         catch (AuthenticationException e)
         {
             return ErrorMessage.fromException(e);
         }
+
+        return new ReadyMessage();
     }
 
     @Override

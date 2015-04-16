@@ -25,6 +25,8 @@ import java.util.Collection;
 import java.util.Random;
 import java.util.UUID;
 
+import com.google.common.annotations.VisibleForTesting;
+
 
 /**
  * The goods are here: www.ietf.org/rfc/rfc4122.txt.
@@ -68,6 +70,22 @@ public class UUIDGen
     public static UUID getTimeUUID()
     {
         return new UUID(instance.createTimeSafe(), clockSeqAndNode);
+    }
+
+    /**
+     * Creates a type 1 UUID (time-based UUID) with the timestamp of @param when, in milliseconds.
+     *
+     * @return a UUID instance
+     */
+    public static UUID getTimeUUID(long when)
+    {
+        return new UUID(createTime(fromUnixTimestamp(when)), clockSeqAndNode);
+    }
+
+    @VisibleForTesting
+    public static UUID getTimeUUID(long when, long clockSeqAndNode)
+    {
+        return new UUID(createTime(fromUnixTimestamp(when)), clockSeqAndNode);
     }
 
     /** creates a type 1 uuid from raw bytes. */
@@ -128,37 +146,30 @@ public class UUIDGen
         return new UUID(createTime(uuidTstamp), MAX_CLOCK_SEQ_AND_NODE);
     }
 
-    public static long unixTimestamp(UUID uuid) {
-        if (uuid.version() != 1)
-            throw new IllegalArgumentException(String.format("Can only retrieve the unix timestamp for version 1 uuid (provided version %d)", uuid.version()));
-
-        long timestamp = uuid.timestamp();
-        return (timestamp / 10000) + START_EPOCH;
-    }
-
-    private static long fromUnixTimestamp(long tstamp) {
-        return (tstamp - START_EPOCH) * 10000;
+    /**
+     * @param uuid
+     * @return milliseconds since Unix epoch
+     */
+    public static long unixTimestamp(UUID uuid)
+    {
+        return (uuid.timestamp() / 10000) + START_EPOCH;
     }
 
     /**
-     * Converts a milliseconds-since-epoch timestamp into the 16 byte representation
-     * of a type 1 UUID (a time-based UUID).
-     *
-     * <p><i><b>Deprecated:</b> This method goes again the principle of a time
-     * UUID and should not be used. For queries based on timestamp, minTimeUUID() and
-     * maxTimeUUID() can be used but this method has questionable usefulness. This is
-     * only kept because CQL2 uses it (see TimeUUID.fromStringCQL2) and we
-     * don't want to break compatibility.</i></p>
-     *
-     * <p><i><b>Warning:</b> This method is not guaranteed to return unique UUIDs; Multiple
-     * invocations using identical timestamps will result in identical UUIDs.</i></p>
-     *
-     * @param timeMillis
-     * @return a type 1 UUID represented as a byte[]
+     * @param uuid
+     * @return microseconds since Unix epoch
      */
-    public static byte[] getTimeUUIDBytes(long timeMillis)
+    public static long microsTimestamp(UUID uuid)
     {
-        return createTimeUUIDBytes(instance.createTimeUnsafe(timeMillis));
+        return (uuid.timestamp() / 10) + START_EPOCH * 1000;
+    }
+
+    /**
+     * @param timestamp milliseconds since Unix epoch
+     * @return
+     */
+    private static long fromUnixTimestamp(long timestamp) {
+        return (timestamp - START_EPOCH) * 10000;
     }
 
     /**
@@ -230,11 +241,6 @@ public class UUIDGen
             nanosSince = ++lastNanos;
 
         return createTime(nanosSince);
-    }
-
-    private long createTimeUnsafe(long when)
-    {
-        return createTimeUnsafe(when, 0);
     }
 
     private long createTimeUnsafe(long when, int nanos)

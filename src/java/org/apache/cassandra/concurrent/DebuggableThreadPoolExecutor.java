@@ -44,7 +44,7 @@ import static org.apache.cassandra.tracing.Tracing.isTracing;
  *   threads and the queue is full, we want the enqueuer to block.  But to allow the number of threads to drop if a
  *   stage is less busy, core thread timeout is enabled.
  */
-public class DebuggableThreadPoolExecutor extends ThreadPoolExecutor
+public class DebuggableThreadPoolExecutor extends ThreadPoolExecutor implements TracingAwareExecutorService
 {
     protected static final Logger logger = LoggerFactory.getLogger(DebuggableThreadPoolExecutor.class);
     public static final RejectedExecutionHandler blockingExecutionHandler = new RejectedExecutionHandler()
@@ -100,6 +100,21 @@ public class DebuggableThreadPoolExecutor extends ThreadPoolExecutor
     }
 
     /**
+     * Creates a thread pool that creates new threads as needed, but
+     * will reuse previously constructed threads when they are
+     * available.
+     * @param threadPoolName the name of the threads created by this executor
+     * @return The new DebuggableThreadPoolExecutor
+     */
+    public static DebuggableThreadPoolExecutor createCachedThreadpoolWithMaxSize(String threadPoolName)
+    {
+        return new DebuggableThreadPoolExecutor(0, Integer.MAX_VALUE,
+                                                60L, TimeUnit.SECONDS,
+                                                new SynchronousQueue<Runnable>(),
+                                                new NamedThreadFactory(threadPoolName));
+    }
+
+    /**
      * Returns a ThreadPoolExecutor with a fixed number of threads.
      * When all threads are actively executing tasks, new tasks are queued.
      * If (most) threads are expected to be idle most of the time, prefer createWithMaxSize() instead.
@@ -131,12 +146,24 @@ public class DebuggableThreadPoolExecutor extends ThreadPoolExecutor
     protected void onFinalAccept(Runnable task) {}
     protected void onFinalRejection(Runnable task) {}
 
+    public void execute(Runnable command, TraceState state)
+    {
+        super.execute(state == null || command instanceof TraceSessionWrapper
+                      ? command
+                      : new TraceSessionWrapper<Object>(command, state));
+    }
+
+    public void maybeExecuteImmediately(Runnable command)
+    {
+        execute(command);
+    }
+
     // execute does not call newTaskFor
     @Override
     public void execute(Runnable command)
     {
         super.execute(isTracing() && !(command instanceof TraceSessionWrapper)
-                      ? new TraceSessionWrapper<Object>(command, null)
+                      ? new TraceSessionWrapper<Object>(Executors.callable(command, null))
                       : command);
     }
 
@@ -145,7 +172,7 @@ public class DebuggableThreadPoolExecutor extends ThreadPoolExecutor
     {
         if (isTracing() && !(runnable instanceof TraceSessionWrapper))
         {
-            return new TraceSessionWrapper<T>(runnable, result);
+            return new TraceSessionWrapper<T>(Executors.callable(runnable, result));
         }
         return super.newTaskFor(runnable, result);
     }
@@ -165,6 +192,12 @@ public class DebuggableThreadPoolExecutor extends ThreadPoolExecutor
     {
         super.afterExecute(r, t);
 
+        maybeResetTraceSessionWrapper(r);
+        logExceptionsAfterExecute(r, t);
+    }
+
+    protected static void maybeResetTraceSessionWrapper(Runnable r)
+    {
         if (r instanceof TraceSessionWrapper)
         {
             TraceSessionWrapper tsw = (TraceSessionWrapper) r;
@@ -172,8 +205,6 @@ public class DebuggableThreadPoolExecutor extends ThreadPoolExecutor
             // and if left this thread might start tracing unrelated tasks
             tsw.reset();
         }
-        
-        logExceptionsAfterExecute(r, t);
     }
 
     @Override
@@ -256,26 +287,26 @@ public class DebuggableThreadPoolExecutor extends ThreadPoolExecutor
     {
         private final TraceState state;
 
-        public TraceSessionWrapper(Runnable runnable, T result)
-        {
-            super(runnable, result);
-            state = Tracing.instance().get();
-        }
-
         public TraceSessionWrapper(Callable<T> callable)
         {
             super(callable);
-            state = Tracing.instance().get();
+            state = Tracing.instance.get();
+        }
+
+        public TraceSessionWrapper(Runnable command, TraceState state)
+        {
+            super(command, null);
+            this.state = state;
         }
 
         private void setupContext()
         {
-            Tracing.instance().set(state);
+            Tracing.instance.set(state);
         }
 
         private void reset()
         {
-            Tracing.instance().set(null);
+            Tracing.instance.set(null);
         }
     }
 }

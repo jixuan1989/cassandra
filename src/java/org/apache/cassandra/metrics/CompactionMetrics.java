@@ -19,27 +19,25 @@ package org.apache.cassandra.metrics;
 
 import java.util.*;
 import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 
-import com.yammer.metrics.Metrics;
-import com.yammer.metrics.core.Counter;
-import com.yammer.metrics.core.Gauge;
-import com.yammer.metrics.core.Meter;
-import com.yammer.metrics.core.MetricName;
+import com.codahale.metrics.Counter;
+import com.codahale.metrics.Gauge;
+import com.codahale.metrics.Meter;
 
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
-import org.apache.cassandra.db.Table;
+import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.compaction.CompactionInfo;
 import org.apache.cassandra.db.compaction.CompactionManager;
+
+import static org.apache.cassandra.metrics.CassandraMetricsRegistry.Metrics;
 
 /**
  * Metrics for compaction.
  */
 public class CompactionMetrics implements CompactionManager.CompactionExecutorStatsCollector
 {
-    public static final String GROUP_NAME = "org.apache.cassandra.metrics";
-    public static final String TYPE_NAME = "Compaction";
+    public static final MetricNameFactory factory = new DefaultNameFactory("Compaction");
 
     // a synchronized identity set of running tasks to their compaction info
     private static final Set<CompactionInfo.Holder> compactions = Collections.synchronizedSet(Collections.newSetFromMap(new IdentityHashMap<CompactionInfo.Holder, Boolean>()));
@@ -55,14 +53,14 @@ public class CompactionMetrics implements CompactionManager.CompactionExecutorSt
 
     public CompactionMetrics(final ThreadPoolExecutor... collectors)
     {
-        pendingTasks = Metrics.newGauge(new MetricName(GROUP_NAME, TYPE_NAME, "PendingTasks"), new Gauge<Integer>()
+        pendingTasks = Metrics.register(factory.createMetricName("PendingTasks"), new Gauge<Integer>()
         {
-            public Integer value()
+            public Integer getValue()
             {
                 int n = 0;
-                for (String tableName : Schema.instance.getTables())
+                for (String keyspaceName : Schema.instance.getKeyspaces())
                 {
-                    for (ColumnFamilyStore cfs : Table.open(tableName).getColumnFamilyStores())
+                    for (ColumnFamilyStore cfs : Keyspace.open(keyspaceName).getColumnFamilyStores())
                         n += cfs.getCompactionStrategy().getEstimatedRemainingTasks();
                 }
                 for (ThreadPoolExecutor collector : collectors)
@@ -70,9 +68,9 @@ public class CompactionMetrics implements CompactionManager.CompactionExecutorSt
                 return n;
             }
         });
-        completedTasks = Metrics.newGauge(new MetricName(GROUP_NAME, TYPE_NAME, "CompletedTasks"), new Gauge<Long>()
+        completedTasks = Metrics.register(factory.createMetricName("CompletedTasks"), new Gauge<Long>()
         {
-            public Long value()
+            public Long getValue()
             {
                 long completedTasks = 0;
                 for (ThreadPoolExecutor collector : collectors)
@@ -80,8 +78,8 @@ public class CompactionMetrics implements CompactionManager.CompactionExecutorSt
                 return completedTasks;
             }
         });
-        totalCompactionsCompleted = Metrics.newMeter(new MetricName(GROUP_NAME, TYPE_NAME, "TotalCompactionsCompleted"), "compaction completed", TimeUnit.SECONDS);
-        bytesCompacted = Metrics.newCounter(new MetricName(GROUP_NAME, TYPE_NAME, "BytesCompacted"));
+        totalCompactionsCompleted = Metrics.meter(factory.createMetricName("TotalCompactionsCompleted"));
+        bytesCompacted = Metrics.counter(factory.createMetricName("BytesCompacted"));
     }
 
     public void beginCompaction(CompactionInfo.Holder ci)

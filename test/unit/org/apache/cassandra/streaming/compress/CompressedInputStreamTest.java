@@ -19,16 +19,22 @@ package org.apache.cassandra.streaming.compress;
 
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
+import java.io.EOFException;
 import java.io.File;
 import java.io.RandomAccessFile;
 import java.util.*;
 
 import org.junit.Test;
 
-import org.apache.cassandra.io.compress.*;
+import org.apache.cassandra.db.composites.*;
+import org.apache.cassandra.db.marshal.BytesType;
+import org.apache.cassandra.io.compress.CompressedSequentialWriter;
+import org.apache.cassandra.io.compress.CompressionMetadata;
+import org.apache.cassandra.io.compress.CompressionParameters;
+import org.apache.cassandra.io.compress.SnappyCompressor;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
-import org.apache.cassandra.io.sstable.SSTableMetadata;
+import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
 import org.apache.cassandra.utils.Pair;
 
 /**
@@ -38,27 +44,32 @@ public class CompressedInputStreamTest
     @Test
     public void testCompressedRead() throws Exception
     {
-        testCompressedReadWith(new long[]{0L});
-        testCompressedReadWith(new long[]{1L});
-        testCompressedReadWith(new long[]{100L});
+        testCompressedReadWith(new long[]{0L}, false);
+        testCompressedReadWith(new long[]{1L}, false);
+        testCompressedReadWith(new long[]{100L}, false);
 
-        testCompressedReadWith(new long[]{1L, 122L, 123L, 124L, 456L});
+        testCompressedReadWith(new long[]{1L, 122L, 123L, 124L, 456L}, false);
     }
 
+    @Test(expected = EOFException.class)
+    public void testTruncatedRead() throws Exception
+    {
+        testCompressedReadWith(new long[]{1L, 122L, 123L, 124L, 456L}, true);
+    }
     /**
      * @param valuesToCheck array of longs of range(0-999)
      * @throws Exception
      */
-    private void testCompressedReadWith(long[] valuesToCheck) throws Exception
+    private void testCompressedReadWith(long[] valuesToCheck, boolean testTruncate) throws Exception
     {
         assert valuesToCheck != null && valuesToCheck.length > 0;
 
         // write compressed data file of longs
         File tmp = new File(File.createTempFile("cassandra", "unittest").getParent(), "ks-cf-ib-1-Data.db");
         Descriptor desc = Descriptor.fromFilename(tmp.getAbsolutePath());
-        SSTableMetadata.Collector collector = SSTableMetadata.createCollector();
+        MetadataCollector collector = new MetadataCollector(new SimpleDenseCellNameType(BytesType.instance));
         CompressionParameters param = new CompressionParameters(SnappyCompressor.instance, 32, Collections.EMPTY_MAP);
-        CompressedSequentialWriter writer = new CompressedSequentialWriter(tmp, desc.filenameFor(Component.COMPRESSION_INFO), false, param, collector);
+        CompressedSequentialWriter writer = new CompressedSequentialWriter(tmp, desc.filenameFor(Component.COMPRESSION_INFO), param, collector);
         Map<Long, Long> index = new HashMap<Long, Long>();
         for (long l = 0L; l < 1000; l++)
         {
@@ -91,6 +102,13 @@ public class CompressedInputStreamTest
         }
         f.close();
 
+        if (testTruncate)
+        {
+            byte [] actuallyRead = new byte[50];
+            System.arraycopy(toRead, 0, actuallyRead, 0, 50);
+            toRead = actuallyRead;
+        }
+
         // read buffer using CompressedInputStream
         CompressionInfo info = new CompressionInfo(chunks, param);
         CompressedInputStream input = new CompressedInputStream(new ByteArrayInputStream(toRead), info);
@@ -99,8 +117,8 @@ public class CompressedInputStreamTest
         for (int i = 0; i < sections.size(); i++)
         {
             input.position(sections.get(i).left);
-            long exp = in.readLong();
-            assert exp == valuesToCheck[i] : "expected " + valuesToCheck[i] + " but was " + exp;
+            long readValue = in.readLong();
+            assert readValue == valuesToCheck[i] : "expected " + valuesToCheck[i] + " but was " + readValue;
         }
     }
 }

@@ -18,27 +18,25 @@
 package org.apache.cassandra.db;
 
 import java.io.DataInput;
-import java.io.DataOutput;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
-import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.filter.IDiskAtomFilter;
 import org.apache.cassandra.db.filter.NamesQueryFilter;
 import org.apache.cassandra.db.filter.SliceQueryFilter;
-import org.apache.cassandra.db.marshal.CompositeType;
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.service.IReadCommand;
 import org.apache.cassandra.service.RowDataResolver;
+import org.apache.cassandra.service.pager.Pageable;
 
-
-public abstract class ReadCommand implements IReadCommand
+public abstract class ReadCommand implements IReadCommand, Pageable
 {
-    public enum Type {
+    public enum Type
+    {
         GET_BY_NAMES((byte)1),
         GET_SLICES((byte)2);
 
@@ -59,29 +57,31 @@ public abstract class ReadCommand implements IReadCommand
 
     public MessageOut<ReadCommand> createMessage()
     {
-        return new MessageOut<ReadCommand>(MessagingService.Verb.READ, this, serializer);
+        return new MessageOut<>(MessagingService.Verb.READ, this, serializer);
     }
 
-    public final String table;
+    public final String ksName;
     public final String cfName;
     public final ByteBuffer key;
+    public final long timestamp;
     private boolean isDigestQuery = false;
     protected final Type commandType;
 
-    protected ReadCommand(String table, ByteBuffer key, String cfName, Type cmdType)
+    protected ReadCommand(String ksName, ByteBuffer key, String cfName, long timestamp, Type cmdType)
     {
-        this.table = table;
+        this.ksName = ksName;
         this.key = key;
         this.cfName = cfName;
+        this.timestamp = timestamp;
         this.commandType = cmdType;
     }
 
-    public static ReadCommand create(String table, ByteBuffer key, String cfName, IDiskAtomFilter filter)
+    public static ReadCommand create(String ksName, ByteBuffer key, String cfName, long timestamp, IDiskAtomFilter filter)
     {
         if (filter instanceof SliceQueryFilter)
-            return new SliceFromReadCommand(table, key, cfName, (SliceQueryFilter)filter);
+            return new SliceFromReadCommand(ksName, key, cfName, timestamp, (SliceQueryFilter)filter);
         else
-            return new SliceByNamesReadCommand(table, key, cfName, (NamesQueryFilter)filter);
+            return new SliceByNamesReadCommand(ksName, key, cfName, timestamp, (NamesQueryFilter)filter);
     }
 
     public boolean isDigestQuery()
@@ -89,9 +89,10 @@ public abstract class ReadCommand implements IReadCommand
         return isDigestQuery;
     }
 
-    public void setDigestQuery(boolean isDigestQuery)
+    public ReadCommand setIsDigestQuery(boolean isDigestQuery)
     {
         this.isDigestQuery = isDigestQuery;
+        return this;
     }
 
     public String getColumnFamilyName()
@@ -101,13 +102,13 @@ public abstract class ReadCommand implements IReadCommand
 
     public abstract ReadCommand copy();
 
-    public abstract Row getRow(Table table);
+    public abstract Row getRow(Keyspace keyspace);
 
     public abstract IDiskAtomFilter filter();
 
     public String getKeyspace()
     {
-        return table;
+        return ksName;
     }
 
     // maybeGenerateRetryCommand is used to generate a retry for short reads
@@ -130,33 +131,16 @@ public abstract class ReadCommand implements IReadCommand
 
 class ReadCommandSerializer implements IVersionedSerializer<ReadCommand>
 {
-    public void serialize(ReadCommand command, DataOutput out, int version) throws IOException
+    public void serialize(ReadCommand command, DataOutputPlus out, int version) throws IOException
     {
-        // For super columns, when talking to an older node, we need to translate the filter used.
-        // That translation can change the filter type (names -> slice), and so change the command type.
-        // Hence we need to detect that early on, before we've written the command type.
-        ReadCommand newCommand = command;
-        ByteBuffer superColumn = null;
-        if (version < MessagingService.VERSION_20)
-        {
-            CFMetaData metadata = Schema.instance.getCFMetaData(command.table, command.cfName);
-            if (metadata.cfType == ColumnFamilyType.Super)
-            {
-                SuperColumns.SCFilter scFilter = SuperColumns.filterToSC((CompositeType)metadata.comparator, command.filter());
-                newCommand = ReadCommand.create(command.table, command.key, command.cfName, scFilter.updatedFilter);
-                newCommand.setDigestQuery(command.isDigestQuery());
-                superColumn = scFilter.scName;
-            }
-        }
-
-        out.writeByte(newCommand.commandType.serializedValue);
+        out.writeByte(command.commandType.serializedValue);
         switch (command.commandType)
         {
             case GET_BY_NAMES:
-                SliceByNamesReadCommand.serializer.serialize(newCommand, superColumn, out, version);
+                SliceByNamesReadCommand.serializer.serialize(command, out, version);
                 break;
             case GET_SLICES:
-                SliceFromReadCommand.serializer.serialize(newCommand, superColumn, out, version);
+                SliceFromReadCommand.serializer.serialize(command, out, version);
                 break;
             default:
                 throw new AssertionError();
@@ -179,26 +163,12 @@ class ReadCommandSerializer implements IVersionedSerializer<ReadCommand>
 
     public long serializedSize(ReadCommand command, int version)
     {
-        ReadCommand newCommand = command;
-        ByteBuffer superColumn = null;
-        if (version < MessagingService.VERSION_20)
-        {
-            CFMetaData metadata = Schema.instance.getCFMetaData(command.table, command.cfName);
-            if (metadata.cfType == ColumnFamilyType.Super)
-            {
-                SuperColumns.SCFilter scFilter = SuperColumns.filterToSC((CompositeType)metadata.comparator, command.filter());
-                newCommand = ReadCommand.create(command.table, command.key, command.cfName, scFilter.updatedFilter);
-                newCommand.setDigestQuery(command.isDigestQuery());
-                superColumn = scFilter.scName;
-            }
-        }
-
         switch (command.commandType)
         {
             case GET_BY_NAMES:
-                return 1 + SliceByNamesReadCommand.serializer.serializedSize(newCommand, superColumn, version);
+                return 1 + SliceByNamesReadCommand.serializer.serializedSize(command, version);
             case GET_SLICES:
-                return 1 + SliceFromReadCommand.serializer.serializedSize(newCommand, superColumn, version);
+                return 1 + SliceFromReadCommand.serializer.serializedSize(command, version);
             default:
                 throw new AssertionError();
         }

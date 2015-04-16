@@ -17,17 +17,27 @@
  */
 package org.apache.cassandra.transport;
 
-import org.jboss.netty.channel.Channel;
+import io.netty.channel.Channel;
+import io.netty.util.AttributeKey;
+import org.apache.cassandra.transport.messages.EventMessage;
 
 public class Connection
 {
-    private volatile FrameCompressor frameCompressor;
-    private volatile Channel channel;
+    static final AttributeKey<Connection> attributeKey = AttributeKey.valueOf("CONN");
+
+    private final Channel channel;
+    private final int version;
     private final Tracker tracker;
 
-    public Connection(Tracker tracker)
+    private volatile FrameCompressor frameCompressor;
+
+    public Connection(Channel channel, int version, Tracker tracker)
     {
+        this.channel = channel;
+        this.version = version;
         this.tracker = tracker;
+
+        tracker.addConnection(channel, this);
     }
 
     public void setCompressor(FrameCompressor compressor)
@@ -45,10 +55,9 @@ public class Connection
         return tracker;
     }
 
-    public void registerChannel(Channel ch)
+    public int getVersion()
     {
-        channel = ch;
-        tracker.addConnection(ch, this);
+        return version;
     }
 
     public Channel channel()
@@ -56,14 +65,21 @@ public class Connection
         return channel;
     }
 
+    public void sendIfRegistered(Event event)
+    {
+        if (getTracker().isRegistered(event.type, channel))
+            channel.writeAndFlush(new EventMessage(event));
+    }
+
     public interface Factory
     {
-        public Connection newConnection(Tracker tracker);
+        Connection newConnection(Channel channel, int version);
     }
 
     public interface Tracker
     {
-        public void addConnection(Channel ch, Connection connection);
-        public void closeAll();
+        void addConnection(Channel ch, Connection connection);
+
+        boolean isRegistered(Event.Type type, Channel ch);
     }
 }

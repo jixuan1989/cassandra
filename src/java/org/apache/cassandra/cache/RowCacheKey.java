@@ -21,20 +21,27 @@ import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.UUID;
 
-import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.Pair;
+import org.apache.cassandra.utils.ObjectSizes;
 
 public class RowCacheKey implements CacheKey, Comparable<RowCacheKey>
 {
     public final UUID cfId;
     public final byte[] key;
 
+    private static final long EMPTY_SIZE = ObjectSizes.measure(new RowCacheKey(null, ByteBufferUtil.EMPTY_BYTE_BUFFER));
+
+    public RowCacheKey(UUID cfId, byte[] key)
+    {
+        this.cfId = cfId;
+        this.key = key;
+    }
+
     public RowCacheKey(UUID cfId, DecoratedKey key)
     {
-        this(cfId, key.key);
+        this(cfId, key.getKey());
     }
 
     public RowCacheKey(UUID cfId, ByteBuffer key)
@@ -44,9 +51,14 @@ public class RowCacheKey implements CacheKey, Comparable<RowCacheKey>
         assert this.key != null;
     }
 
-    public Pair<String, String> getPathInfo()
+    public UUID getCFId()
     {
-        return Schema.instance.getCF(cfId);
+        return cfId;
+    }
+
+    public long unsharedHeapSize()
+    {
+        return EMPTY_SIZE + ObjectSizes.sizeOfArray(key);
     }
 
     @Override

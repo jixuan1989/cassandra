@@ -18,26 +18,59 @@
 package org.apache.cassandra.db;
 
 import java.io.DataInput;
-import java.io.DataOutput;
 import java.io.IOException;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Objects;
 
+import org.apache.cassandra.cache.IMeasurableMemory;
 import org.apache.cassandra.io.ISerializer;
+import org.apache.cassandra.io.util.DataOutputPlus;
+import org.apache.cassandra.io.util.FileUtils;
+import org.apache.cassandra.utils.ObjectSizes;
+import org.codehaus.jackson.annotate.JsonIgnore;
 
-public class DeletionTime implements Comparable<DeletionTime>
+/**
+ * A top-level (row) tombstone.
+ */
+public class DeletionTime implements Comparable<DeletionTime>, IMeasurableMemory
 {
+    private static final long EMPTY_SIZE = ObjectSizes.measure(new DeletionTime(0, 0));
+
+    /**
+     * A special DeletionTime that signifies that there is no top-level (row) tombstone.
+     */
     public static final DeletionTime LIVE = new DeletionTime(Long.MIN_VALUE, Integer.MAX_VALUE);
 
+    /**
+     * A timestamp (typically in microseconds since the unix epoch, although this is not enforced) after which
+     * data should be considered deleted. If set to Long.MIN_VALUE, this implies that the data has not been marked
+     * for deletion at all.
+     */
     public final long markedForDeleteAt;
+
+    /**
+     * The local server timestamp, in seconds since the unix epoch, at which this tombstone was created. This is
+     * only used for purposes of purging the tombstone after gc_grace_seconds have elapsed.
+     */
     public final int localDeletionTime;
 
-    public static final ISerializer<DeletionTime> serializer = new Serializer();
+    public static final Serializer serializer = new Serializer();
 
-    DeletionTime(long markedForDeleteAt, int localDeletionTime)
+    @VisibleForTesting
+    public DeletionTime(long markedForDeleteAt, int localDeletionTime)
     {
         this.markedForDeleteAt = markedForDeleteAt;
         this.localDeletionTime = localDeletionTime;
+    }
+
+    /**
+     * Returns whether this DeletionTime is live, that is deletes no columns.
+     */
+    @JsonIgnore
+    public boolean isLive()
+    {
+        return markedForDeleteAt == Long.MIN_VALUE && localDeletionTime == Integer.MAX_VALUE;
     }
 
     @Override
@@ -80,14 +113,19 @@ public class DeletionTime implements Comparable<DeletionTime>
         return localDeletionTime < gcBefore;
     }
 
-    public boolean isDeleted(Column column)
+    public boolean isDeleted(OnDiskAtom atom)
     {
-        return column.isMarkedForDelete() && column.getMarkedForDeleteAt() <= markedForDeleteAt;
+        return atom.timestamp() <= markedForDeleteAt;
     }
 
-    private static class Serializer implements ISerializer<DeletionTime>
+    public long unsharedHeapSize()
     {
-        public void serialize(DeletionTime delTime, DataOutput out) throws IOException
+        return EMPTY_SIZE;
+    }
+
+    public static class Serializer implements ISerializer<DeletionTime>
+    {
+        public void serialize(DeletionTime delTime, DataOutputPlus out) throws IOException
         {
             out.writeInt(delTime.localDeletionTime);
             out.writeLong(delTime.markedForDeleteAt);
@@ -97,10 +135,14 @@ public class DeletionTime implements Comparable<DeletionTime>
         {
             int ldt = in.readInt();
             long mfda = in.readLong();
-            if (mfda == Long.MIN_VALUE && ldt == Integer.MAX_VALUE)
-                return LIVE;
-            else
-                return new DeletionTime(mfda, ldt);
+            return mfda == Long.MIN_VALUE && ldt == Integer.MAX_VALUE
+                 ? LIVE
+                 : new DeletionTime(mfda, ldt);
+        }
+
+        public void skip(DataInput in) throws IOException
+        {
+            FileUtils.skipBytesFully(in, 4 + 8);
         }
 
         public long serializedSize(DeletionTime delTime, TypeSizes typeSizes)

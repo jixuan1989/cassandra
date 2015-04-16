@@ -23,18 +23,19 @@ import java.net.InetAddress;
 import java.util.Collection;
 import java.util.UUID;
 
-import com.google.common.collect.Iterables;
+import static java.nio.charset.StandardCharsets.ISO_8859_1;
 
-import static com.google.common.base.Charsets.ISO_8859_1;
+import com.google.common.collect.Iterables;
 
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.utils.FBUtilities;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 
 
 /**
@@ -42,11 +43,15 @@ import org.apache.commons.lang.StringUtils;
  * application wants to make available to the rest of the nodes in the cluster.
  * Whenever a piece of state needs to be disseminated to the rest of cluster wrap
  * the state in an instance of <i>ApplicationState</i> and add it to the Gossiper.
- * <p/>
+ * <p>
  * e.g. if we want to disseminate load information for node A do the following:
- * <p/>
+ * </p>
+ * <pre>
+ * {@code
  * ApplicationState loadState = new ApplicationState(<string representation of load>);
  * Gossiper.instance.addApplicationState("LOAD STATE", loadState);
+ * }
+ * </pre>
  */
 
 public class VersionedValue implements Comparable<VersionedValue>
@@ -64,7 +69,6 @@ public class VersionedValue implements Comparable<VersionedValue>
     public final static String STATUS_LEAVING = "LEAVING";
     public final static String STATUS_LEFT = "LEFT";
     public final static String STATUS_MOVING = "MOVING";
-    public final static String STATUS_RELOCATING = "RELOCATING";
 
     public final static String REMOVING_TOKEN = "removing";
     public final static String REMOVED_TOKEN = "removed";
@@ -80,7 +84,11 @@ public class VersionedValue implements Comparable<VersionedValue>
     private VersionedValue(String value, int version)
     {
         assert value != null;
-        this.value = value;
+        // blindly interning everything is somewhat suboptimal -- lots of VersionedValues are unique --
+        // but harmless, and interning the non-unique ones saves significant memory.  (Unfortunately,
+        // we don't really have enough information here in VersionedValue to tell the probably-unique
+        // values apart.)  See CASSANDRA-6410.
+        this.value = value.intern();
         this.version = version;
     }
 
@@ -112,6 +120,11 @@ public class VersionedValue implements Comparable<VersionedValue>
         public VersionedValueFactory(IPartitioner partitioner)
         {
             this.partitioner = partitioner;
+        }
+        
+        public VersionedValue cloneWithHigherVersion(VersionedValue value)
+        {
+            return new VersionedValue(value.value);
         }
 
         public VersionedValue bootstrapping(Collection<Token> tokens)
@@ -150,19 +163,13 @@ public class VersionedValue implements Comparable<VersionedValue>
         public VersionedValue left(Collection<Token> tokens, long expireTime)
         {
             return new VersionedValue(versionString(VersionedValue.STATUS_LEFT,
-                                                    Long.toString(expireTime),
-                                                    makeTokenString(tokens)));
+                                                    makeTokenString(tokens),
+                                                    Long.toString(expireTime)));
         }
 
         public VersionedValue moving(Token token)
         {
             return new VersionedValue(VersionedValue.STATUS_MOVING + VersionedValue.DELIMITER + partitioner.getTokenFactory().toString(token));
-        }
-
-        public VersionedValue relocating(Collection<Token> srcTokens)
-        {
-            return new VersionedValue(
-                    versionString(VersionedValue.STATUS_RELOCATING, StringUtils.join(srcTokens, VersionedValue.DELIMITER)));
         }
 
         public VersionedValue hostId(UUID hostId)
@@ -205,6 +212,11 @@ public class VersionedValue implements Comparable<VersionedValue>
             return new VersionedValue(VersionedValue.HIBERNATE + VersionedValue.DELIMITER + value);
         }
 
+        public VersionedValue rpcReady(boolean value)
+        {
+            return new VersionedValue(String.valueOf(value));
+        }
+
         public VersionedValue datacenter(String dcId)
         {
             return new VersionedValue(dcId);
@@ -243,7 +255,7 @@ public class VersionedValue implements Comparable<VersionedValue>
 
     private static class VersionedValueSerializer implements IVersionedSerializer<VersionedValue>
     {
-        public void serialize(VersionedValue value, DataOutput out, int version) throws IOException
+        public void serialize(VersionedValue value, DataOutputPlus out, int version) throws IOException
         {
             out.writeUTF(outValue(value, version));
             out.writeInt(value.version);
@@ -251,35 +263,7 @@ public class VersionedValue implements Comparable<VersionedValue>
 
         private String outValue(VersionedValue value, int version)
         {
-            String outValue = value.value;
-
-            if (version < MessagingService.VERSION_12)
-            {
-                String[] pieces = value.value.split(DELIMITER_STR, -1);
-                String type = pieces[0];
-
-                if ((type.equals(STATUS_NORMAL)) || type.equals(STATUS_BOOTSTRAPPING))
-                {
-                    assert pieces.length >= 2;
-                    outValue = versionString(pieces[0], pieces[1]);
-                }
-
-                if (type.equals(STATUS_LEFT))
-                {
-                    assert pieces.length >= 3;
-
-                    // three component 'left' was adopted starting from Cassandra 1.0
-                    // previous versions have '<type>:<token>' format
-                    outValue = (version < MessagingService.VERSION_10)
-                               ? versionString(pieces[0], pieces[2])
-                               : versionString(pieces[0], pieces[2], pieces[1]);
-                }
-
-                if ((type.equals(REMOVAL_COORDINATOR)) || (type.equals(REMOVING_TOKEN)) || (type.equals(REMOVED_TOKEN)))
-                    throw new RuntimeException(String.format("Unable to serialize %s(%s...) for nodes older than 1.2",
-                                                             VersionedValue.class.getName(), type));
-            }
-            return outValue;
+            return value.value;
         }
 
         public VersionedValue deserialize(DataInput in, int version) throws IOException

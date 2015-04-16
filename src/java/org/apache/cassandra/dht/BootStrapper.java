@@ -18,35 +18,32 @@
 package org.apache.cassandra.dht;
 
 import java.io.DataInput;
-import java.io.DataOutput;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.Condition;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import com.google.common.util.concurrent.ListenableFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.cassandra.config.Schema;
 
-import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.db.Table;
-import org.apache.cassandra.locator.AbstractReplicationStrategy;
-import org.apache.cassandra.locator.TokenMetadata;
-import org.apache.cassandra.net.IAsyncCallback;
-import org.apache.cassandra.net.IVerbHandler;
-import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.service.StorageService;
-import org.apache.cassandra.streaming.OperationType;
-import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.SimpleCondition;
+import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.TypeSizes;
+import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.gms.FailureDetector;
 import org.apache.cassandra.io.IVersionedSerializer;
-import org.apache.cassandra.net.*;
+import org.apache.cassandra.io.util.DataOutputPlus;
+import org.apache.cassandra.locator.AbstractReplicationStrategy;
+import org.apache.cassandra.locator.TokenMetadata;
+import org.apache.cassandra.service.StorageService;
+import org.apache.cassandra.streaming.*;
+import org.apache.cassandra.utils.progress.ProgressEvent;
+import org.apache.cassandra.utils.progress.ProgressEventNotifierSupport;
+import org.apache.cassandra.utils.progress.ProgressEventType;
 
-public class BootStrapper
+public class BootStrapper extends ProgressEventNotifierSupport
 {
     private static final Logger logger = LoggerFactory.getLogger(BootStrapper.class);
 
@@ -55,7 +52,6 @@ public class BootStrapper
     /* token of the node being bootstrapped. */
     protected final Collection<Token> tokens;
     protected final TokenMetadata tokenMetadata;
-    private static final long BOOTSTRAP_TIMEOUT = 30000; // default bootstrap timeout of 30s
 
     public BootStrapper(InetAddress address, Collection<Token> tokens, TokenMetadata tmd)
     {
@@ -64,25 +60,92 @@ public class BootStrapper
 
         this.address = address;
         this.tokens = tokens;
-        tokenMetadata = tmd;
+        this.tokenMetadata = tmd;
     }
 
-    public void bootstrap()
+    public ListenableFuture<StreamState> bootstrap(StreamStateStore stateStore, boolean useStrictConsistency)
     {
-        if (logger.isDebugEnabled())
-            logger.debug("Beginning bootstrap process");
+        logger.debug("Beginning bootstrap process");
 
-        RangeStreamer streamer = new RangeStreamer(tokenMetadata, address, OperationType.BOOTSTRAP);
+        RangeStreamer streamer = new RangeStreamer(tokenMetadata,
+                                                   tokens,
+                                                   address,
+                                                   "Bootstrap",
+                                                   useStrictConsistency,
+                                                   DatabaseDescriptor.getEndpointSnitch(),
+                                                   stateStore);
         streamer.addSourceFilter(new RangeStreamer.FailureDetectorSourceFilter(FailureDetector.instance));
 
-        for (String table : Schema.instance.getNonSystemTables())
+        for (String keyspaceName : Schema.instance.getNonSystemKeyspaces())
         {
-            AbstractReplicationStrategy strategy = Table.open(table).getReplicationStrategy();
-            streamer.addRanges(table, strategy.getPendingAddressRanges(tokenMetadata, tokens, address));
+            AbstractReplicationStrategy strategy = Keyspace.open(keyspaceName).getReplicationStrategy();
+            streamer.addRanges(keyspaceName, strategy.getPendingAddressRanges(tokenMetadata, tokens, address));
         }
 
-        streamer.fetch();
-        StorageService.instance.finishBootstrapping();
+        StreamResultFuture bootstrapStreamResult = streamer.fetchAsync();
+        bootstrapStreamResult.addEventListener(new StreamEventHandler()
+        {
+            private final AtomicInteger receivedFiles = new AtomicInteger();
+            private final AtomicInteger totalFilesToReceive = new AtomicInteger();
+
+            @Override
+            public void handleStreamEvent(StreamEvent event)
+            {
+                switch (event.eventType)
+                {
+                    case STREAM_PREPARED:
+                        StreamEvent.SessionPreparedEvent prepared = (StreamEvent.SessionPreparedEvent) event;
+                        int currentTotal = totalFilesToReceive.addAndGet((int) prepared.session.getTotalFilesToReceive());
+                        ProgressEvent prepareProgress = new ProgressEvent(ProgressEventType.PROGRESS, receivedFiles.get(), currentTotal, "prepare with " + prepared.session.peer + " complete");
+                        fireProgressEvent("bootstrap", prepareProgress);
+                        break;
+
+                    case FILE_PROGRESS:
+                        StreamEvent.ProgressEvent progress = (StreamEvent.ProgressEvent) event;
+                        if (progress.progress.isCompleted())
+                        {
+                            int received = receivedFiles.incrementAndGet();
+                            ProgressEvent currentProgress = new ProgressEvent(ProgressEventType.PROGRESS, received, totalFilesToReceive.get(), "received file " + progress.progress.fileName);
+                            fireProgressEvent("bootstrap", currentProgress);
+                        }
+                        break;
+
+                    case STREAM_COMPLETE:
+                        StreamEvent.SessionCompleteEvent completeEvent = (StreamEvent.SessionCompleteEvent) event;
+                        ProgressEvent completeProgress = new ProgressEvent(ProgressEventType.PROGRESS, receivedFiles.get(), totalFilesToReceive.get(), "session with " + completeEvent.peer + " complete");
+                        fireProgressEvent("bootstrap", completeProgress);
+                        break;
+                }
+            }
+
+            @Override
+            public void onSuccess(StreamState streamState)
+            {
+                ProgressEventType type;
+                String message;
+
+                if (streamState.hasFailedSession())
+                {
+                    type = ProgressEventType.ERROR;
+                    message = "Some bootstrap stream failed";
+                }
+                else
+                {
+                    type = ProgressEventType.SUCCESS;
+                    message = "Bootstrap streaming success";
+                }
+                ProgressEvent currentProgress = new ProgressEvent(type, receivedFiles.get(), totalFilesToReceive.get(), message);
+                fireProgressEvent("bootstrap", currentProgress);
+            }
+
+            @Override
+            public void onFailure(Throwable throwable)
+            {
+                ProgressEvent currentProgress = new ProgressEvent(ProgressEventType.ERROR, receivedFiles.get(), totalFilesToReceive.get(), throwable.getMessage());
+                fireProgressEvent("bootstrap", currentProgress);
+            }
+        });
+        return bootstrapStreamResult;
     }
 
     /**
@@ -90,19 +153,19 @@ public class BootStrapper
      * otherwise, if num_tokens == 1, pick a token to assume half the load of the most-loaded node.
      * else choose num_tokens tokens at random
      */
-    public static Collection<Token> getBootstrapTokens(final TokenMetadata metadata, Map<InetAddress, Double> load) throws ConfigurationException
+    public static Collection<Token> getBootstrapTokens(final TokenMetadata metadata) throws ConfigurationException
     {
         Collection<String> initialTokens = DatabaseDescriptor.getInitialTokens();
         // if user specified tokens, use those
         if (initialTokens.size() > 0)
         {
             logger.debug("tokens manually specified as {}",  initialTokens);
-            List<Token> tokens = new ArrayList<Token>();
+            List<Token> tokens = new ArrayList<>(initialTokens.size());
             for (String tokenString : initialTokens)
             {
                 Token token = StorageService.getPartitioner().getTokenFactory().fromString(tokenString);
                 if (metadata.getEndpoint(token) != null)
-                    throw new ConfigurationException("Bootstraping to existing token " + tokenString + " is not allowed (decommission/removetoken the old node first).");
+                    throw new ConfigurationException("Bootstrapping to existing token " + tokenString + " is not allowed (decommission/removenode the old node first).");
                 tokens.add(token);
             }
             return tokens;
@@ -111,15 +174,16 @@ public class BootStrapper
         int numTokens = DatabaseDescriptor.getNumTokens();
         if (numTokens < 1)
             throw new ConfigurationException("num_tokens must be >= 1");
+
         if (numTokens == 1)
-            return Collections.singleton(getBalancedToken(metadata, load));
+            logger.warn("Picking random token for a single vnode.  You should probably add more vnodes; failing that, you should probably specify the token manually");
 
         return getRandomTokens(metadata, numTokens);
     }
 
     public static Collection<Token> getRandomTokens(TokenMetadata metadata, int numTokens)
     {
-        Set<Token> tokens = new HashSet<Token>(numTokens);
+        Set<Token> tokens = new HashSet<>(numTokens);
         while (tokens.size() < numTokens)
         {
             Token token = StorageService.getPartitioner().getRandomToken();
@@ -129,129 +193,11 @@ public class BootStrapper
         return tokens;
     }
 
-    @Deprecated
-    public static Token getBalancedToken(TokenMetadata metadata, Map<InetAddress, Double> load)
-    {
-        InetAddress maxEndpoint = getBootstrapSource(metadata, load);
-        Token<?> t = getBootstrapTokenFrom(maxEndpoint);
-        logger.info("New token will be " + t + " to assume load from " + maxEndpoint);
-        return t;
-    }
-
-    @Deprecated
-    static InetAddress getBootstrapSource(final TokenMetadata metadata, final Map<InetAddress, Double> load)
-    {
-        // sort first by number of nodes already bootstrapping into a source node's range, then by load.
-        List<InetAddress> endpoints = new ArrayList<InetAddress>(load.size());
-        for (InetAddress endpoint : load.keySet())
-        {
-            if (!metadata.isMember(endpoint) || !FailureDetector.instance.isAlive(endpoint))
-                continue;
-            endpoints.add(endpoint);
-        }
-
-        if (endpoints.isEmpty())
-            throw new RuntimeException("No other nodes seen!  Unable to bootstrap."
-                                       + "If you intended to start a single-node cluster, you should make sure "
-                                       + "your broadcast_address (or listen_address) is listed as a seed.  "
-                                       + "Otherwise, you need to determine why the seed being contacted "
-                                       + "has no knowledge of the rest of the cluster.  Usually, this can be solved "
-                                       + "by giving all nodes the same seed list.");
-        Collections.sort(endpoints, new Comparator<InetAddress>()
-        {
-            public int compare(InetAddress ia1, InetAddress ia2)
-            {
-                int n1 = metadata.pendingRangeChanges(ia1);
-                int n2 = metadata.pendingRangeChanges(ia2);
-                if (n1 != n2)
-                    return -(n1 - n2); // more targets = _less_ priority!
-
-                double load1 = load.get(ia1);
-                double load2 = load.get(ia2);
-                if (load1 == load2)
-                    return 0;
-                return load1 < load2 ? -1 : 1;
-            }
-        });
-
-        InetAddress maxEndpoint = endpoints.get(endpoints.size() - 1);
-        assert !maxEndpoint.equals(FBUtilities.getBroadcastAddress());
-        if (metadata.pendingRangeChanges(maxEndpoint) > 0)
-            throw new RuntimeException("Every node is a bootstrap source! Please specify an initial token manually or wait for an existing bootstrap operation to finish.");
-
-        return maxEndpoint;
-    }
-
-    @Deprecated
-    static Token<?> getBootstrapTokenFrom(InetAddress maxEndpoint)
-    {
-        MessageOut message = new MessageOut(MessagingService.Verb.BOOTSTRAP_TOKEN);
-        int retries = 5;
-        long timeout = Math.max(DatabaseDescriptor.getRpcTimeout(), BOOTSTRAP_TIMEOUT);
-
-        while (retries > 0)
-        {
-            BootstrapTokenCallback btc = new BootstrapTokenCallback();
-            MessagingService.instance().sendRR(message, maxEndpoint, btc, timeout);
-            Token token = btc.getToken(timeout);
-            if (token != null)
-                return token;
-
-            retries--;
-        }
-        throw new RuntimeException("Bootstrap failed, could not obtain token from: " + maxEndpoint);
-    }
-
-    @Deprecated
-    public static class BootstrapTokenVerbHandler implements IVerbHandler
-    {
-        public void doVerb(MessageIn message, int id)
-        {
-            StorageService ss = StorageService.instance;
-            String tokenString = StorageService.getPartitioner().getTokenFactory().toString(ss.getBootstrapToken());
-            MessageOut<String> response = new MessageOut<String>(MessagingService.Verb.INTERNAL_RESPONSE, tokenString, StringSerializer.instance);
-            MessagingService.instance().sendReply(response, id, message.from);
-        }
-    }
-
-    @Deprecated
-    private static class BootstrapTokenCallback implements IAsyncCallback<String>
-    {
-        private volatile Token<?> token;
-        private final Condition condition = new SimpleCondition();
-
-        public Token<?> getToken(long timeout)
-        {
-            boolean success;
-            try
-            {
-                success = condition.await(timeout, TimeUnit.MILLISECONDS);
-            }
-            catch (InterruptedException e)
-            {
-                throw new RuntimeException(e);
-            }
-
-            return success ? token : null;
-        }
-
-        public void response(MessageIn<String> msg)
-        {
-            token = StorageService.getPartitioner().getTokenFactory().fromString(msg.payload);
-            condition.signalAll();
-        }
-
-        public boolean isLatencyForSnitch()
-        {
-            return false;
-        }
-    }
-
     public static class StringSerializer implements IVersionedSerializer<String>
     {
         public static final StringSerializer instance = new StringSerializer();
 
-        public void serialize(String s, DataOutput out, int version) throws IOException
+        public void serialize(String s, DataOutputPlus out, int version) throws IOException
         {
             out.writeUTF(s);
         }

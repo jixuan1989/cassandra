@@ -20,6 +20,7 @@ package org.apache.cassandra.locator;
 import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -33,10 +34,12 @@ import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.ResourceWatcher;
 import org.apache.cassandra.utils.WrappedRunnable;
+import org.apache.commons.lang3.StringUtils;
 
 /**
+ * <p>
  * Used to determine if two IP's are in the same datacenter or on the same rack.
- * <p/>
+ * </p>
  * Based on a properties file in the following format:
  *
  * 10.0.0.13=DC1:RAC2
@@ -73,7 +76,7 @@ public class PropertyFileSnitch extends AbstractNetworkTopologySnitch
         }
         catch (ConfigurationException ex)
         {
-            logger.debug(SNITCH_PROPERTIES_FILENAME + " found, but does not look like a plain file. Will not watch it for changes");
+            logger.error("{} found, but does not look like a plain file. Will not watch it for changes", SNITCH_PROPERTIES_FILENAME);
         }
     }
 
@@ -185,10 +188,17 @@ public class PropertyFileSnitch extends AbstractNetworkTopologySnitch
             throw new ConfigurationException(String.format("Snitch definitions at %s do not define a location for this node's broadcast address %s, nor does it provides a default",
                                                            SNITCH_PROPERTIES_FILENAME, FBUtilities.getBroadcastAddress()));
 
-        logger.debug("loaded network topology {}", FBUtilities.toString(reloadedMap));
+        if (logger.isDebugEnabled())
+        {
+            StringBuilder sb = new StringBuilder();
+            for (Map.Entry<InetAddress, String[]> entry : reloadedMap.entrySet())
+                sb.append(entry.getKey()).append(":").append(Arrays.toString(entry.getValue())).append(", ");
+            logger.debug("Loaded network topology from property file: {}", StringUtils.removeEnd(sb.toString(), ", "));
+        }
+
         endpointMap = reloadedMap;
         if (StorageService.instance != null) // null check tolerates circular dependency; see CASSANDRA-4145
-            StorageService.instance.getTokenMetadata().invalidateCaches();
+            StorageService.instance.getTokenMetadata().invalidateCachedRings();
 
         if (gossipStarted)
             StorageService.instance.gossipSnitchInfo();

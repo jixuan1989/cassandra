@@ -17,14 +17,31 @@
  */
 package org.apache.cassandra.utils;
 
-import java.io.Closeable;
-import java.nio.ByteBuffer;
+import org.apache.cassandra.utils.concurrent.SharedCloseable;
 
-public interface IFilter extends Closeable
+public interface IFilter extends SharedCloseable
 {
-    public abstract void add(ByteBuffer key);
+    public interface FilterKey
+    {
+        /** Places the murmur3 hash of the key in the given long array of size at least two. */
+        void filterHash(long[] dest);
+    }
 
-    public abstract boolean isPresent(ByteBuffer key);
+    void add(FilterKey key);
 
-    public abstract void clear();
+    boolean isPresent(FilterKey key);
+
+    void clear();
+
+    long serializedSize();
+
+    void close();
+
+    IFilter sharedCopy();
+
+    /**
+     * Returns the amount of memory in bytes used off heap.
+     * @return the amount of memory in bytes used off heap
+     */
+    long offHeapSize();
 }

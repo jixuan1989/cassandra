@@ -20,8 +20,12 @@ package org.apache.cassandra.db.marshal;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 
-import org.apache.cassandra.cql.jdbc.JdbcDecimal;
 import org.apache.cassandra.cql3.CQL3Type;
+import org.apache.cassandra.cql3.Constants;
+import org.apache.cassandra.cql3.Term;
+import org.apache.cassandra.serializers.TypeSerializer;
+import org.apache.cassandra.serializers.DecimalSerializer;
+import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 public class DecimalType extends AbstractType<BigDecimal>
@@ -30,37 +34,12 @@ public class DecimalType extends AbstractType<BigDecimal>
 
     DecimalType() {} // singleton
 
-    public int compare(ByteBuffer bb0, ByteBuffer bb1)
+    public int compare(ByteBuffer o1, ByteBuffer o2)
     {
-        if (bb0.remaining() == 0)
-        {
-            return bb1.remaining() == 0 ? 0 : -1;
-        }
-        if (bb1.remaining() == 0)
-        {
-            return 1;
-        }
+        if (!o1.hasRemaining() || !o2.hasRemaining())
+            return o1.hasRemaining() ? 1 : o2.hasRemaining() ? -1 : 0;
 
-        return compose(bb0).compareTo(compose(bb1));
-    }
-
-    public BigDecimal compose(ByteBuffer bytes)
-    {
-        return JdbcDecimal.instance.compose(bytes);
-    }
-
-    /**
-     * The bytes of the ByteBuffer are made up of 4 bytes of int containing the scale
-     * followed by the n bytes it takes to store a BigInteger.
-     */
-    public ByteBuffer decompose(BigDecimal value)
-    {
-        return JdbcDecimal.instance.decompose(value);
-    }
-
-    public String getString(ByteBuffer bytes)
-    {
-        return JdbcDecimal.instance.getString(bytes);
+        return compose(o1).compareTo(compose(o2));
     }
 
     public ByteBuffer fromString(String source) throws MarshalException
@@ -82,13 +61,32 @@ public class DecimalType extends AbstractType<BigDecimal>
         return decompose(decimal);
     }
 
-    public void validate(ByteBuffer bytes) throws MarshalException
+    @Override
+    public Term fromJSONObject(Object parsed) throws MarshalException
     {
-        // no useful check for invalid decimals.
+        try
+        {
+            return new Constants.Value(getSerializer().serialize(new BigDecimal(parsed.toString())));
+        }
+        catch (NumberFormatException exc)
+        {
+            throw new MarshalException(String.format("Value '%s' is not a valid representation of a decimal value", parsed));
+        }
+    }
+
+    @Override
+    public String toJSONString(ByteBuffer buffer, int protocolVersion)
+    {
+        return getSerializer().deserialize(buffer).toString();
     }
 
     public CQL3Type asCQL3Type()
     {
         return CQL3Type.Native.DECIMAL;
+    }
+
+    public TypeSerializer<BigDecimal> getSerializer()
+    {
+        return DecimalSerializer.instance;
     }
 }

@@ -24,6 +24,7 @@ import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.io.FSError;
+import org.apache.cassandra.io.sstable.format.SSTableWriter;
 
 /**
  * A SSTable writer that assumes rows are in (partitioner) sorted order.
@@ -56,8 +57,7 @@ public class SSTableSimpleWriter extends AbstractSSTableSimpleWriter
                                AbstractType<?> comparator,
                                AbstractType<?> subComparator)
     {
-        this(directory,
-             new CFMetaData(keyspace, columnFamily, subComparator == null ? ColumnFamilyType.Standard : ColumnFamilyType.Super, comparator, subComparator), partitioner);
+        this(directory, CFMetaData.denseCFMetaData(keyspace, columnFamily, comparator, subComparator), partitioner);
     }
 
     public SSTableSimpleWriter(File directory, CFMetaData metadata, IPartitioner partitioner)
@@ -72,7 +72,7 @@ public class SSTableSimpleWriter extends AbstractSSTableSimpleWriter
         {
             if (currentKey != null)
                 writeRow(currentKey, columnFamily);
-            writer.closeAndOpenReader();
+            writer.close();
         }
         catch (FSError e)
         {
@@ -88,6 +88,6 @@ public class SSTableSimpleWriter extends AbstractSSTableSimpleWriter
 
     protected ColumnFamily getColumnFamily()
     {
-        return TreeMapBackedSortedColumns.factory.create(metadata);
+        return ArrayBackedSortedColumns.factory.create(metadata);
     }
 }

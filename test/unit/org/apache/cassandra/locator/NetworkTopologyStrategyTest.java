@@ -29,7 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import junit.framework.Assert;
+import org.junit.Assert;
 
 import org.junit.Test;
 import org.slf4j.Logger;
@@ -37,7 +37,7 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.dht.StringToken;
+import org.apache.cassandra.dht.OrderPreservingPartitioner.StringToken;
 import org.apache.cassandra.dht.Token;
 
 import com.google.common.collect.HashMultimap;
@@ -45,7 +45,7 @@ import com.google.common.collect.Multimap;
 
 public class NetworkTopologyStrategyTest
 {
-    private String table = "Keyspace1";
+    private String keyspaceName = "Keyspace1";
     private static final Logger logger = LoggerFactory.getLogger(NetworkTopologyStrategyTest.class);
 
     @Test
@@ -62,7 +62,7 @@ public class NetworkTopologyStrategyTest
         configOptions.put("DC3", "1");
 
         // Set the localhost to the tokenmetadata. Embedded cassandra way?
-        NetworkTopologyStrategy strategy = new NetworkTopologyStrategy(table, metadata, snitch, configOptions);
+        NetworkTopologyStrategy strategy = new NetworkTopologyStrategy(keyspaceName, metadata, snitch, configOptions);
         assert strategy.getReplicationFactor("DC1") == 3;
         assert strategy.getReplicationFactor("DC2") == 2;
         assert strategy.getReplicationFactor("DC3") == 1;
@@ -86,7 +86,7 @@ public class NetworkTopologyStrategyTest
         configOptions.put("DC3", "0");
 
         // Set the localhost to the tokenmetadata. Embedded cassandra way?
-        NetworkTopologyStrategy strategy = new NetworkTopologyStrategy(table, metadata, snitch, configOptions);
+        NetworkTopologyStrategy strategy = new NetworkTopologyStrategy(keyspaceName, metadata, snitch, configOptions);
         assert strategy.getReplicationFactor("DC1") == 3;
         assert strategy.getReplicationFactor("DC2") == 3;
         assert strategy.getReplicationFactor("DC3") == 0;
@@ -121,14 +121,14 @@ public class NetworkTopologyStrategyTest
                     byte[] ipBytes = new byte[]{10, (byte)dc, (byte)rack, (byte)ep};
                     InetAddress address = InetAddress.getByAddress(ipBytes);
                     StringToken token = new StringToken(String.format("%02x%02x%02x", ep, rack, dc));
-                    logger.debug("adding node " + address + " at " + token);
+                    logger.debug("adding node {} at {}", address, token);
                     tokens.put(address, token);
                 }
             }
         }
         metadata.updateNormalTokens(tokens);
 
-        NetworkTopologyStrategy strategy = new NetworkTopologyStrategy(table, metadata, snitch, configOptions);
+        NetworkTopologyStrategy strategy = new NetworkTopologyStrategy(keyspaceName, metadata, snitch, configOptions);
 
         for (String testToken : new String[]{"123456", "200000", "000402", "ffffff", "400200"})
         {
@@ -137,7 +137,7 @@ public class NetworkTopologyStrategyTest
 
             Assert.assertEquals(totalRF, endpoints.size());
             Assert.assertEquals(totalRF, epSet.size());
-            logger.debug(testToken + ": " + endpoints.toString());
+            logger.debug("{}: {}", testToken, endpoints);
         }
     }
 

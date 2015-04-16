@@ -17,14 +17,17 @@
  */
 package org.apache.cassandra.metrics;
 
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-import com.yammer.metrics.Metrics;
-import com.yammer.metrics.core.Counter;
-import com.yammer.metrics.core.MetricName;
-import com.yammer.metrics.core.Timer;
+import com.codahale.metrics.Counter;
+import com.codahale.metrics.Timer;
 
-import org.apache.cassandra.utils.EstimatedHistogram;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Lists;
+
+import static org.apache.cassandra.metrics.CassandraMetricsRegistry.Metrics;
+
 
 /**
  * Metrics about latencies
@@ -36,37 +39,33 @@ public class LatencyMetrics
     /** Total latency in micro sec */
     public final Counter totalLatency;
 
+    /** parent metrics to replicate any updates to **/
+    private List<LatencyMetrics> parents = Lists.newArrayList();
+    
     protected final MetricNameFactory factory;
     protected final String namePrefix;
-
-    @Deprecated public final EstimatedHistogram totalLatencyHistogram = new EstimatedHistogram();
-    @Deprecated public final EstimatedHistogram recentLatencyHistogram = new EstimatedHistogram();
-    protected long lastLatency;
-    protected long lastOpCount;
 
     /**
      * Create LatencyMetrics with given group, type, and scope. Name prefix for each metric will be empty.
      *
-     * @param group Group name
      * @param type Type name
      * @param scope Scope
      */
-    public LatencyMetrics(String group, String type, String scope)
+    public LatencyMetrics(String type, String scope)
     {
-        this(group, type, "", scope);
+        this(type, "", scope);
     }
 
     /**
      * Create LatencyMetrics with given group, type, prefix to append to each metric name, and scope.
      *
-     * @param group Group name
      * @param type Type name
      * @param namePrefix Prefix to append to each metric name
      * @param scope Scope of metrics
      */
-    public LatencyMetrics(String group, String type, String namePrefix, String scope)
+    public LatencyMetrics(String type, String namePrefix, String scope)
     {
-        this(new LatencyMetricNameFactory(group, type, scope), namePrefix);
+        this(new DefaultNameFactory(type, scope), namePrefix);
     }
 
     /**
@@ -80,63 +79,39 @@ public class LatencyMetrics
         this.factory = factory;
         this.namePrefix = namePrefix;
 
-        latency = Metrics.newTimer(factory.createMetricName(namePrefix + "Latency"), TimeUnit.MICROSECONDS, TimeUnit.SECONDS);
-        totalLatency = Metrics.newCounter(factory.createMetricName(namePrefix + "TotalLatency"));
+        latency = Metrics.timer(factory.createMetricName(namePrefix + "Latency"));
+        totalLatency = Metrics.counter(factory.createMetricName(namePrefix + "TotalLatency"));
+    }
+    
+    /**
+     * Create LatencyMetrics with given group, type, prefix to append to each metric name, and scope.  Any updates
+     * to this will also run on parent
+     *
+     * @param factory MetricName factory to use
+     * @param namePrefix Prefix to append to each metric name
+     * @param parents any amount of parents to replicate updates to
+     */
+    public LatencyMetrics(MetricNameFactory factory, String namePrefix, LatencyMetrics ... parents)
+    {
+        this(factory, namePrefix);
+        this.parents.addAll(ImmutableList.copyOf(parents));
     }
 
     /** takes nanoseconds **/
     public void addNano(long nanos)
     {
         // convert to microseconds. 1 millionth
-        addMicro(nanos / 1000);
-    }
-
-    public void addMicro(long micros)
-    {
-        latency.update(micros, TimeUnit.MICROSECONDS);
-        totalLatency.inc(micros);
-        totalLatencyHistogram.add(micros);
-        recentLatencyHistogram.add(micros);
+        latency.update(nanos, TimeUnit.NANOSECONDS);
+        totalLatency.inc(nanos / 1000);
+        for(LatencyMetrics parent : parents)
+        {
+            parent.addNano(nanos);
+        }
     }
 
     public void release()
     {
-        Metrics.defaultRegistry().removeMetric(factory.createMetricName(namePrefix + "Latency"));
-        Metrics.defaultRegistry().removeMetric(factory.createMetricName(namePrefix + "TotalLatency"));
-    }
-
-    @Deprecated
-    public double getRecentLatency()
-    {
-        long ops = latency.count();
-        long n = totalLatency.count();
-        try
-        {
-            return ((double) n - lastLatency) / (ops - lastOpCount);
-        }
-        finally
-        {
-            lastLatency = n;
-            lastOpCount = ops;
-        }
-    }
-
-    static class LatencyMetricNameFactory implements MetricNameFactory
-    {
-        private final String group;
-        private final String type;
-        private final String scope;
-
-        LatencyMetricNameFactory(String group, String type, String scope)
-        {
-            this.group = group;
-            this.type = type;
-            this.scope = scope;
-        }
-
-        public MetricName createMetricName(String metricName)
-        {
-            return new MetricName(group, type, metricName, scope);
-        }
+        Metrics.remove(factory.createMetricName(namePrefix + "Latency"));
+        Metrics.remove(factory.createMetricName(namePrefix + "TotalLatency"));
     }
 }

@@ -19,6 +19,7 @@
  */
 package org.apache.cassandra.io.util;
 
+import org.apache.cassandra.service.FileCacheService;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 import java.io.File;
@@ -28,6 +29,10 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.util.Arrays;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.apache.cassandra.Util.expectEOF;
 import static org.apache.cassandra.Util.expectException;
@@ -338,30 +343,36 @@ public class BufferedRandomAccessFileTest
             for (final int offset : Arrays.asList(0, 8))
             {
                 File file1 = writeTemporaryFile(new byte[16]);
-                final RandomAccessReader file = RandomAccessReader.open(file1, bufferSize, null);
-                expectEOF(new Callable<Object>()
+                try (final ChannelProxy channel = new ChannelProxy(file1);
+                     final RandomAccessReader file = RandomAccessReader.open(channel, bufferSize, null))
                 {
-                    public Object call() throws IOException
+                    expectEOF(new Callable<Object>()
                     {
-                        file.readFully(target, offset, 17);
-                        return null;
-                    }
-                });
+                        public Object call() throws IOException
+                        {
+                            file.readFully(target, offset, 17);
+                            return null;
+                        }
+                    });
+                }
             }
 
             // first read is ok but eventually EOFs
             for (final int n : Arrays.asList(1, 2, 4, 8))
             {
                 File file1 = writeTemporaryFile(new byte[16]);
-                final RandomAccessReader file = RandomAccessReader.open(file1, bufferSize, null);
-                expectEOF(new Callable<Object>()
+                try (final ChannelProxy channel = new ChannelProxy(file1);
+                     final RandomAccessReader file = RandomAccessReader.open(channel, bufferSize, null))
                 {
-                    public Object call() throws IOException
+                    expectEOF(new Callable<Object>()
                     {
-                        while (true)
-                            file.readFully(target, 0, n);
-                    }
-                });
+                        public Object call() throws IOException
+                        {
+                            while (true)
+                                file.readFully(target, 0, n);
+                        }
+                    });
+                }
             }
         }
     }
@@ -369,7 +380,10 @@ public class BufferedRandomAccessFileTest
     @Test
     public void testNotEOF() throws IOException
     {
-        assertEquals(1, RandomAccessReader.open(writeTemporaryFile(new byte[1])).read(new byte[2]));
+        try (final RandomAccessReader reader = RandomAccessReader.open(writeTemporaryFile(new byte[1])))
+        {
+            assertEquals(1, reader.read(new byte[2]));
+        }
     }
 
     @Test
@@ -408,15 +422,17 @@ public class BufferedRandomAccessFileTest
         tmpFile.deleteOnExit();
 
         // Create the BRAF by filename instead of by file.
-        final RandomAccessReader r = RandomAccessReader.open(new File(tmpFile.getPath()));
-        assert tmpFile.getPath().equals(r.getPath());
-
-        // Create a mark and move the rw there.
-        final FileMark mark = r.mark();
-        r.reset(mark);
-
-        // Expect this call to succeed.
-        r.bytesPastMark(mark);
+        try (final RandomAccessReader r = RandomAccessReader.open(new File(tmpFile.getPath())))
+        {
+            assert tmpFile.getPath().equals(r.getPath());
+    
+            // Create a mark and move the rw there.
+            final FileMark mark = r.mark();
+            r.reset(mark);
+    
+            // Expect this call to succeed.
+            r.bytesPastMark(mark);
+        }
     }
 
     @Test
@@ -450,11 +466,13 @@ public class BufferedRandomAccessFileTest
             }
         }, ClosedChannelException.class);
 
-        RandomAccessReader copy = RandomAccessReader.open(new File(r.getPath()));
-        ByteBuffer contents = copy.readBytes((int) copy.length());
-
-        assertEquals(contents.limit(), data.length);
-        assertEquals(ByteBufferUtil.compare(contents, data), 0);
+        try (RandomAccessReader copy = RandomAccessReader.open(new File(r.getPath())))
+        {
+            ByteBuffer contents = copy.readBytes((int) copy.length());
+    
+            assertEquals(contents.limit(), data.length);
+            assertEquals(ByteBufferUtil.compare(contents, data), 0);
+        }
     }
 
     @Test
@@ -495,16 +513,85 @@ public class BufferedRandomAccessFileTest
     @Test (expected = AssertionError.class)
     public void testAssertionErrorWhenBytesPastMarkIsNegative() throws IOException
     {
-        SequentialWriter w = createTempFile("brafAssertionErrorWhenBytesPastMarkIsNegative");
-        w.write(new byte[30]);
-        w.close();
+        try (SequentialWriter w = createTempFile("brafAssertionErrorWhenBytesPastMarkIsNegative"))
+        {
+            w.write(new byte[30]);
+            w.flush();
+    
+            try (RandomAccessReader r = RandomAccessReader.open(w))
+            {
+                r.seek(10);
+                r.mark();
+        
+                r.seek(0);
+                r.bytesPastMark();
+            }
+        }
+    }
 
-        RandomAccessReader r = RandomAccessReader.open(w);
-        r.seek(10);
-        r.mark();
+    @Test
+    public void testFileCacheService() throws IOException, InterruptedException
+    {
+        //see https://issues.apache.org/jira/browse/CASSANDRA-7756
 
-        r.seek(0);
-        r.bytesPastMark();
+        final FileCacheService.CacheKey cacheKey = new FileCacheService.CacheKey();
+        final int THREAD_COUNT = 40;
+        ExecutorService executorService = Executors.newFixedThreadPool(THREAD_COUNT);
+
+        SequentialWriter w1 = createTempFile("fscache1");
+        SequentialWriter w2 = createTempFile("fscache2");
+
+        w1.write(new byte[30]);
+        w1.close();
+
+        w2.write(new byte[30]);
+        w2.close();
+
+        for (int i = 0; i < 20; i++)
+        {
+
+
+            RandomAccessReader r1 = RandomAccessReader.open(w1);
+            RandomAccessReader r2 = RandomAccessReader.open(w2);
+
+
+            FileCacheService.instance.put(cacheKey, r1);
+            FileCacheService.instance.put(cacheKey, r2);
+
+            final CountDownLatch finished = new CountDownLatch(THREAD_COUNT);
+            final AtomicBoolean hadError = new AtomicBoolean(false);
+
+            for (int k = 0; k < THREAD_COUNT; k++)
+            {
+                executorService.execute( new Runnable()
+                {
+                    @Override
+                    public void run()
+                    {
+                        try
+                        {
+                            long size = FileCacheService.instance.sizeInBytes();
+
+                            while (size > 0)
+                                size = FileCacheService.instance.sizeInBytes();
+                        }
+                        catch (Throwable t)
+                        {
+                            t.printStackTrace();
+                            hadError.set(true);
+                        }
+                        finally
+                        {
+                            finished.countDown();
+                        }
+                    }
+                });
+
+            }
+
+            finished.await();
+            assert !hadError.get();
+        }
     }
 
     @Test
@@ -534,34 +621,6 @@ public class BufferedRandomAccessFileTest
                 return null;
             }
         }, IllegalArgumentException.class);
-
-        // Any write() call should fail
-        expectException(new Callable<Object>()
-        {
-            public Object call() throws IOException
-            {
-                copy.write(1);
-                return null;
-            }
-        }, UnsupportedOperationException.class);
-
-        expectException(new Callable<Object>()
-        {
-            public Object call() throws IOException
-            {
-                copy.write(new byte[1]);
-                return null;
-            }
-        }, UnsupportedOperationException.class);
-
-        expectException(new Callable<Object>()
-        {
-            public Object call() throws IOException
-            {
-                copy.write(new byte[3], 0, 2);
-                return null;
-            }
-        }, UnsupportedOperationException.class);
 
         copy.seek(0);
         copy.skipBytes(5);
@@ -601,16 +660,10 @@ public class BufferedRandomAccessFileTest
     public void testSetNegativeLength() throws IOException, IllegalArgumentException
     {
         File tmpFile = File.createTempFile("set_negative_length", "bin");
-        SequentialWriter file = SequentialWriter.open(tmpFile);
-        file.truncate(-8L);
-    }
-
-    @Test (expected=IOException.class)
-    public void testSetLengthDuringReadMode() throws IOException
-    {
-        File tmpFile = File.createTempFile("set_length_during_read_mode", "bin");
-        RandomAccessReader file = RandomAccessReader.open(tmpFile);
-        file.setLength(4L);
+        try (SequentialWriter file = SequentialWriter.open(tmpFile))
+        {
+            file.truncate(-8L);
+        }
     }
 
     private SequentialWriter createTempFile(String name) throws IOException
