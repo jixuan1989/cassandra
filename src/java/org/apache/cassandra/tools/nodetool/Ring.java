@@ -65,14 +65,14 @@ public class Ring extends NodeToolCmd
             @Override
             public int compare(String first, String second)
             {
-                return ((Integer) first.length()).compareTo(second.length());
+            	return Integer.compare(first.length(), second.length());
             }
         }).length();
 
         String formatPlaceholder = "%%-%ds  %%-12s%%-7s%%-8s%%-16s%%-20s%%-44s%%n";
         String format = format(formatPlaceholder, maxAddressLength);
 
-        StringBuffer errors = new StringBuffer();
+        StringBuilder errors = new StringBuilder();
         boolean showEffectiveOwnership = true;
         // Calculate per-token ownership of the ring
         Map<InetAddress, Float> ownerships;
@@ -83,12 +83,12 @@ public class Ring extends NodeToolCmd
         catch (IllegalStateException ex)
         {
             ownerships = probe.getOwnership();
-            errors.append("Note: " + ex.getMessage() + "%n");
+            errors.append("Note: ").append(ex.getMessage()).append("%n");
             showEffectiveOwnership = false;
         }
         catch (IllegalArgumentException ex)
         {
-            System.out.printf("%nError: " + ex.getMessage() + "%n");
+            System.out.printf("%nError: %s%n", ex.getMessage());
             return;
         }
 

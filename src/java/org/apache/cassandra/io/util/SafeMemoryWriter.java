@@ -18,7 +18,6 @@
 */
 package org.apache.cassandra.io.util;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -26,6 +25,7 @@ public class SafeMemoryWriter extends DataOutputBuffer
 {
     private SafeMemory memory;
 
+    @SuppressWarnings("resource")
     public SafeMemoryWriter(long initialCapacity)
     {
         this(new SafeMemory(initialCapacity));
@@ -42,8 +42,10 @@ public class SafeMemoryWriter extends DataOutputBuffer
         return memory;
     }
 
-    protected void reallocate(long newCapacity)
+    @Override
+    protected void reallocate(long count)
     {
+        long newCapacity = calculateNewSize(count);
         if (newCapacity != capacity())
         {
             long position = length();
@@ -71,6 +73,11 @@ public class SafeMemoryWriter extends DataOutputBuffer
         memory.close();
     }
 
+    public Throwable close(Throwable accumulate)
+    {
+        return memory.close(accumulate);
+    }
+
     public long length()
     {
         return tailOffset(memory) +  buffer.position();
@@ -86,6 +93,12 @@ public class SafeMemoryWriter extends DataOutputBuffer
     {
         super.order(order);
         return this;
+    }
+
+    @Override
+    public long validateReallocation(long newSize)
+    {
+        return newSize;
     }
 
     private static long tailOffset(Memory memory)

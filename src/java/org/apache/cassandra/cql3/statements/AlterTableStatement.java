@@ -17,51 +17,56 @@
  */
 package org.apache.cassandra.cql3.statements;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.stream.Collectors;
+
+import com.google.common.collect.Iterables;
 
 import org.apache.cassandra.auth.Permission;
-import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.config.*;
 import org.apache.cassandra.cql3.*;
-import org.apache.cassandra.db.marshal.*;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.cassandra.db.marshal.CollectionType;
+import org.apache.cassandra.db.marshal.CounterColumnType;
+import org.apache.cassandra.db.marshal.ReversedType;
+import org.apache.cassandra.db.view.View;
 import org.apache.cassandra.exceptions.*;
+import org.apache.cassandra.schema.IndexMetadata;
+import org.apache.cassandra.schema.Indexes;
+import org.apache.cassandra.schema.TableParams;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.MigrationManager;
 import org.apache.cassandra.transport.Event;
-
-import static org.apache.cassandra.thrift.ThriftValidation.validateColumnFamily;
+import org.apache.cassandra.utils.*;
 
 public class AlterTableStatement extends SchemaAlteringStatement
 {
-    public static enum Type
+    public enum Type
     {
         ADD, ALTER, DROP, OPTS, RENAME
     }
 
     public final Type oType;
-    public final CQL3Type.Raw validator;
-    public final ColumnIdentifier.Raw rawColumnName;
-    private final CFPropDefs cfProps;
-    private final Map<ColumnIdentifier.Raw, ColumnIdentifier.Raw> renames;
-    private final boolean isStatic; // Only for ALTER ADD
+    private final TableAttributes attrs;
+    private final Map<ColumnDefinition.Raw, ColumnDefinition.Raw> renames;
+    private final List<AlterTableStatementColumn> colNameList;
+    private final Long deleteTimestamp;
 
     public AlterTableStatement(CFName name,
                                Type type,
-                               ColumnIdentifier.Raw columnName,
-                               CQL3Type.Raw validator,
-                               CFPropDefs cfProps,
-                               Map<ColumnIdentifier.Raw, ColumnIdentifier.Raw> renames,
-                               boolean isStatic)
+                               List<AlterTableStatementColumn> colDataList,
+                               TableAttributes attrs,
+                               Map<ColumnDefinition.Raw, ColumnDefinition.Raw> renames,
+                               Long deleteTimestamp)
     {
         super(name);
         this.oType = type;
-        this.rawColumnName = columnName;
-        this.validator = validator; // used only for ADD/ALTER commands
-        this.cfProps = cfProps;
+        this.colNameList = colDataList;
+        this.attrs = attrs;
         this.renames = renames;
-        this.isStatic = isStatic;
+        this.deleteTimestamp = deleteTimestamp == null ? FBUtilities.timestampMicros() : deleteTimestamp;
     }
 
     public void checkAccess(ClientState state) throws UnauthorizedException, InvalidRequestException
@@ -74,223 +79,321 @@ public class AlterTableStatement extends SchemaAlteringStatement
         // validated in announceMigration()
     }
 
-    public boolean announceMigration(boolean isLocalOnly) throws RequestValidationException
+    public Event.SchemaChange announceMigration(boolean isLocalOnly) throws RequestValidationException
     {
-        CFMetaData meta = validateColumnFamily(keyspace(), columnFamily());
-        CFMetaData cfm = meta.copy();
+        CFMetaData meta = Validation.validateColumnFamily(keyspace(), columnFamily());
+        if (meta.isView())
+            throw new InvalidRequestException("Cannot use ALTER TABLE on Materialized View");
 
-        CQL3Type validator = this.validator == null ? null : this.validator.prepare(keyspace());
+        CFMetaData cfm = meta.copy();
         ColumnIdentifier columnName = null;
         ColumnDefinition def = null;
-        if (rawColumnName != null)
-        {
-            columnName = rawColumnName.prepare(cfm);
-            def = cfm.getColumnDefinition(columnName);
-        }
+        CQL3Type.Raw dataType = null;
+        boolean isStatic = false;
+        CQL3Type validator = null;
+
+        List<ViewDefinition> viewUpdates = null;
+        Iterable<ViewDefinition> views = View.findAll(keyspace(), columnFamily());
 
         switch (oType)
         {
             case ADD:
-                assert columnName != null;
-                if (cfm.comparator.isDense())
+                if (cfm.isDense())
                     throw new InvalidRequestException("Cannot add new column to a COMPACT STORAGE table");
 
-                if (isStatic)
+                for (AlterTableStatementColumn colData : colNameList)
                 {
-                    if (!cfm.comparator.isCompound())
-                        throw new InvalidRequestException("Static columns are not allowed in COMPACT STORAGE tables");
-                    if (cfm.clusteringColumns().isEmpty())
-                        throw new InvalidRequestException("Static columns are only useful (and thus allowed) if the table has at least one clustering column");
-                }
+                    columnName = colData.getColumnName().getIdentifier(cfm);
+                    def = cfm.getColumnDefinition(columnName);
+                    dataType = colData.getColumnType();
+                    assert dataType != null;
+                    isStatic = colData.getStaticType();
+                    validator = dataType.prepare(keyspace());
 
-                if (def != null)
-                {
-                    switch (def.kind)
+
+                    if (isStatic)
                     {
-                        case PARTITION_KEY:
-                        case CLUSTERING_COLUMN:
-                            throw new InvalidRequestException(String.format("Invalid column name %s because it conflicts with a PRIMARY KEY part", columnName));
-                        default:
-                            throw new InvalidRequestException(String.format("Invalid column name %s because it conflicts with an existing column", columnName));
-                    }
-                }
-
-                // Cannot re-add a dropped counter column. See #7831.
-                if (meta.isCounter() && meta.getDroppedColumns().containsKey(columnName))
-                    throw new InvalidRequestException(String.format("Cannot re-add previously dropped counter column %s", columnName));
-
-                AbstractType<?> type = validator.getType();
-                if (type.isCollection() && type.isMultiCell())
-                {
-                    if (!cfm.comparator.supportCollections())
-                        throw new InvalidRequestException("Cannot use non-frozen collections with a non-composite PRIMARY KEY");
-                    if (cfm.isSuper())
-                        throw new InvalidRequestException("Cannot use non-frozen collections with super column families");
-
-                    // If there used to be a collection column with the same name (that has been dropped), it will
-                    // still be appear in the ColumnToCollectionType because or reasons explained on #6276. The same
-                    // reason mean that we can't allow adding a new collection with that name (see the ticket for details).
-                    if (cfm.comparator.hasCollections())
-                    {
-                        CollectionType previous = cfm.comparator.collectionType() == null ? null : cfm.comparator.collectionType().defined.get(columnName.bytes);
-                        if (previous != null && !type.isCompatibleWith(previous))
-                            throw new InvalidRequestException(String.format("Cannot add a collection with the name %s " +
-                                        "because a collection with the same name and a different type has already been used in the past", columnName));
+                        if (!cfm.isCompound())
+                            throw new InvalidRequestException("Static columns are not allowed in COMPACT STORAGE tables");
+                        if (cfm.clusteringColumns().isEmpty())
+                            throw new InvalidRequestException("Static columns are only useful (and thus allowed) if the table has at least one clustering column");
                     }
 
-                    cfm.comparator = cfm.comparator.addOrUpdateCollection(columnName, (CollectionType)type);
-                }
+                    if (def != null)
+                    {
+                        switch (def.kind)
+                        {
+                            case PARTITION_KEY:
+                            case CLUSTERING:
+                                throw new InvalidRequestException(String.format("Invalid column name %s because it conflicts with a PRIMARY KEY part", columnName));
+                            default:
+                                throw new InvalidRequestException(String.format("Invalid column name %s because it conflicts with an existing column", columnName));
+                        }
+                    }
 
-                Integer componentIndex = cfm.comparator.isCompound() ? cfm.comparator.clusteringPrefixSize() : null;
-                cfm.addColumnDefinition(isStatic
-                                        ? ColumnDefinition.staticDef(cfm, columnName.bytes, type, componentIndex)
-                                        : ColumnDefinition.regularDef(cfm, columnName.bytes, type, componentIndex));
+                    // Cannot re-add a dropped counter column. See #7831.
+                    if (meta.isCounter() && meta.getDroppedColumns().containsKey(columnName.bytes))
+                        throw new InvalidRequestException(String.format("Cannot re-add previously dropped counter column %s", columnName));
+
+                    AbstractType<?> type = validator.getType();
+                    if (type.isCollection() && type.isMultiCell())
+                    {
+                        if (!cfm.isCompound())
+                            throw new InvalidRequestException("Cannot use non-frozen collections in COMPACT STORAGE tables");
+                        if (cfm.isSuper())
+                            throw new InvalidRequestException("Cannot use non-frozen collections with super column families");
+
+                        // If there used to be a non-frozen collection column with the same name (that has been dropped),
+                        // we could still have some data using the old type, and so we can't allow adding a collection
+                        // with the same name unless the types are compatible (see #6276).
+                        CFMetaData.DroppedColumn dropped = cfm.getDroppedColumns().get(columnName.bytes);
+                        if (dropped != null && dropped.type instanceof CollectionType
+                            && dropped.type.isMultiCell() && !type.isCompatibleWith(dropped.type))
+                        {
+                            String message =
+                                String.format("Cannot add a collection with the name %s because a collection with the same name"
+                                              + " and a different type (%s) has already been used in the past",
+                                              columnName,
+                                              dropped.type.asCQL3Type());
+                            throw new InvalidRequestException(message);
+                        }
+                    }
+
+                    cfm.addColumnDefinition(isStatic
+                                            ? ColumnDefinition.staticDef(cfm, columnName.bytes, type)
+                                            : ColumnDefinition.regularDef(cfm, columnName.bytes, type));
+
+                    // Adding a column to a table which has an include all view requires the column to be added to the view
+                    // as well
+                    if (!isStatic)
+                    {
+                        for (ViewDefinition view : views)
+                        {
+                            if (view.includeAllColumns)
+                            {
+                                ViewDefinition viewCopy = view.copy();
+                                viewCopy.metadata.addColumnDefinition(ColumnDefinition.regularDef(viewCopy.metadata, columnName.bytes, type));
+                                if (viewUpdates == null)
+                                    viewUpdates = new ArrayList<>();
+                                viewUpdates.add(viewCopy);
+                            }
+                        }
+                    }
+                }
                 break;
 
             case ALTER:
-                assert columnName != null;
+                columnName = colNameList.get(0).getColumnName().getIdentifier(cfm);
+                def = cfm.getColumnDefinition(columnName);
+                dataType = colNameList.get(0).getColumnType();
+                assert dataType != null;
+                validator = dataType.prepare(keyspace());
+
                 if (def == null)
                     throw new InvalidRequestException(String.format("Column %s was not found in table %s", columnName, columnFamily()));
 
-                AbstractType<?> validatorType = validator.getType();
-                switch (def.kind)
-                {
-                    case PARTITION_KEY:
-                        if (validatorType instanceof CounterColumnType)
-                            throw new InvalidRequestException(String.format("counter type is not supported for PRIMARY KEY part %s", columnName));
-                        if (cfm.getKeyValidator() instanceof CompositeType)
-                        {
-                            List<AbstractType<?>> oldTypes = ((CompositeType) cfm.getKeyValidator()).types;
-                            if (!validatorType.isValueCompatibleWith(oldTypes.get(def.position())))
-                                throw new ConfigurationException(String.format("Cannot change %s from type %s to type %s: types are incompatible.",
-                                                                               columnName,
-                                                                               oldTypes.get(def.position()).asCQL3Type(),
-                                                                               validator));
-
-                            List<AbstractType<?>> newTypes = new ArrayList<AbstractType<?>>(oldTypes);
-                            newTypes.set(def.position(), validatorType);
-                            cfm.keyValidator(CompositeType.getInstance(newTypes));
-                        }
-                        else
-                        {
-                            if (!validatorType.isValueCompatibleWith(cfm.getKeyValidator()))
-                                throw new ConfigurationException(String.format("Cannot change %s from type %s to type %s: types are incompatible.",
-                                                                               columnName,
-                                                                               cfm.getKeyValidator().asCQL3Type(),
-                                                                               validator));
-                            cfm.keyValidator(validatorType);
-                        }
-                        break;
-                    case CLUSTERING_COLUMN:
-                        AbstractType<?> oldType = cfm.comparator.subtype(def.position());
-                        // Note that CFMetaData.validateCompatibility already validate the change we're about to do. However, the error message it
-                        // sends is a bit cryptic for a CQL3 user, so validating here for a sake of returning a better error message
-                        // Do note that we need isCompatibleWith here, not just isValueCompatibleWith.
-                        if (!validatorType.isCompatibleWith(oldType))
-                            throw new ConfigurationException(String.format("Cannot change %s from type %s to type %s: types are not order-compatible.",
-                                                                           columnName,
-                                                                           oldType.asCQL3Type(),
-                                                                           validator));
-
-                        cfm.comparator = cfm.comparator.setSubtype(def.position(), validatorType);
-                        break;
-                    case COMPACT_VALUE:
-                        // See below
-                        if (!validatorType.isValueCompatibleWith(cfm.getDefaultValidator()))
-                            throw new ConfigurationException(String.format("Cannot change %s from type %s to type %s: types are incompatible.",
-                                                                           columnName,
-                                                                           cfm.getDefaultValidator().asCQL3Type(),
-                                                                           validator));
-                        cfm.defaultValidator(validatorType);
-                        break;
-                    case REGULAR:
-                    case STATIC:
-                        // Thrift allows to change a column validator so CFMetaData.validateCompatibility will let it slide
-                        // if we change to an incompatible type (contrarily to the comparator case). But we don't want to
-                        // allow it for CQL3 (see #5882) so validating it explicitly here. We only care about value compatibility
-                        // though since we won't compare values (except when there is an index, but that is validated by
-                        // ColumnDefinition already).
-                        if (!validatorType.isValueCompatibleWith(def.type))
-                            throw new ConfigurationException(String.format("Cannot change %s from type %s to type %s: types are incompatible.",
-                                                                           columnName,
-                                                                           def.type.asCQL3Type(),
-                                                                           validator));
-
-                        // For collections, if we alter the type, we need to update the comparator too since it includes
-                        // the type too (note that isValueCompatibleWith above has validated that the new type doesn't
-                        // change the underlying sorting order, but we still don't want to have a discrepancy between the type
-                        // in the comparator and the one in the ColumnDefinition as that would be dodgy).
-                        if (validatorType.isCollection() && validatorType.isMultiCell())
-                            cfm.comparator = cfm.comparator.addOrUpdateCollection(def.name, (CollectionType)validatorType);
-
-                        break;
-                }
+                AbstractType<?> validatorType = def.isReversedType() && !validator.getType().isReversed()
+                                                ? ReversedType.getInstance(validator.getType())
+                                                : validator.getType();
+                validateAlter(cfm, def, validatorType);
                 // In any case, we update the column definition
                 cfm.addOrReplaceColumnDefinition(def.withNewType(validatorType));
+
+                // We also have to validate the view types here. If we have a view which includes a column as part of
+                // the clustering key, we need to make sure that it is indeed compatible.
+                for (ViewDefinition view : views)
+                {
+                    if (!view.includes(columnName)) continue;
+                    ViewDefinition viewCopy = view.copy();
+                    ColumnDefinition viewDef = view.metadata.getColumnDefinition(columnName);
+                    AbstractType viewType = viewDef.isReversedType() && !validator.getType().isReversed()
+                                            ? ReversedType.getInstance(validator.getType())
+                                            : validator.getType();
+                    validateAlter(view.metadata, viewDef, viewType);
+                    viewCopy.metadata.addOrReplaceColumnDefinition(viewDef.withNewType(viewType));
+
+                    if (viewUpdates == null)
+                        viewUpdates = new ArrayList<>();
+                    viewUpdates.add(viewCopy);
+                }
                 break;
 
             case DROP:
-                assert columnName != null;
-                if (!cfm.isCQL3Table())
+                if (!cfm.isCQLTable())
                     throw new InvalidRequestException("Cannot drop columns from a non-CQL3 table");
-                if (def == null)
-                    throw new InvalidRequestException(String.format("Column %s was not found in table %s", columnName, columnFamily()));
 
-                switch (def.kind)
+                for (AlterTableStatementColumn colData : colNameList)
                 {
-                    case PARTITION_KEY:
-                    case CLUSTERING_COLUMN:
-                        throw new InvalidRequestException(String.format("Cannot drop PRIMARY KEY part %s", columnName));
-                    case REGULAR:
-                    case STATIC:
-                        ColumnDefinition toDelete = null;
-                        for (ColumnDefinition columnDef : cfm.regularAndStaticColumns())
-                        {
-                            if (columnDef.name.equals(columnName))
-                                toDelete = columnDef;
-                        }
-                        assert toDelete != null;
-                        cfm.removeColumnDefinition(toDelete);
-                        cfm.recordColumnDrop(toDelete);
-                        break;
+                    columnName = colData.getColumnName().getIdentifier(cfm);
+                    def = cfm.getColumnDefinition(columnName);
+
+                    if (def == null)
+                        throw new InvalidRequestException(String.format("Column %s was not found in table %s", columnName, columnFamily()));
+
+                    switch (def.kind)
+                    {
+                         case PARTITION_KEY:
+                         case CLUSTERING:
+                              throw new InvalidRequestException(String.format("Cannot drop PRIMARY KEY part %s", columnName));
+                         case REGULAR:
+                         case STATIC:
+                              ColumnDefinition toDelete = null;
+                              for (ColumnDefinition columnDef : cfm.partitionColumns())
+                              {
+                                   if (columnDef.name.equals(columnName))
+                                   {
+                                       toDelete = columnDef;
+                                       break;
+                                   }
+                               }
+                             assert toDelete != null;
+                             cfm.removeColumnDefinition(toDelete);
+                             cfm.recordColumnDrop(toDelete, deleteTimestamp);
+                             break;
+                    }
+
+                    // If the dropped column is required by any secondary indexes
+                    // we reject the operation, as the indexes must be dropped first
+                    Indexes allIndexes = cfm.getIndexes();
+                    if (!allIndexes.isEmpty())
+                    {
+                        ColumnFamilyStore store = Keyspace.openAndGetStore(cfm);
+                        Set<IndexMetadata> dependentIndexes = store.indexManager.getDependentIndexes(def);
+                        if (!dependentIndexes.isEmpty())
+                            throw new InvalidRequestException(String.format("Cannot drop column %s because it has " +
+                                                                            "dependent secondary indexes (%s)",
+                                                                            def,
+                                                                            dependentIndexes.stream()
+                                                                                            .map(i -> i.name)
+                                                                                            .collect(Collectors.joining(","))));
+                    }
+
+                    // If a column is dropped which is included in a view, we don't allow the drop to take place.
+                    boolean rejectAlter = false;
+                    StringBuilder builder = new StringBuilder();
+                    for (ViewDefinition view : views)
+                    {
+                        if (!view.includes(columnName)) continue;
+                        if (rejectAlter)
+                            builder.append(',');
+                        rejectAlter = true;
+                        builder.append(view.viewName);
+                    }
+                    if (rejectAlter)
+                        throw new InvalidRequestException(String.format("Cannot drop column %s, depended on by materialized views (%s.{%s})",
+                                                                        columnName.toString(),
+                                                                        keyspace(),
+                                                                        builder.toString()));
                 }
                 break;
             case OPTS:
-                if (cfProps == null)
-                    throw new InvalidRequestException(String.format("ALTER TABLE WITH invoked, but no parameters found"));
+                if (attrs == null)
+                    throw new InvalidRequestException("ALTER TABLE WITH invoked, but no parameters found");
+                attrs.validate();
 
-                cfProps.validate();
+                TableParams params = attrs.asAlteredTableParams(cfm.params);
 
-                if (meta.isCounter() && cfProps.getDefaultTimeToLive() > 0)
+                if (!Iterables.isEmpty(views) && params.gcGraceSeconds == 0)
+                {
+                    throw new InvalidRequestException("Cannot alter gc_grace_seconds of the base table of a " +
+                                                      "materialized view to 0, since this value is used to TTL " +
+                                                      "undelivered updates. Setting gc_grace_seconds too low might " +
+                                                      "cause undelivered updates to expire " +
+                                                      "before being replayed.");
+                }
+
+                if (meta.isCounter() && params.defaultTimeToLive > 0)
                     throw new InvalidRequestException("Cannot set default_time_to_live on a table with counters");
 
-                cfProps.applyToCFMetadata(cfm);
+                cfm.params(params);
+
                 break;
             case RENAME:
-                for (Map.Entry<ColumnIdentifier.Raw, ColumnIdentifier.Raw> entry : renames.entrySet())
+                for (Map.Entry<ColumnDefinition.Raw, ColumnDefinition.Raw> entry : renames.entrySet())
                 {
-                    ColumnIdentifier from = entry.getKey().prepare(cfm);
-                    ColumnIdentifier to = entry.getValue().prepare(cfm);
+                    ColumnIdentifier from = entry.getKey().getIdentifier(cfm);
+                    ColumnIdentifier to = entry.getValue().getIdentifier(cfm);
                     cfm.renameColumn(from, to);
+
+                    // If the view includes a renamed column, it must be renamed in the view table and the definition.
+                    for (ViewDefinition view : views)
+                    {
+                        if (!view.includes(from)) continue;
+
+                        ViewDefinition viewCopy = view.copy();
+                        ColumnIdentifier viewFrom = entry.getKey().getIdentifier(viewCopy.metadata);
+                        ColumnIdentifier viewTo = entry.getValue().getIdentifier(viewCopy.metadata);
+                        viewCopy.renameColumn(viewFrom, viewTo);
+
+                        if (viewUpdates == null)
+                            viewUpdates = new ArrayList<>();
+                        viewUpdates.add(viewCopy);
+                    }
                 }
                 break;
         }
 
-        MigrationManager.announceColumnFamilyUpdate(cfm, false, isLocalOnly);
-        return true;
+        MigrationManager.announceColumnFamilyUpdate(cfm, isLocalOnly);
+
+        if (viewUpdates != null)
+        {
+            for (ViewDefinition viewUpdate : viewUpdates)
+                MigrationManager.announceViewUpdate(viewUpdate, isLocalOnly);
+        }
+        return new Event.SchemaChange(Event.SchemaChange.Change.UPDATED, Event.SchemaChange.Target.TABLE, keyspace(), columnFamily());
     }
 
+    private static void validateAlter(CFMetaData cfm, ColumnDefinition def, AbstractType<?> validatorType)
+    {
+        switch (def.kind)
+        {
+            case PARTITION_KEY:
+                if (validatorType instanceof CounterColumnType)
+                    throw new InvalidRequestException(String.format("counter type is not supported for PRIMARY KEY part %s", def.name));
+
+                AbstractType<?> currentType = cfm.getKeyValidatorAsClusteringComparator().subtype(def.position());
+                if (!validatorType.isValueCompatibleWith(currentType))
+                    throw new ConfigurationException(String.format("Cannot change %s from type %s to type %s: types are incompatible.",
+                                                                   def.name,
+                                                                   currentType.asCQL3Type(),
+                                                                   validatorType.asCQL3Type()));
+                break;
+            case CLUSTERING:
+                if (!cfm.isCQLTable())
+                    throw new InvalidRequestException(String.format("Cannot alter clustering column %s in a non-CQL3 table", def.name));
+
+                AbstractType<?> oldType = cfm.comparator.subtype(def.position());
+                // Note that CFMetaData.validateCompatibility already validate the change we're about to do. However, the error message it
+                // sends is a bit cryptic for a CQL3 user, so validating here for a sake of returning a better error message
+                // Do note that we need isCompatibleWith here, not just isValueCompatibleWith.
+                if (!validatorType.isCompatibleWith(oldType))
+                {
+                    throw new ConfigurationException(String.format("Cannot change %s from type %s to type %s: types are not order-compatible.",
+                                                                   def.name,
+                                                                   oldType.asCQL3Type(),
+                                                                   validatorType.asCQL3Type()));
+                }
+                break;
+            case REGULAR:
+            case STATIC:
+                // As above, we want a clear error message, but in this case it happens that  CFMetaData.validateCompatibility *does not*
+                // validate this for historical reasons so it's doubtly important. Note that we only care about value compatibility
+                // though since we won't compare values (except when there is an index, but that is validated by ColumnDefinition already).
+                // TODO: we could clear out where validation is done and do it only once.
+                if (!validatorType.isValueCompatibleWith(def.type))
+                    throw new ConfigurationException(String.format("Cannot change %s from type %s to type %s: types are incompatible.",
+                                                                   def.name,
+                                                                   def.type.asCQL3Type(),
+                                                                   validatorType.asCQL3Type()));
+                break;
+        }
+    }
+
+    @Override
     public String toString()
     {
-        return String.format("AlterTableStatement(name=%s, type=%s, column=%s, validator=%s)",
+        return String.format("AlterTableStatement(name=%s, type=%s)",
                              cfName,
-                             oType,
-                             rawColumnName,
-                             validator);
-    }
-
-    public Event.SchemaChange changeEvent()
-    {
-        return new Event.SchemaChange(Event.SchemaChange.Change.UPDATED, Event.SchemaChange.Target.TABLE, keyspace(), columnFamily());
+                             oType);
     }
 }

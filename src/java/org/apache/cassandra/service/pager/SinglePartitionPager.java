@@ -19,15 +19,91 @@ package org.apache.cassandra.service.pager;
 
 import java.nio.ByteBuffer;
 
-import org.apache.cassandra.db.filter.ColumnCounter;
+import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.rows.*;
+import org.apache.cassandra.db.filter.*;
+import org.apache.cassandra.transport.ProtocolVersion;
 
 /**
  * Common interface to single partition queries (by slice and by name).
  *
  * For use by MultiPartitionPager.
  */
-public interface SinglePartitionPager extends QueryPager
+public class SinglePartitionPager extends AbstractQueryPager
 {
-    public ByteBuffer key();
-    public ColumnCounter columnCounter();
+    private final SinglePartitionReadCommand command;
+
+    private volatile PagingState.RowMark lastReturned;
+
+    public SinglePartitionPager(SinglePartitionReadCommand command, PagingState state, ProtocolVersion protocolVersion)
+    {
+        super(command, protocolVersion);
+        this.command = command;
+
+        if (state != null)
+        {
+            lastReturned = state.rowMark;
+            restoreState(command.partitionKey(), state.remaining, state.remainingInPartition);
+        }
+    }
+
+    private SinglePartitionPager(SinglePartitionReadCommand command,
+                                 ProtocolVersion protocolVersion,
+                                 PagingState.RowMark rowMark,
+                                 int remaining,
+                                 int remainingInPartition)
+    {
+        super(command, protocolVersion);
+        this.command = command;
+        this.lastReturned = rowMark;
+        restoreState(command.partitionKey(), remaining, remainingInPartition);
+    }
+
+    @Override
+    public SinglePartitionPager withUpdatedLimit(DataLimits newLimits)
+    {
+        return new SinglePartitionPager(command.withUpdatedLimit(newLimits),
+                                        protocolVersion,
+                                        lastReturned,
+                                        maxRemaining(),
+                                        remainingInPartition());
+    }
+
+    public ByteBuffer key()
+    {
+        return command.partitionKey().getKey();
+    }
+
+    public DataLimits limits()
+    {
+        return command.limits();
+    }
+
+    public PagingState state()
+    {
+        return lastReturned == null
+             ? null
+             : new PagingState(null, lastReturned, maxRemaining(), remainingInPartition());
+    }
+
+    protected ReadCommand nextPageReadCommand(int pageSize)
+    {
+        Clustering clustering = lastReturned == null ? null : lastReturned.clustering(command.metadata());
+        DataLimits limits = lastReturned == null
+                          ? limits().forPaging(pageSize)
+                          : limits().forPaging(pageSize, key(), remainingInPartition());
+
+        return command.forPaging(clustering, limits);
+    }
+
+    protected void recordLast(DecoratedKey key, Row last)
+    {
+        if (last != null && last.clustering() != Clustering.STATIC_CLUSTERING)
+            lastReturned = PagingState.RowMark.create(command.metadata(), last, protocolVersion);
+    }
+
+    protected boolean isPreviouslyReturnedPartition(DecoratedKey key)
+    {
+        return lastReturned != null;
+    }
 }

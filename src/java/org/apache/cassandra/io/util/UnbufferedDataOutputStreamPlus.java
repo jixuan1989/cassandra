@@ -23,7 +23,6 @@ import java.io.UTFDataFormatException;
 import java.nio.ByteBuffer;
 import java.nio.channels.WritableByteChannel;
 
-import org.apache.cassandra.config.Config;
 import org.apache.cassandra.utils.memory.MemoryUtil;
 
 import com.google.common.base.Function;
@@ -31,12 +30,15 @@ import com.google.common.base.Function;
 /**
  * Base class for DataOutput implementations that does not have an optimized implementations of Plus methods
  * and does no buffering.
- * <p/>
+ * <p>
  * Unlike BufferedDataOutputStreamPlus this is capable of operating as an unbuffered output stream.
  * Currently necessary because SequentialWriter implements its own buffering along with mark/reset/truncate.
+ * </p>
  */
 public abstract class UnbufferedDataOutputStreamPlus extends DataOutputStreamPlus
 {
+    private static final byte[] zeroBytes = new byte[2];
+
     protected UnbufferedDataOutputStreamPlus()
     {
         super();
@@ -252,6 +254,12 @@ public abstract class UnbufferedDataOutputStreamPlus extends DataOutputStreamPlu
     public static void writeUTF(String str, DataOutput out) throws IOException
     {
         int length = str.length();
+        if (length == 0)
+        {
+            out.write(zeroBytes);
+            return;
+        }
+
         int utfCount = 0;
         int maxSize = 2;
         for (int i = 0 ; i < length ; i++)
@@ -283,7 +291,6 @@ public abstract class UnbufferedDataOutputStreamPlus extends DataOutputStreamPlu
                 for (int i = firstIndex ; i < runLength; i++)
                     utfBytes[i] = (byte) str.charAt(offset + i);
                 out.write(utfBytes, 0, runLength);
-                offset += firstIndex;
                 firstIndex = 0;
             }
         }
@@ -308,7 +315,7 @@ public abstract class UnbufferedDataOutputStreamPlus extends DataOutputStreamPlu
                 for (int i = 0 ; i < charRunLength ; i++)
                 {
                     char ch = str.charAt(offset + i);
-                    if ((ch > 0) & (ch <= 127))
+                    if ((ch > 0) && (ch <= 127))
                     {
                         utfBytes[utfIndex++] = (byte) ch;
                     }

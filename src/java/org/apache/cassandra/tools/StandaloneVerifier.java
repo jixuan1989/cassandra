@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,10 +18,6 @@
  */
 package org.apache.cassandra.tools;
 
-import com.google.common.base.Predicate;
-import com.google.common.base.Predicates;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Lists;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Directories;
@@ -35,7 +31,6 @@ import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.OutputHandler;
 import org.apache.commons.cli.*;
 
-import java.io.File;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
@@ -52,6 +47,8 @@ public class StandaloneVerifier
     public static void main(String args[])
     {
         Options options = Options.parseArgs(args);
+        Util.initDatabaseDescriptor();
+
         try
         {
             // load keyspace descriptions.
@@ -69,7 +66,7 @@ public class StandaloneVerifier
             ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(options.cfName);
 
             OutputHandler handler = new OutputHandler.SystemOutput(options.verbose, options.debug);
-            Directories.SSTableLister lister = cfs.directories.sstableLister().skipTemporary(true);
+            Directories.SSTableLister lister = cfs.getDirectories().sstableLister(Directories.OnTxnErr.THROW).skipTemporary(true);
 
             boolean extended = options.extended;
 
@@ -100,8 +97,8 @@ public class StandaloneVerifier
             {
                 try
                 {
-                    Verifier verifier = new Verifier(cfs, sstable, handler, true);
-                    try
+
+                    try (Verifier verifier = new Verifier(cfs, sstable, handler, true))
                     {
                         verifier.verify(extended);
                     }
@@ -109,10 +106,6 @@ public class StandaloneVerifier
                     {
                         System.err.println(String.format("Error verifying %s: %s", sstable, cs.getMessage()));
                         hasFailed = true;
-                    }
-                    finally
-                    {
-                        verifier.close();
                     }
                 }
                 catch (Exception e)

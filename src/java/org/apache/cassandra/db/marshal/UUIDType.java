@@ -48,9 +48,15 @@ public class UUIDType extends AbstractType<UUID>
 
     UUIDType()
     {
+        super(ComparisonType.CUSTOM);
     }
 
-    public int compare(ByteBuffer b1, ByteBuffer b2)
+    public boolean isEmptyValueMeaningless()
+    {
+        return true;
+    }
+
+    public int compareCustom(ByteBuffer b1, ByteBuffer b2)
     {
         // Compare for length
         int s1 = b1.position(), s2 = b2.position();
@@ -134,7 +140,7 @@ public class UUIDType extends AbstractType<UUID>
         {
             try
             {
-                return ByteBuffer.wrap(UUIDGen.decompose(UUID.fromString(source)));
+                return UUIDGen.toByteBuffer(UUID.fromString(source));
             }
             catch (IllegalArgumentException e)
             {
@@ -162,5 +168,11 @@ public class UUIDType extends AbstractType<UUID>
     static int version(ByteBuffer uuid)
     {
         return (uuid.get(6) & 0xf0) >> 4;
+    }
+
+    @Override
+    public int valueLengthIfFixed()
+    {
+        return 16;
     }
 }

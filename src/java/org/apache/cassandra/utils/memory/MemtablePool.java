@@ -20,6 +20,9 @@ package org.apache.cassandra.utils.memory;
 
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 
+import com.codahale.metrics.Timer;
+import org.apache.cassandra.metrics.CassandraMetricsRegistry;
+import org.apache.cassandra.metrics.DefaultNameFactory;
 import org.apache.cassandra.utils.concurrent.WaitQueue;
 
 
@@ -35,6 +38,8 @@ public abstract class MemtablePool
     public final SubPool onHeap;
     public final SubPool offHeap;
 
+    public final Timer blockedOnAllocating;
+
     final WaitQueue hasRoom = new WaitQueue();
 
     MemtablePool(long maxOnHeapMemory, long maxOffHeapMemory, float cleanThreshold, Runnable cleaner)
@@ -42,6 +47,8 @@ public abstract class MemtablePool
         this.onHeap = getSubPool(maxOnHeapMemory, cleanThreshold);
         this.offHeap = getSubPool(maxOffHeapMemory, cleanThreshold);
         this.cleaner = getCleaner(cleaner);
+        blockedOnAllocating = CassandraMetricsRegistry.Metrics.timer(new DefaultNameFactory("MemtablePool")
+                                                                         .createMetricName("BlockedOnAllocation"));
         if (this.cleaner != null)
             this.cleaner.start();
     }
@@ -56,7 +63,6 @@ public abstract class MemtablePool
         return cleaner == null ? null : new MemtableCleanerThread<>(this, cleaner);
     }
 
-    public abstract boolean needToCopyOnHeap();
     public abstract MemtableAllocator newAllocator();
 
     /**
@@ -130,10 +136,8 @@ public abstract class MemtablePool
          * apply the size adjustment to allocated, bypassing any limits or constraints. If this reduces the
          * allocated total, we will signal waiters
          */
-        void adjustAllocated(long size)
+        private void adjustAllocated(long size)
         {
-            if (size == 0)
-                return;
             while (true)
             {
                 long cur = allocated;
@@ -142,43 +146,64 @@ public abstract class MemtablePool
             }
         }
 
-        // 'acquires' an amount of memory, and maybe also marks it allocated. This method is meant to be overridden
-        // by implementations with a separate concept of acquired/allocated. As this method stands, an acquire
-        // without an allocate is a no-op (acquisition is achieved through allocation), however a release (where size < 0)
-        // is always processed and accounted for in allocated.
-        void adjustAcquired(long size, boolean alsoAllocated)
+        void allocated(long size)
         {
-            if (size > 0 || alsoAllocated)
-            {
-                if (alsoAllocated)
-                    adjustAllocated(size);
-                maybeClean();
-            }
-            else if (size < 0)
-            {
-                adjustAllocated(size);
-                hasRoom.signalAll();
-            }
-        }
-
-        // space reclaimed should be released prior to calling this, to avoid triggering unnecessary cleans
-        void adjustReclaiming(long reclaiming)
-        {
-            if (reclaiming == 0)
+            assert size >= 0;
+            if (size == 0)
                 return;
-            reclaimingUpdater.addAndGet(this, reclaiming);
-            if (reclaiming < 0 && updateNextClean() && cleaner != null)
-                cleaner.trigger();
+
+            adjustAllocated(size);
+            maybeClean();
         }
 
-        public long allocated()
+        void acquired(long size)
         {
-            return allocated;
+            maybeClean();
+        }
+
+        void released(long size)
+        {
+            assert size >= 0;
+            adjustAllocated(-size);
+            hasRoom.signalAll();
+        }
+
+        void reclaiming(long size)
+        {
+            if (size == 0)
+                return;
+            reclaimingUpdater.addAndGet(this, size);
+        }
+
+        void reclaimed(long size)
+        {
+            if (size == 0)
+                return;
+
+            reclaimingUpdater.addAndGet(this, -size);
+            if (updateNextClean() && cleaner != null)
+                cleaner.trigger();
         }
 
         public long used()
         {
             return allocated;
+        }
+
+        public float reclaimingRatio()
+        {
+            float r = reclaiming / (float) limit;
+            if (Float.isNaN(r))
+                return 0;
+            return r;
+        }
+
+        public float usedRatio()
+        {
+            float r = allocated / (float) limit;
+            if (Float.isNaN(r))
+                return 0;
+            return r;
         }
 
         public MemtableAllocator.SubAllocator newAllocator()
@@ -189,6 +214,11 @@ public abstract class MemtablePool
         public WaitQueue hasRoom()
         {
             return hasRoom;
+        }
+
+        public Timer.Context blockedTimerContext()
+        {
+            return blockedOnAllocating.time();
         }
     }
 

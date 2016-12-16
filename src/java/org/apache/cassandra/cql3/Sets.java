@@ -17,25 +17,23 @@
  */
 package org.apache.cassandra.cql3;
 
+import static org.apache.cassandra.cql3.Constants.UNSET_VALUE;
+
 import java.nio.ByteBuffer;
 import java.util.*;
-
-import com.google.common.base.Joiner;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.functions.Function;
-import org.apache.cassandra.db.ColumnFamily;
-import org.apache.cassandra.db.composites.CellName;
-import org.apache.cassandra.db.composites.Composite;
-import org.apache.cassandra.db.marshal.AbstractType;
-import org.apache.cassandra.db.marshal.MapType;
-import org.apache.cassandra.db.marshal.SetType;
+import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.rows.*;
+import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.serializers.CollectionSerializer;
 import org.apache.cassandra.serializers.MarshalException;
-import org.apache.cassandra.transport.Server;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
-import org.apache.cassandra.utils.FBUtilities;
 
 /**
  * Static helper methods and classes for sets.
@@ -46,10 +44,76 @@ public abstract class Sets
 
     public static ColumnSpecification valueSpecOf(ColumnSpecification column)
     {
-        return new ColumnSpecification(column.ksName, column.cfName, new ColumnIdentifier("value(" + column.name + ")", true), ((SetType)column.type).getElementsType());
+        return new ColumnSpecification(column.ksName, column.cfName, new ColumnIdentifier("value(" + column.name + ")", true), ((SetType<?>)column.type).getElementsType());
     }
 
-    public static class Literal implements Term.Raw
+    /**
+     * Tests that the set with the specified elements can be assigned to the specified column.
+     *
+     * @param receiver the receiving column
+     * @param elements the set elements
+     */
+    public static AssignmentTestable.TestResult testSetAssignment(ColumnSpecification receiver,
+                                                                  List<? extends AssignmentTestable> elements)
+    {
+        if (!(receiver.type instanceof SetType))
+        {
+            // We've parsed empty maps as a set literal to break the ambiguity so handle that case now
+            if (receiver.type instanceof MapType && elements.isEmpty())
+                return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
+
+            return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
+        }
+
+        // If there is no elements, we can't say it's an exact match (an empty set if fundamentally polymorphic).
+        if (elements.isEmpty())
+            return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
+
+        ColumnSpecification valueSpec = valueSpecOf(receiver);
+        return AssignmentTestable.TestResult.testAll(receiver.ksName, valueSpec, elements);
+    }
+
+    /**
+     * Create a <code>String</code> representation of the set containing the specified elements.
+     *
+     * @param elements the set elements
+     * @return a <code>String</code> representation of the set
+     */
+    public static String setToString(List<?> elements)
+    {
+        return setToString(elements, Object::toString);
+    }
+
+    /**
+     * Create a <code>String</code> representation of the set from the specified items associated to
+     * the set elements.
+     *
+     * @param items items associated to the set elements
+     * @param mapper the mapper used to map the items to the <code>String</code> representation of the set elements
+     * @return a <code>String</code> representation of the set
+     */
+    public static <T> String setToString(Iterable<T> items, java.util.function.Function<T, String> mapper)
+    {
+        return StreamSupport.stream(items.spliterator(), false)
+                            .map(e -> mapper.apply(e))
+                            .collect(Collectors.joining(", ", "{", "}"));
+    }
+
+    /**
+     * Returns the exact SetType from the items if it can be known.
+     *
+     * @param items the items mapped to the set elements
+     * @param mapper the mapper used to retrieve the element types from the items
+     * @return the exact SetType from the items if it can be known or <code>null</code>
+     */
+    public static <T> AbstractType<?> getExactSetTypeIfKnown(List<T> items,
+                                                             java.util.function.Function<T, AbstractType<?>> mapper)
+    {
+        Optional<AbstractType<?>> type = items.stream().map(mapper).filter(Objects::nonNull).findFirst();
+        return type.isPresent() ? SetType.getInstance(type.get(), false) : null;
+    }
+
+    public static class Literal extends Term.Raw
     {
         private final List<Term.Raw> elements;
 
@@ -68,7 +132,7 @@ public abstract class Sets
                 return new Maps.Value(Collections.<ByteBuffer, ByteBuffer>emptyMap());
 
             ColumnSpecification valueSpec = Sets.valueSpecOf(receiver);
-            Set<Term> values = new HashSet<Term>(elements.size());
+            Set<Term> values = new HashSet<>(elements.size());
             boolean allTerminal = true;
             for (Term.Raw rt : elements)
             {
@@ -108,27 +172,18 @@ public abstract class Sets
 
         public AssignmentTestable.TestResult testAssignment(String keyspace, ColumnSpecification receiver)
         {
-            if (!(receiver.type instanceof SetType))
-            {
-                // We've parsed empty maps as a set literal to break the ambiguity so handle that case now
-                if (receiver.type instanceof MapType && elements.isEmpty())
-                    return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
-
-                return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
-            }
-
-            // If there is no elements, we can't say it's an exact match (an empty set if fundamentally polymorphic).
-            if (elements.isEmpty())
-                return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
-
-            ColumnSpecification valueSpec = Sets.valueSpecOf(receiver);
-            return AssignmentTestable.TestResult.testAll(keyspace, valueSpec, elements);
+            return testSetAssignment(receiver, elements);
         }
 
         @Override
-        public String toString()
+        public AbstractType<?> getExactTypeIfKnown(String keyspace)
         {
-            return "{" + Joiner.on(", ").join(elements) + "}";
+            return getExactSetTypeIfKnown(elements, p -> p.getExactTypeIfKnown(keyspace));
+        }
+
+        public String getText()
+        {
+            return setToString(elements, Term.Raw::getText);
         }
     }
 
@@ -141,14 +196,14 @@ public abstract class Sets
             this.elements = elements;
         }
 
-        public static Value fromSerialized(ByteBuffer value, SetType type, int version) throws InvalidRequestException
+        public static Value fromSerialized(ByteBuffer value, SetType type, ProtocolVersion version) throws InvalidRequestException
         {
             try
             {
                 // Collections have this small hack that validate cannot be called on a serialized object,
                 // but compose does the validation (so we're fine).
-                Set<?> s = (Set<?>)type.getSerializer().deserializeForNativeProtocol(value, version);
-                SortedSet<ByteBuffer> elements = new TreeSet<ByteBuffer>(type.getElementsType());
+                Set<?> s = type.getSerializer().deserializeForNativeProtocol(value, version);
+                SortedSet<ByteBuffer> elements = new TreeSet<>(type.getElementsType());
                 for (Object element : s)
                     elements.add(type.getElementsType().decompose(element));
                 return new Value(elements);
@@ -159,7 +214,7 @@ public abstract class Sets
             }
         }
 
-        public ByteBuffer get(int protocolVersion)
+        public ByteBuffer get(ProtocolVersion protocolVersion)
         {
             return CollectionSerializer.pack(elements, elements.size(), protocolVersion);
         }
@@ -202,7 +257,7 @@ public abstract class Sets
         {
         }
 
-        public Value bind(QueryOptions options) throws InvalidRequestException
+        public Terminal bind(QueryOptions options) throws InvalidRequestException
         {
             SortedSet<ByteBuffer> buffers = new TreeSet<>(comparator);
             for (Term t : elements)
@@ -211,21 +266,17 @@ public abstract class Sets
 
                 if (bytes == null)
                     throw new InvalidRequestException("null is not supported inside collections");
-
-                // We don't support value > 64K because the serialization format encode the length as an unsigned short.
-                if (bytes.remaining() > FBUtilities.MAX_UNSIGNED_SHORT)
-                    throw new InvalidRequestException(String.format("Set value is too long. Set values are limited to %d bytes but %d bytes value provided",
-                                                                    FBUtilities.MAX_UNSIGNED_SHORT,
-                                                                    bytes.remaining()));
+                if (bytes == ByteBufferUtil.UNSET_BYTE_BUFFER)
+                    return UNSET_VALUE;
 
                 buffers.add(bytes);
             }
             return new Value(buffers);
         }
 
-        public Iterable<Function> getFunctions()
+        public void addFunctionsTo(List<Function> functions)
         {
-            return Terms.getFunctions(elements);
+            Terms.addFunctions(elements, functions);
         }
     }
 
@@ -237,10 +288,14 @@ public abstract class Sets
             assert receiver.type instanceof SetType;
         }
 
-        public Value bind(QueryOptions options) throws InvalidRequestException
+        public Terminal bind(QueryOptions options) throws InvalidRequestException
         {
             ByteBuffer value = options.getValues().get(bindIndex);
-            return value == null ? null : Value.fromSerialized(value, (SetType)receiver.type, options.getProtocolVersion());
+            if (value == null)
+                return null;
+            if (value == ByteBufferUtil.UNSET_BYTE_BUFFER)
+                return UNSET_VALUE;
+            return Value.fromSerialized(value, (SetType)receiver.type, options.getProtocolVersion());
         }
     }
 
@@ -251,15 +306,16 @@ public abstract class Sets
             super(column, t);
         }
 
-        public void execute(ByteBuffer rowKey, ColumnFamily cf, Composite prefix, UpdateParameters params) throws InvalidRequestException
+        public void execute(DecoratedKey partitionKey, UpdateParameters params) throws InvalidRequestException
         {
+            Term.Terminal value = t.bind(params.options);
+            if (value == UNSET_VALUE)
+                return;
+
+            // delete + add
             if (column.type.isMultiCell())
-            {
-                // delete + add
-                CellName name = cf.getComparator().create(prefix, column);
-                cf.addAtom(params.makeTombstoneForOverwrite(name.slice()));
-            }
-            Adder.doAdd(t, cf, prefix, column, params);
+                params.setComplexDeletionTimeForOverwrite(column);
+            Adder.doAdd(value, column, params);
         }
     }
 
@@ -270,16 +326,16 @@ public abstract class Sets
             super(column, t);
         }
 
-        public void execute(ByteBuffer rowKey, ColumnFamily cf, Composite prefix, UpdateParameters params) throws InvalidRequestException
+        public void execute(DecoratedKey partitionKey, UpdateParameters params) throws InvalidRequestException
         {
             assert column.type.isMultiCell() : "Attempted to add items to a frozen set";
-
-            doAdd(t, cf, prefix, column, params);
+            Term.Terminal value = t.bind(params.options);
+            if (value != UNSET_VALUE)
+                doAdd(value, column, params);
         }
 
-        static void doAdd(Term t, ColumnFamily cf, Composite prefix, ColumnDefinition column, UpdateParameters params) throws InvalidRequestException
+        static void doAdd(Term.Terminal value, ColumnDefinition column, UpdateParameters params) throws InvalidRequestException
         {
-            Term.Terminal value = t.bind(params.options);
             if (column.type.isMultiCell())
             {
                 if (value == null)
@@ -287,18 +343,19 @@ public abstract class Sets
 
                 for (ByteBuffer bb : ((Value) value).elements)
                 {
-                    CellName cellName = cf.getComparator().create(prefix, column, bb);
-                    cf.addColumn(params.makeColumn(cellName, ByteBufferUtil.EMPTY_BYTE_BUFFER));
+                    if (bb == ByteBufferUtil.UNSET_BYTE_BUFFER)
+                        continue;
+
+                    params.addCell(column, CellPath.create(bb), ByteBufferUtil.EMPTY_BYTE_BUFFER);
                 }
             }
             else
             {
                 // for frozen sets, we're overwriting the whole cell
-                CellName cellName = cf.getComparator().create(prefix, column);
                 if (value == null)
-                    cf.addAtom(params.makeTombstone(cellName));
+                    params.addTombstone(column);
                 else
-                    cf.addColumn(params.makeColumn(cellName, value.get(Server.CURRENT_VERSION)));
+                    params.addCell(column, value.get(ProtocolVersion.CURRENT));
             }
         }
     }
@@ -311,12 +368,12 @@ public abstract class Sets
             super(column, t);
         }
 
-        public void execute(ByteBuffer rowKey, ColumnFamily cf, Composite prefix, UpdateParameters params) throws InvalidRequestException
+        public void execute(DecoratedKey partitionKey, UpdateParameters params) throws InvalidRequestException
         {
             assert column.type.isMultiCell() : "Attempted to remove items from a frozen set";
 
             Term.Terminal value = t.bind(params.options);
-            if (value == null)
+            if (value == null || value == UNSET_VALUE)
                 return;
 
             // This can be either a set or a single element
@@ -325,7 +382,7 @@ public abstract class Sets
                                       : Collections.singleton(value.get(params.options.getProtocolVersion()));
 
             for (ByteBuffer bb : toDiscard)
-                cf.addColumn(params.makeTombstone(cf.getComparator().create(prefix, column, bb)));
+                params.addTombstone(column, CellPath.create(bb));
         }
     }
 
@@ -336,15 +393,14 @@ public abstract class Sets
             super(column, k);
         }
 
-        public void execute(ByteBuffer rowKey, ColumnFamily cf, Composite prefix, UpdateParameters params) throws InvalidRequestException
+        public void execute(DecoratedKey partitionKey, UpdateParameters params) throws InvalidRequestException
         {
             assert column.type.isMultiCell() : "Attempted to delete a single element in a frozen set";
             Term.Terminal elt = t.bind(params.options);
             if (elt == null)
                 throw new InvalidRequestException("Invalid null set element");
 
-            CellName cellName = cf.getComparator().create(prefix, column, elt.get(params.options.getProtocolVersion()));
-            cf.addColumn(params.makeTombstone(cellName));
+            params.addTombstone(column, CellPath.create(elt.get(params.options.getProtocolVersion())));
         }
     }
 }

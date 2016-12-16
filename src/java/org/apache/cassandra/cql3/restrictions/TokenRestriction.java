@@ -18,56 +18,87 @@
 package org.apache.cassandra.cql3.restrictions;
 
 import java.nio.ByteBuffer;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
 
 import com.google.common.base.Joiner;
 
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.cql3.Term;
 import org.apache.cassandra.cql3.functions.Function;
 import org.apache.cassandra.cql3.statements.Bound;
-import org.apache.cassandra.db.IndexExpression;
-import org.apache.cassandra.db.composites.CType;
-import org.apache.cassandra.db.composites.Composite;
-import org.apache.cassandra.db.composites.CompositesBuilder;
-import org.apache.cassandra.db.index.SecondaryIndexManager;
+import org.apache.cassandra.db.filter.RowFilter;
 import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.index.SecondaryIndexManager;
 
 import static org.apache.cassandra.cql3.statements.RequestValidations.invalidRequest;
 
 /**
  * <code>Restriction</code> using the token function.
  */
-public abstract class TokenRestriction extends AbstractPrimaryKeyRestrictions
+public abstract class TokenRestriction implements PartitionKeyRestrictions
 {
     /**
      * The definition of the columns to which apply the token restriction.
      */
     protected final List<ColumnDefinition> columnDefs;
 
+    protected final CFMetaData metadata;
+
     /**
      * Creates a new <code>TokenRestriction</code> that apply to the specified columns.
      *
-     * @param ctype the composite type
      * @param columnDefs the definition of the columns to which apply the token restriction
      */
-    public TokenRestriction(CType ctype, List<ColumnDefinition> columnDefs)
+    public TokenRestriction(CFMetaData metadata, List<ColumnDefinition> columnDefs)
     {
-        super(ctype);
         this.columnDefs = columnDefs;
+        this.metadata = metadata;
+    }
+
+    public boolean hasIN()
+    {
+        return false;
+    }
+
+    public boolean hasOnlyEqualityRestrictions()
+    {
+        return false;
     }
 
     @Override
-    public  boolean isOnToken()
+    public Set<Restriction> getRestrictions(ColumnDefinition columnDef)
+    {
+        return Collections.singleton(this);
+    }
+
+    @Override
+    public final boolean isOnToken()
     {
         return true;
     }
 
     @Override
-    public Collection<ColumnDefinition> getColumnDefs()
+    public boolean needFiltering(CFMetaData cfm)
+    {
+        return false;
+    }
+
+    @Override
+    public boolean hasSlice()
+    {
+        return false;
+    }
+
+    @Override
+    public boolean hasUnrestrictedPartitionKeyComponents(CFMetaData cfm)
+    {
+        return false;
+    }
+
+    @Override
+    public List<ColumnDefinition> getColumnDefs()
     {
         return columnDefs;
     }
@@ -91,29 +122,21 @@ public abstract class TokenRestriction extends AbstractPrimaryKeyRestrictions
     }
 
     @Override
-    public final void addIndexExpressionTo(List<IndexExpression> expressions,
-                                     SecondaryIndexManager indexManager,
-                                     QueryOptions options)
+    public void addRowFilterTo(RowFilter filter, SecondaryIndexManager indexManager, QueryOptions options)
     {
         throw new UnsupportedOperationException("Index expression cannot be created for token restriction");
     }
 
     @Override
-    public CompositesBuilder appendTo(CompositesBuilder builder, QueryOptions options)
+    public final boolean isEmpty()
     {
-        throw new UnsupportedOperationException();
+        return getColumnDefs().isEmpty();
     }
 
     @Override
-    public List<Composite> valuesAsComposites(QueryOptions options) throws InvalidRequestException
+    public final int size()
     {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public List<Composite> boundsAsComposites(Bound bound, QueryOptions options) throws InvalidRequestException
-    {
-        throw new UnsupportedOperationException();
+        return getColumnDefs().size();
     }
 
     /**
@@ -127,10 +150,10 @@ public abstract class TokenRestriction extends AbstractPrimaryKeyRestrictions
     }
 
     @Override
-    public final PrimaryKeyRestrictions mergeWith(Restriction otherRestriction) throws InvalidRequestException
+    public final PartitionKeyRestrictions mergeWith(Restriction otherRestriction) throws InvalidRequestException
     {
         if (!otherRestriction.isOnToken())
-            return new TokenFilter(toPrimaryKeyRestriction(otherRestriction), this);
+            return new TokenFilter(toPartitionKeyRestrictions(otherRestriction), this);
 
         return doMergeWith((TokenRestriction) otherRestriction);
     }
@@ -139,56 +162,62 @@ public abstract class TokenRestriction extends AbstractPrimaryKeyRestrictions
      * Merges this restriction with the specified <code>TokenRestriction</code>.
      * @param otherRestriction the <code>TokenRestriction</code> to merge with.
      */
-    protected abstract PrimaryKeyRestrictions doMergeWith(TokenRestriction otherRestriction) throws InvalidRequestException;
+    protected abstract PartitionKeyRestrictions doMergeWith(TokenRestriction otherRestriction) throws InvalidRequestException;
 
     /**
-     * Converts the specified restriction into a <code>PrimaryKeyRestrictions</code>.
+     * Converts the specified restriction into a <code>PartitionKeyRestrictions</code>.
      *
      * @param restriction the restriction to convert
-     * @return a <code>PrimaryKeyRestrictions</code>
+     * @return a <code>PartitionKeyRestrictions</code>
      * @throws InvalidRequestException if a problem occurs while converting the restriction
      */
-    private PrimaryKeyRestrictions toPrimaryKeyRestriction(Restriction restriction) throws InvalidRequestException
+    private PartitionKeyRestrictions toPartitionKeyRestrictions(Restriction restriction) throws InvalidRequestException
     {
-        if (restriction instanceof PrimaryKeyRestrictions)
-            return (PrimaryKeyRestrictions) restriction;
+        if (restriction instanceof PartitionKeyRestrictions)
+            return (PartitionKeyRestrictions) restriction;
 
-        return new PrimaryKeyRestrictionSet(ctype).mergeWith(restriction);
+        return new PartitionKeySingleRestrictionSet(metadata.getKeyValidatorAsClusteringComparator()).mergeWith(restriction);
     }
 
-    public static final class EQ extends TokenRestriction
+    public static final class EQRestriction extends TokenRestriction
     {
         private final Term value;
 
-        public EQ(CType ctype, List<ColumnDefinition> columnDefs, Term value)
+        public EQRestriction(CFMetaData cfm, List<ColumnDefinition> columnDefs, Term value)
         {
-            super(ctype, columnDefs);
+            super(cfm, columnDefs);
             this.value = value;
         }
 
         @Override
-        public boolean isEQ()
+        public void addFunctionsTo(List<Function> functions)
+        {
+            value.addFunctionsTo(functions);
+        }
+
+        @Override
+        protected PartitionKeyRestrictions doMergeWith(TokenRestriction otherRestriction) throws InvalidRequestException
+        {
+            throw invalidRequest("%s cannot be restricted by more than one relation if it includes an Equal",
+                                 Joiner.on(", ").join(ColumnDefinition.toIdentifiers(columnDefs)));
+        }
+
+        @Override
+        public List<ByteBuffer> bounds(Bound b, QueryOptions options) throws InvalidRequestException
+        {
+            return values(options);
+        }
+
+        @Override
+        public boolean hasBound(Bound b)
         {
             return true;
         }
 
         @Override
-        public boolean usesFunction(String ksName, String functionName)
+        public boolean isInclusive(Bound b)
         {
-            return usesFunction(value, ksName, functionName);
-        }
-
-        @Override
-        public Iterable<Function> getFunctions()
-        {
-            return value.getFunctions();
-        }
-
-        @Override
-        protected PrimaryKeyRestrictions doMergeWith(TokenRestriction otherRestriction) throws InvalidRequestException
-        {
-            throw invalidRequest("%s cannot be restricted by more than one relation if it includes an Equal",
-                                 Joiner.on(", ").join(ColumnDefinition.toIdentifiers(columnDefs)));
+            return true;
         }
 
         @Override
@@ -198,18 +227,18 @@ public abstract class TokenRestriction extends AbstractPrimaryKeyRestrictions
         }
     }
 
-    public static class Slice extends TokenRestriction
+    public static class SliceRestriction extends TokenRestriction
     {
         private final TermSlice slice;
 
-        public Slice(CType ctype, List<ColumnDefinition> columnDefs, Bound bound, boolean inclusive, Term term)
+        public SliceRestriction(CFMetaData cfm, List<ColumnDefinition> columnDefs, Bound bound, boolean inclusive, Term term)
         {
-            super(ctype, columnDefs);
+            super(cfm, columnDefs);
             slice = TermSlice.newInstance(bound, inclusive, term);
         }
 
         @Override
-        public boolean isSlice()
+        public boolean hasSlice()
         {
             return true;
         }
@@ -233,16 +262,9 @@ public abstract class TokenRestriction extends AbstractPrimaryKeyRestrictions
         }
 
         @Override
-        public boolean usesFunction(String ksName, String functionName)
+        public void addFunctionsTo(List<Function> functions)
         {
-            return (slice.hasBound(Bound.START) && usesFunction(slice.bound(Bound.START), ksName, functionName))
-                    || (slice.hasBound(Bound.END) && usesFunction(slice.bound(Bound.END), ksName, functionName));
-        }
-
-        @Override
-        public Iterable<Function> getFunctions()
-        {
-            return slice.getFunctions();
+            slice.addFunctionsTo(functions);
         }
 
         @Override
@@ -252,14 +274,14 @@ public abstract class TokenRestriction extends AbstractPrimaryKeyRestrictions
         }
 
         @Override
-        protected PrimaryKeyRestrictions doMergeWith(TokenRestriction otherRestriction)
+        protected PartitionKeyRestrictions doMergeWith(TokenRestriction otherRestriction)
         throws InvalidRequestException
         {
-            if (!otherRestriction.isSlice())
+            if (!(otherRestriction instanceof SliceRestriction))
                 throw invalidRequest("Columns \"%s\" cannot be restricted by both an equality and an inequality relation",
                                      getColumnNamesAsString());
 
-            TokenRestriction.Slice otherSlice = (TokenRestriction.Slice) otherRestriction;
+            TokenRestriction.SliceRestriction otherSlice = (TokenRestriction.SliceRestriction) otherRestriction;
 
             if (hasBound(Bound.START) && otherSlice.hasBound(Bound.START))
                 throw invalidRequest("More than one restriction was found for the start bound on %s",
@@ -269,7 +291,7 @@ public abstract class TokenRestriction extends AbstractPrimaryKeyRestrictions
                 throw invalidRequest("More than one restriction was found for the end bound on %s",
                                      getColumnNamesAsString());
 
-            return new Slice(ctype, columnDefs,  slice.merge(otherSlice.slice));
+            return new SliceRestriction(metadata, columnDefs,  slice.merge(otherSlice.slice));
         }
 
         @Override
@@ -277,10 +299,9 @@ public abstract class TokenRestriction extends AbstractPrimaryKeyRestrictions
         {
             return String.format("SLICE%s", slice);
         }
-
-        private Slice(CType ctype, List<ColumnDefinition> columnDefs, TermSlice slice)
+        private SliceRestriction(CFMetaData cfm, List<ColumnDefinition> columnDefs, TermSlice slice)
         {
-            super(ctype, columnDefs);
+            super(cfm, columnDefs);
             this.slice = slice;
         }
     }

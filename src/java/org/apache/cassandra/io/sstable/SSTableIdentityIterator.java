@@ -18,130 +18,156 @@
 package org.apache.cassandra.io.sstable;
 
 import java.io.*;
-import java.util.Iterator;
 
 import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.columniterator.OnDiskAtomIterator;
+import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
-import org.apache.cassandra.io.sstable.format.Version;
 import org.apache.cassandra.io.util.FileDataInput;
 import org.apache.cassandra.io.util.RandomAccessReader;
-import org.apache.cassandra.serializers.MarshalException;
+import org.apache.cassandra.utils.ByteBufferUtil;
 
-    public class SSTableIdentityIterator implements Comparable<SSTableIdentityIterator>, OnDiskAtomIterator
+public class SSTableIdentityIterator implements Comparable<SSTableIdentityIterator>, UnfilteredRowIterator
 {
+    private final SSTableReader sstable;
     private final DecoratedKey key;
-    private final DataInput in;
-    public final ColumnSerializer.Flag flag;
-
-    private final ColumnFamily columnFamily;
-    private final Iterator<OnDiskAtom> atomIterator;
-    private final boolean validateColumns;
+    private final DeletionTime partitionLevelDeletion;
     private final String filename;
 
-    /**
-     * Used to iterate through the columns of a row.
-     * @param sstable SSTable we are reading ffrom.
-     * @param file Reading using this file.
-     * @param key Key of this row.
-     */
-    public SSTableIdentityIterator(SSTableReader sstable, RandomAccessReader file, DecoratedKey key)
-    {
-        this(sstable, file, key, false);
-    }
+    protected final SSTableSimpleIterator iterator;
+    private final Row staticRow;
 
-    /**
-     * Used to iterate through the columns of a row.
-     * @param sstable SSTable we are reading ffrom.
-     * @param file Reading using this file.
-     * @param key Key of this row.
-     * @param checkData if true, do its best to deserialize and check the coherence of row data
-     */
-    public SSTableIdentityIterator(SSTableReader sstable, RandomAccessReader file, DecoratedKey key, boolean checkData)
+    public SSTableIdentityIterator(SSTableReader sstable, DecoratedKey key, DeletionTime partitionLevelDeletion,
+            String filename, SSTableSimpleIterator iterator) throws IOException
     {
-        this(sstable.metadata, file, file.getPath(), key, checkData, sstable, ColumnSerializer.Flag.LOCAL);
-    }
-
-    // sstable may be null *if* checkData is false
-    // If it is null, we assume the data is in the current file format
-    private SSTableIdentityIterator(CFMetaData metadata,
-                                    FileDataInput in,
-                                    String filename,
-                                    DecoratedKey key,
-                                    boolean checkData,
-                                    SSTableReader sstable,
-                                    ColumnSerializer.Flag flag)
-    {
-        assert !checkData || (sstable != null);
-        this.in = in;
-        this.filename = filename;
+        super();
+        this.sstable = sstable;
         this.key = key;
-        this.flag = flag;
-        this.validateColumns = checkData;
+        this.partitionLevelDeletion = partitionLevelDeletion;
+        this.filename = filename;
+        this.iterator = iterator;
+        this.staticRow = iterator.readStaticRow();
+    }
 
-        Version dataVersion = sstable == null ? DatabaseDescriptor.getSSTableFormat().info.getLatestVersion() : sstable.descriptor.version;
-        int expireBefore = (int) (System.currentTimeMillis() / 1000);
-        columnFamily = ArrayBackedSortedColumns.factory.create(metadata);
-
+    public static SSTableIdentityIterator create(SSTableReader sstable, RandomAccessReader file, DecoratedKey key)
+    {
         try
         {
-            columnFamily.delete(DeletionTime.serializer.deserialize(in));
-            atomIterator = columnFamily.metadata().getOnDiskIterator(in, flag, expireBefore, dataVersion);
+            DeletionTime partitionLevelDeletion = DeletionTime.serializer.deserialize(file);
+            SerializationHelper helper = new SerializationHelper(sstable.metadata, sstable.descriptor.version.correspondingMessagingVersion(), SerializationHelper.Flag.LOCAL);
+            SSTableSimpleIterator iterator = SSTableSimpleIterator.create(sstable.metadata, file, sstable.header, helper, partitionLevelDeletion);
+            return new SSTableIdentityIterator(sstable, key, partitionLevelDeletion, file.getPath(), iterator);
         }
         catch (IOException e)
         {
-            if (sstable != null)
-                sstable.markSuspect();
-            throw new CorruptSSTableException(e, filename);
+            sstable.markSuspect();
+            throw new CorruptSSTableException(e, file.getPath());
         }
     }
 
-    public DecoratedKey getKey()
+    public static SSTableIdentityIterator create(SSTableReader sstable, FileDataInput dfile, RowIndexEntry<?> indexEntry, DecoratedKey key, boolean tombstoneOnly)
+    {
+        try
+        {
+            dfile.seek(indexEntry.position);
+            ByteBufferUtil.skipShortLength(dfile); // Skip partition key
+            DeletionTime partitionLevelDeletion = DeletionTime.serializer.deserialize(dfile);
+            SerializationHelper helper = new SerializationHelper(sstable.metadata, sstable.descriptor.version.correspondingMessagingVersion(), SerializationHelper.Flag.LOCAL);
+            SSTableSimpleIterator iterator = tombstoneOnly
+                    ? SSTableSimpleIterator.createTombstoneOnly(sstable.metadata, dfile, sstable.header, helper, partitionLevelDeletion)
+                    : SSTableSimpleIterator.create(sstable.metadata, dfile, sstable.header, helper, partitionLevelDeletion);
+            return new SSTableIdentityIterator(sstable, key, partitionLevelDeletion, dfile.getPath(), iterator);
+        }
+        catch (IOException e)
+        {
+            sstable.markSuspect();
+            throw new CorruptSSTableException(e, dfile.getPath());
+        }
+    }
+
+    public CFMetaData metadata()
+    {
+        return sstable.metadata;
+    }
+
+    public PartitionColumns columns()
+    {
+        return metadata().partitionColumns();
+    }
+
+    public boolean isReverseOrder()
+    {
+        return false;
+    }
+
+    public DecoratedKey partitionKey()
     {
         return key;
     }
 
-    public ColumnFamily getColumnFamily()
+    public DeletionTime partitionLevelDeletion()
     {
-        return columnFamily;
+        return partitionLevelDeletion;
+    }
+
+    public Row staticRow()
+    {
+        return staticRow;
     }
 
     public boolean hasNext()
     {
         try
         {
-            return atomIterator.hasNext();
+            return iterator.hasNext();
+        }
+        catch (IndexOutOfBoundsException e)
+        {
+            sstable.markSuspect();
+            throw new CorruptSSTableException(e, filename);
         }
         catch (IOError e)
         {
-            // catch here b/c atomIterator is an AbstractIterator; hasNext reads the value
             if (e.getCause() instanceof IOException)
-                throw new CorruptSSTableException((IOException)e.getCause(), filename);
+            {
+                sstable.markSuspect();
+                throw new CorruptSSTableException((Exception)e.getCause(), filename);
+            }
             else
+            {
                 throw e;
+            }
         }
     }
 
-    public OnDiskAtom next()
+    public Unfiltered next()
     {
         try
         {
-            OnDiskAtom atom = atomIterator.next();
-            if (validateColumns)
-                atom.validateFields(columnFamily.metadata());
-            return atom;
+            return doCompute();
         }
-        catch (MarshalException me)
+        catch (IndexOutOfBoundsException e)
         {
-            throw new CorruptSSTableException(me, filename);
+            sstable.markSuspect();
+            throw new CorruptSSTableException(e, filename);
+        }
+        catch (IOError e)
+        {
+            if (e.getCause() instanceof IOException)
+            {
+                sstable.markSuspect();
+                throw new CorruptSSTableException((Exception)e.getCause(), filename);
+            }
+            else
+            {
+                throw e;
+            }
         }
     }
 
-    public void remove()
+    protected Unfiltered doCompute()
     {
-        throw new UnsupportedOperationException();
+        return iterator.next();
     }
 
     public void close()
@@ -151,16 +177,14 @@ import org.apache.cassandra.serializers.MarshalException;
 
     public String getPath()
     {
-        // if input is from file, then return that path, otherwise it's from streaming
-        if (in instanceof RandomAccessReader)
-        {
-            RandomAccessReader file = (RandomAccessReader) in;
-            return file.getPath();
-        }
-        else
-        {
-            throw new UnsupportedOperationException();
-        }
+        return filename;
+    }
+
+    public EncodingStats stats()
+    {
+        // We could return sstable.header.stats(), but this may not be as accurate than the actual sstable stats (see
+        // SerializationHeader.make() for details) so we use the latter instead.
+        return new EncodingStats(sstable.getMinTimestamp(), sstable.getMinLocalDeletionTime(), sstable.getMinTTL());
     }
 
     public int compareTo(SSTableIdentityIterator o)

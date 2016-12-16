@@ -21,10 +21,12 @@ import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.List;
 
-import com.google.common.collect.Iterables;
 import org.apache.commons.lang3.text.StrBuilder;
-
+import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.cql3.ColumnSpecification;
+import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.cql3.functions.Function;
+import org.apache.cassandra.cql3.statements.RequestValidations;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 
@@ -36,7 +38,7 @@ abstract class AbstractFunctionSelector<T extends Function> extends Selector
      * The list used to pass the function arguments is recycled to avoid the cost of instantiating a new list
      * with each function call.
      */
-    protected final List<ByteBuffer> args;
+    private final List<ByteBuffer> args;
     protected final List<Selector> argSelectors;
 
     public static Factory newFactory(final Function fun, final SelectorFactories factories) throws InvalidRequestException
@@ -46,21 +48,12 @@ abstract class AbstractFunctionSelector<T extends Function> extends Selector
             if (factories.doesAggregation())
                 throw new InvalidRequestException("aggregate functions cannot be used as arguments of aggregate functions");
         }
-        else
-        {
-            if (factories.doesAggregation() && !factories.containsOnlyAggregateFunctions())
-                throw new InvalidRequestException(String.format("arguments of function %s must be either all aggregates or no aggregates",
-                                                                fun.name()));
-        }
 
         return new Factory()
         {
             protected String getColumnName()
             {
-                return new StrBuilder(fun.name().toString()).append('(')
-                                                            .appendWithSeparators(factories.getColumnNames(), ", ")
-                                                            .append(')')
-                                                            .toString();
+                return fun.columnName(factories.getColumnNames());
             }
 
             protected AbstractType<?> getReturnType()
@@ -68,20 +61,31 @@ abstract class AbstractFunctionSelector<T extends Function> extends Selector
                 return fun.returnType();
             }
 
-            public boolean usesFunction(String ksName, String functionName)
+            protected void addColumnMapping(SelectionColumnMapping mapping, ColumnSpecification resultsColumn)
             {
-                return fun.usesFunction(ksName, functionName);
+                SelectionColumnMapping tmpMapping = SelectionColumnMapping.newMapping();
+                for (Factory factory : factories)
+                   factory.addColumnMapping(tmpMapping, resultsColumn);
+
+                if (tmpMapping.getMappings().get(resultsColumn).isEmpty())
+                    // add a null mapping for cases where there are no
+                    // further selectors, such as no-arg functions and count
+                    mapping.addMapping(resultsColumn, (ColumnDefinition)null);
+                else
+                    // collate the mapped columns from the child factories & add those
+                    mapping.addMapping(resultsColumn, tmpMapping.getMappings().values());
             }
 
-            public Iterable<Function> getFunctions()
+            public void addFunctionsTo(List<Function> functions)
             {
-                return Iterables.concat(fun.getFunctions(), factories.getFunctions());
+                fun.addFunctionsTo(functions);
+                factories.addFunctionsTo(functions);
             }
 
-            public Selector newInstance() throws InvalidRequestException
+            public Selector newInstance(QueryOptions options) throws InvalidRequestException
             {
-                return fun.isAggregate() ? new AggregateFunctionSelector(fun, factories.newInstances())
-                                         : new ScalarFunctionSelector(fun, factories.newInstances());
+                return fun.isAggregate() ? new AggregateFunctionSelector(fun, factories.newInstances(options))
+                                         : new ScalarFunctionSelector(fun, factories.newInstances(options));
             }
 
             public boolean isWritetimeSelectorFactory()
@@ -96,7 +100,7 @@ abstract class AbstractFunctionSelector<T extends Function> extends Selector
 
             public boolean isAggregateSelectorFactory()
             {
-                return fun.isAggregate() || factories.containsOnlyAggregateFunctions();
+                return fun.isAggregate() || factories.doesAggregation();
             }
         };
     }
@@ -106,6 +110,19 @@ abstract class AbstractFunctionSelector<T extends Function> extends Selector
         this.fun = fun;
         this.argSelectors = argSelectors;
         this.args = Arrays.asList(new ByteBuffer[argSelectors.size()]);
+    }
+
+    // Sets a given arg value. We should use that instead of directly setting the args list for the
+    // sake of validation.
+    protected void setArg(int i, ByteBuffer value) throws InvalidRequestException
+    {
+        RequestValidations.checkBindValueSet(value, "Invalid unset value for argument in call to function %s", fun.name().name);
+        args.set(i, value);
+    }
+
+    protected List<ByteBuffer> args()
+    {
+        return args;
     }
 
     public AbstractType<?> getType()

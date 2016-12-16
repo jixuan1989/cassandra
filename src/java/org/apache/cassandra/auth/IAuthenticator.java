@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.auth;
 
+import java.net.InetAddress;
 import java.util.Map;
 import java.util.Set;
 
@@ -56,18 +57,18 @@ public interface IAuthenticator
      * Provide a SASL handler to perform authentication for an single connection. SASL
      * is a stateful protocol, so a new instance must be used for each authentication
      * attempt.
+     * @param clientAddress the IP address of the client whom we wish to authenticate, or null
+     *                      if an internal client (one not connected over the remote transport).
      * @return org.apache.cassandra.auth.IAuthenticator.SaslNegotiator implementation
      * (see {@link org.apache.cassandra.auth.PasswordAuthenticator.PlainTextSaslAuthenticator})
      */
-    SaslNegotiator newSaslNegotiator();
+    SaslNegotiator newSaslNegotiator(InetAddress clientAddress);
 
     /**
-     * For implementations which support the Thrift login method that accepts arbitrary
-     * key/value pairs containing credentials data.
-     * Also used by CQL native protocol v1, in which username and password are sent from
-     * client to server in a {@link org.apache.cassandra.transport.messages.CredentialsMessage}
-     * Implementations where support for Thrift and CQL protocol v1 is not required should make
-     * this an unsupported operation.
+     * A legacy method that is still used by JMX authentication.
+     *
+     * You should implement this for having JMX authentication through your
+     * authenticator.
      *
      * Should never return null - always throw AuthenticationException instead.
      * Returning AuthenticatedUser.ANONYMOUS_USER is an option as well if authentication is not required.

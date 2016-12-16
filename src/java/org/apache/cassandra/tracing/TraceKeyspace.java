@@ -21,20 +21,22 @@ import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import com.google.common.collect.ImmutableMap;
-
 import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.config.KSMetaData;
-import org.apache.cassandra.db.CFRowAdder;
-import org.apache.cassandra.db.ColumnFamily;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.db.Mutation;
-import org.apache.cassandra.locator.SimpleStrategy;
+import org.apache.cassandra.db.rows.Row;
+import org.apache.cassandra.db.partitions.PartitionUpdate;
+import org.apache.cassandra.schema.KeyspaceMetadata;
+import org.apache.cassandra.schema.KeyspaceParams;
+import org.apache.cassandra.schema.Tables;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.UUIDGen;
 
 public final class TraceKeyspace
 {
-    public static final String NAME = "system_traces";
+    private TraceKeyspace()
+    {
+    }
 
     public static final String SESSIONS = "sessions";
     public static final String EVENTS = "events";
@@ -67,14 +69,13 @@ public final class TraceKeyspace
 
     private static CFMetaData compile(String name, String description, String schema)
     {
-        return CFMetaData.compile(String.format(schema, name), NAME)
+        return CFMetaData.compile(String.format(schema, name), SchemaConstants.TRACE_KEYSPACE_NAME)
                          .comment(description);
     }
 
-    public static KSMetaData definition()
+    public static KeyspaceMetadata metadata()
     {
-        List<CFMetaData> tables = Arrays.asList(Sessions, Events);
-        return new KSMetaData(NAME, SimpleStrategy.class, ImmutableMap.of("replication_factor", "2"), true, tables);
+        return KeyspaceMetadata.create(SchemaConstants.TRACE_KEYSPACE_NAME, KeyspaceParams.simple(2), Tables.of(Sessions, Events));
     }
 
     static Mutation makeStartSessionMutation(ByteBuffer sessionId,
@@ -85,44 +86,41 @@ public final class TraceKeyspace
                                              String command,
                                              int ttl)
     {
-        Mutation mutation = new Mutation(NAME, sessionId);
-        ColumnFamily cells = mutation.addOrGet(TraceKeyspace.Sessions);
+        PartitionUpdate.SimpleBuilder builder = PartitionUpdate.simpleBuilder(Sessions, sessionId);
+        builder.row()
+               .ttl(ttl)
+               .add("client", client)
+               .add("coordinator", FBUtilities.getBroadcastAddress())
+               .add("request", request)
+               .add("started_at", new Date(startedAt))
+               .add("command", command)
+               .appendAll("parameters", parameters);
 
-        CFRowAdder adder = new CFRowAdder(cells, cells.metadata().comparator.builder().build(), FBUtilities.timestampMicros(), ttl);
-        adder.add("client", client)
-             .add("coordinator", FBUtilities.getBroadcastAddress())
-             .add("request", request)
-             .add("started_at", new Date(startedAt))
-             .add("command", command);
-        for (Map.Entry<String, String> entry : parameters.entrySet())
-            adder.addMapEntry("parameters", entry.getKey(), entry.getValue());
-
-        return mutation;
+        return builder.buildAsMutation();
     }
 
     static Mutation makeStopSessionMutation(ByteBuffer sessionId, int elapsed, int ttl)
     {
-        Mutation mutation = new Mutation(NAME, sessionId);
-        ColumnFamily cells = mutation.addOrGet(Sessions);
-
-        CFRowAdder adder = new CFRowAdder(cells, cells.metadata().comparator.builder().build(), FBUtilities.timestampMicros(), ttl);
-        adder.add("duration", elapsed);
-
-        return mutation;
+        PartitionUpdate.SimpleBuilder builder = PartitionUpdate.simpleBuilder(Sessions, sessionId);
+        builder.row()
+               .ttl(ttl)
+               .add("duration", elapsed);
+        return builder.buildAsMutation();
     }
 
     static Mutation makeEventMutation(ByteBuffer sessionId, String message, int elapsed, String threadName, int ttl)
     {
-        Mutation mutation = new Mutation(NAME, sessionId);
-        ColumnFamily cells = mutation.addOrGet(Events);
+        PartitionUpdate.SimpleBuilder builder = PartitionUpdate.simpleBuilder(Events, sessionId);
+        Row.SimpleBuilder rowBuilder = builder.row(UUIDGen.getTimeUUID())
+                                              .ttl(ttl);
 
-        CFRowAdder adder = new CFRowAdder(cells, cells.metadata().comparator.make(UUIDGen.getTimeUUID()), FBUtilities.timestampMicros(), ttl);
-        adder.add("activity", message)
-             .add("source", FBUtilities.getBroadcastAddress())
-             .add("thread", threadName);
+        rowBuilder.add("activity", message)
+                  .add("source", FBUtilities.getBroadcastAddress())
+                  .add("thread", threadName);
+
         if (elapsed >= 0)
-            adder.add("source_elapsed", elapsed);
+            rowBuilder.add("source_elapsed", elapsed);
 
-        return mutation;
+        return builder.buildAsMutation();
     }
 }

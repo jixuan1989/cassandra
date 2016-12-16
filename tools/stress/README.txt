@@ -55,7 +55,7 @@ Primary Options:
     -rate:
         Thread count, rate limit or automatic mode (default is auto)
     -mode:
-        Thrift or CQL with options
+        CQL transport options
     -errors:
         How to handle errors when encountered during stress
     -sample:
@@ -72,6 +72,11 @@ Primary Options:
         The port to connect to cassandra nodes on
     -sendto:
         Specify a stress server to send this command to
+    -graph:
+        Graph recorded metrics
+    -tokenrange:
+        Token range settings
+
 
 Suboptions:
     Every command and primary option has its own collection of suboptions. These are too numerous to list here.

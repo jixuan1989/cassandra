@@ -18,33 +18,33 @@
 package org.apache.cassandra.db.marshal;
 
 import java.nio.ByteBuffer;
+import java.io.IOException;
 import java.util.List;
-
-import org.apache.cassandra.db.Cell;
-import org.apache.cassandra.transport.Server;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import java.util.Iterator;
 
 import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.cql3.ColumnSpecification;
 import org.apache.cassandra.cql3.Lists;
 import org.apache.cassandra.cql3.Maps;
 import org.apache.cassandra.cql3.Sets;
-
+import org.apache.cassandra.db.rows.Cell;
+import org.apache.cassandra.db.rows.CellPath;
+import org.apache.cassandra.io.util.DataInputPlus;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.serializers.CollectionSerializer;
 import org.apache.cassandra.serializers.MarshalException;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 /**
  * The abstract validator that is the base for maps, sets and lists (both frozen and non-frozen).
  *
- * Please note that this comparator shouldn't be used "manually" (through thrift for instance).
+ * Please note that this comparator shouldn't be used "manually" (as a custom
+ * type for instance).
  */
 public abstract class CollectionType<T> extends AbstractType<T>
 {
-    private static final Logger logger = LoggerFactory.getLogger(CollectionType.class);
-
-    public static final int MAX_ELEMENTS = 65535;
+    public static CellPath.Serializer cellPathSerializer = new CollectionPathSerializer();
 
     public enum Kind
     {
@@ -75,13 +75,16 @@ public abstract class CollectionType<T> extends AbstractType<T>
 
     public final Kind kind;
 
-    protected CollectionType(Kind kind)
+    protected CollectionType(ComparisonType comparisonType, Kind kind)
     {
+        super(comparisonType);
         this.kind = kind;
     }
 
     public abstract AbstractType<?> nameComparator();
     public abstract AbstractType<?> valueComparator();
+
+    protected abstract List<ByteBuffer> serializedValues(Iterator<Cell> cells);
 
     @Override
     public abstract CollectionSerializer<T> getSerializer();
@@ -117,7 +120,7 @@ public abstract class CollectionType<T> extends AbstractType<T>
     public void validateCellValue(ByteBuffer cellValue) throws MarshalException
     {
         if (isMultiCell())
-            valueComparator().validate(cellValue);
+            valueComparator().validateCellValue(cellValue);
         else
             super.validateCellValue(cellValue);
     }
@@ -131,26 +134,24 @@ public abstract class CollectionType<T> extends AbstractType<T>
         return kind == Kind.MAP;
     }
 
-    public List<Cell> enforceLimit(List<Cell> cells, int version)
+    @Override
+    public boolean isFreezable()
     {
-        assert isMultiCell();
-
-        if (version >= Server.VERSION_3 || cells.size() <= MAX_ELEMENTS)
-            return cells;
-
-        logger.error("Detected collection with {} elements, more than the {} limit. Only the first {} elements will be returned to the client. "
-                   + "Please see http://cassandra.apache.org/doc/cql3/CQL.html#collections for more details.", cells.size(), MAX_ELEMENTS, MAX_ELEMENTS);
-        return cells.subList(0, MAX_ELEMENTS);
+        return true;
     }
 
-    public abstract List<ByteBuffer> serializedValues(List<Cell> cells);
+    // Overrided by maps
+    protected int collectionSize(List<ByteBuffer> values)
+    {
+        return values.size();
+    }
 
-    public ByteBuffer serializeForNativeProtocol(List<Cell> cells, int version)
+    public ByteBuffer serializeForNativeProtocol(Iterator<Cell> cells, ProtocolVersion version)
     {
         assert isMultiCell();
-        cells = enforceLimit(cells, version);
         List<ByteBuffer> values = serializedValues(cells);
-        return CollectionSerializer.pack(values, cells.size(), version);
+        int size = collectionSize(values);
+        return CollectionSerializer.pack(values, size, version);
     }
 
     @Override
@@ -210,8 +211,52 @@ public abstract class CollectionType<T> extends AbstractType<T>
     }
 
     @Override
+    public boolean equals(Object o, boolean ignoreFreezing)
+    {
+        if (this == o)
+            return true;
+
+        if (!(o instanceof CollectionType))
+            return false;
+
+        CollectionType other = (CollectionType)o;
+
+        if (kind != other.kind)
+            return false;
+
+        if (!ignoreFreezing && isMultiCell() != other.isMultiCell())
+            return false;
+
+        return nameComparator().equals(other.nameComparator(), ignoreFreezing) &&
+               valueComparator().equals(other.valueComparator(), ignoreFreezing);
+    }
+
+    @Override
     public String toString()
     {
         return this.toString(false);
+    }
+
+    private static class CollectionPathSerializer implements CellPath.Serializer
+    {
+        public void serialize(CellPath path, DataOutputPlus out) throws IOException
+        {
+            ByteBufferUtil.writeWithVIntLength(path.get(0), out);
+        }
+
+        public CellPath deserialize(DataInputPlus in) throws IOException
+        {
+            return CellPath.create(ByteBufferUtil.readWithVIntLength(in));
+        }
+
+        public long serializedSize(CellPath path)
+        {
+            return ByteBufferUtil.serializedSizeWithVIntLength(path.get(0));
+        }
+
+        public void skip(DataInputPlus in) throws IOException
+        {
+            ByteBufferUtil.skipWithVIntLength(in);
+        }
     }
 }

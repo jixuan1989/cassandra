@@ -19,11 +19,7 @@
 package org.apache.cassandra.utils.memory;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.List;
 
-import org.apache.cassandra.db.Cell;
-import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.utils.concurrent.OpOrder;
 
 public class HeapPool extends MemtablePool
@@ -33,18 +29,14 @@ public class HeapPool extends MemtablePool
         super(maxOnHeapMemory, 0, cleanupThreshold, cleaner);
     }
 
-    public boolean needToCopyOnHeap()
-    {
-        return false;
-    }
-
     public MemtableAllocator newAllocator()
     {
         return new Allocator(this);
     }
 
-    public static class Allocator extends MemtableBufferAllocator
+    private static class Allocator extends MemtableBufferAllocator
     {
+        private static final EnsureOnHeap ENSURE_NOOP = new EnsureOnHeap.NoOp();
         Allocator(HeapPool pool)
         {
             super(pool.onHeap.newAllocator(), pool.offHeap.newAllocator());
@@ -56,47 +48,9 @@ public class HeapPool extends MemtablePool
             return ByteBuffer.allocate(size);
         }
 
-        public DataReclaimer reclaimer()
+        public EnsureOnHeap ensureOnHeap()
         {
-            return new Reclaimer();
-        }
-
-        private class Reclaimer implements DataReclaimer
-        {
-            List<Cell> delayed;
-
-            public Reclaimer reclaim(Cell cell)
-            {
-                if (delayed == null)
-                    delayed = new ArrayList<>();
-                delayed.add(cell);
-                return this;
-            }
-
-            public Reclaimer reclaimImmediately(Cell cell)
-            {
-                onHeap().release(cell.name().dataSize() + cell.value().remaining());
-                return this;
-            }
-
-            public Reclaimer reclaimImmediately(DecoratedKey key)
-            {
-                onHeap().release(key.getKey().remaining());
-                return this;
-            }
-
-            public void cancel()
-            {
-                if (delayed != null)
-                    delayed.clear();
-            }
-
-            public void commit()
-            {
-                if (delayed != null)
-                    for (Cell cell : delayed)
-                        reclaimImmediately(cell);
-            }
+            return ENSURE_NOOP;
         }
     }
 }

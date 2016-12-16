@@ -19,13 +19,15 @@ package org.apache.cassandra.utils;
 
 import com.google.common.annotations.VisibleForTesting;
 
+import io.netty.util.concurrent.FastThreadLocal;
+import net.nicoulaj.compilecommand.annotations.Inline;
+import org.apache.cassandra.utils.concurrent.Ref;
 import org.apache.cassandra.utils.concurrent.WrappedSharedCloseable;
 import org.apache.cassandra.utils.obs.IBitSet;
-import org.apache.cassandra.db.TypeSizes;
 
 public class BloomFilter extends WrappedSharedCloseable implements IFilter
 {
-    private static final ThreadLocal<long[]> reusableIndexes = new ThreadLocal<long[]>()
+    private final static FastThreadLocal<long[]> reusableIndexes = new FastThreadLocal<long[]>()
     {
         protected long[] initialValue()
         {
@@ -43,18 +45,16 @@ public class BloomFilter extends WrappedSharedCloseable implements IFilter
         this.bitset = bitset;
     }
 
-    BloomFilter(BloomFilter copy)
+    private BloomFilter(BloomFilter copy)
     {
         super(copy);
         this.hashCount = copy.hashCount;
         this.bitset = copy.bitset;
     }
 
-    public static final BloomFilterSerializer serializer = new BloomFilterSerializer();
-
     public long serializedSize()
     {
-        return serializer.serializedSize(this, TypeSizes.NATIVE);
+        return BloomFilterSerializer.serializedSize(this);
     }
 
     // Murmur is faster than an SHA-based approach and provides as-good collision
@@ -71,7 +71,7 @@ public class BloomFilter extends WrappedSharedCloseable implements IFilter
         long[] hash = new long[2];
         key.filterHash(hash);
         long[] indexes = new long[hashCount];
-        setIndexes(hash[0], hash[1], hashCount, max, indexes);
+        setIndexes(hash[1], hash[0], hashCount, max, indexes);
         return indexes;
     }
 
@@ -79,16 +79,19 @@ public class BloomFilter extends WrappedSharedCloseable implements IFilter
     // to avoid generating a lot of garbage since stack allocation currently does not support stores
     // (CASSANDRA-6609).  it returns the array so that the caller does not need to perform
     // a second threadlocal lookup.
+    @Inline
     private long[] indexes(FilterKey key)
     {
         // we use the same array both for storing the hash result, and for storing the indexes we return,
         // so that we do not need to allocate two arrays.
         long[] indexes = reusableIndexes.get();
+
         key.filterHash(indexes);
-        setIndexes(indexes[0], indexes[1], hashCount, bitset.capacity(), indexes);
+        setIndexes(indexes[1], indexes[0], hashCount, bitset.capacity(), indexes);
         return indexes;
     }
 
+    @Inline
     private void setIndexes(long base, long inc, int count, long max, long[] results)
     {
         for (int i = 0; i < count; i++)
@@ -134,5 +137,16 @@ public class BloomFilter extends WrappedSharedCloseable implements IFilter
     public long offHeapSize()
     {
         return bitset.offHeapSize();
+    }
+
+    public String toString()
+    {
+        return "BloomFilter[hashCount=" + hashCount + ";capacity=" + bitset.capacity() + ']';
+    }
+
+    public void addTo(Ref.IdentityCollection identities)
+    {
+        super.addTo(identities);
+        bitset.addTo(identities);
     }
 }

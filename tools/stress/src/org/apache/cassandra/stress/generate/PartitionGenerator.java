@@ -22,10 +22,8 @@ package org.apache.cassandra.stress.generate;
 
 
 import java.nio.ByteBuffer;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.NoSuchElementException;
+import java.util.*;
+import java.util.stream.Collectors;
 
 import com.google.common.collect.Iterables;
 
@@ -71,7 +69,7 @@ public class PartitionGenerator
         }
         this.maxRowCount = maxRowCount;
         this.minRowCount = minRowCount;
-        this.indexMap = new HashMap<>();
+        this.indexMap = new LinkedHashMap<>();
         int i = 0;
         for (Generator generator : partitionKey)
             indexMap.put(generator.name, --i);
@@ -100,5 +98,19 @@ public class PartitionGenerator
         if (c < clusteringComponents.size())
             return clusteringComponents.get(c).type.decompose(v);
         return valueComponents.get(c - clusteringComponents.size()).type.decompose(v);
+    }
+
+    public Object convert(int c, ByteBuffer v)
+    {
+        if (c < 0)
+            return partitionKey.get(-1-c).type.compose(v);
+        if (c < clusteringComponents.size())
+            return clusteringComponents.get(c).type.compose(v);
+        return valueComponents.get(c - clusteringComponents.size()).type.compose(v);
+    }
+
+    public List<String> getColumnNames()
+    {
+        return indexMap.keySet().stream().collect(Collectors.toList());
     }
 }

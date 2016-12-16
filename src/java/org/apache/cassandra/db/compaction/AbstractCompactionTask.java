@@ -20,31 +20,34 @@ package org.apache.cassandra.db.compaction;
 import java.util.Set;
 
 import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.compaction.CompactionManager.CompactionExecutorStatsCollector;
 import org.apache.cassandra.db.compaction.writers.CompactionAwareWriter;
+import org.apache.cassandra.io.FSDiskFullWriteError;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.utils.WrappedRunnable;
+import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 
 public abstract class AbstractCompactionTask extends WrappedRunnable
 {
     protected final ColumnFamilyStore cfs;
-    protected Set<SSTableReader> sstables;
+    protected LifecycleTransaction transaction;
     protected boolean isUserDefined;
     protected OperationType compactionType;
 
     /**
      * @param cfs
-     * @param sstables must be marked compacting
+     * @param transaction the modifying managing the status of the sstables we're replacing
      */
-    public AbstractCompactionTask(ColumnFamilyStore cfs, Set<SSTableReader> sstables)
+    public AbstractCompactionTask(ColumnFamilyStore cfs, LifecycleTransaction transaction)
     {
         this.cfs = cfs;
-        this.sstables = sstables;
+        this.transaction = transaction;
         this.isUserDefined = false;
         this.compactionType = OperationType.COMPACTION;
         // enforce contract that caller should mark sstables compacting
-        Set<SSTableReader> compacting = cfs.getDataTracker().getCompacting();
-        for (SSTableReader sstable : sstables)
+        Set<SSTableReader> compacting = transaction.tracker.getCompacting();
+        for (SSTableReader sstable : transaction.originals())
             assert compacting.contains(sstable) : sstable.getFilename() + " is not correctly marked compacting";
     }
 
@@ -57,12 +60,18 @@ public abstract class AbstractCompactionTask extends WrappedRunnable
         {
             return executeInternal(collector);
         }
+        catch(FSDiskFullWriteError e)
+        {
+            RuntimeException cause = new RuntimeException("Converted from FSDiskFullWriteError: " + e.getMessage());
+            cause.setStackTrace(e.getStackTrace());
+            throw new RuntimeException("Throwing new Runtime to bypass exception handler when disk is full", cause);
+        }
         finally
         {
-            cfs.getDataTracker().unmarkCompacting(sstables);
+            transaction.close();
         }
     }
-    public abstract CompactionAwareWriter getCompactionAwareWriter(ColumnFamilyStore cfs, Set<SSTableReader> allSSTables, Set<SSTableReader> nonExpiredSSTables);
+    public abstract CompactionAwareWriter getCompactionAwareWriter(ColumnFamilyStore cfs, Directories directories, LifecycleTransaction txn, Set<SSTableReader> nonExpiredSSTables);
 
     protected abstract int executeInternal(CompactionExecutorStatsCollector collector);
 
@@ -80,6 +89,6 @@ public abstract class AbstractCompactionTask extends WrappedRunnable
 
     public String toString()
     {
-        return "CompactionTask(" + sstables + ")";
+        return "CompactionTask(" + transaction + ")";
     }
 }

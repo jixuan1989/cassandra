@@ -33,8 +33,8 @@ import javax.management.openmbean.CompositeData;
 import javax.management.openmbean.OpenDataException;
 import javax.management.openmbean.TabularDataSupport;
 
-import org.apache.cassandra.metrics.ColumnFamilyMetrics;
-import org.apache.cassandra.metrics.ColumnFamilyMetrics.Sampler;
+import org.apache.cassandra.metrics.TableMetrics;
+import org.apache.cassandra.metrics.TableMetrics.Sampler;
 import org.apache.cassandra.tools.NodeProbe;
 import org.apache.cassandra.tools.NodeTool.NodeToolCmd;
 
@@ -51,7 +51,7 @@ public class TopPartitions extends NodeToolCmd
     @Option(name = "-k", description = "Number of the top partitions to list (Default: 10)")
     private int topCount = 10;
     @Option(name = "-a", description = "Comma separated list of samplers to use (Default: all)")
-    private String samplers = join(ColumnFamilyMetrics.Sampler.values(), ',');
+    private String samplers = join(TableMetrics.Sampler.values(), ',');
     @Override
     public void execute(NodeProbe probe)
     {
@@ -59,7 +59,7 @@ public class TopPartitions extends NodeToolCmd
         checkArgument(topCount < size, "TopK count (-k) option must be smaller then the summary capacity (-s)");
         String keyspace = args.get(0);
         String cfname = args.get(1);
-        Integer duration = Integer.parseInt(args.get(2));
+        Integer duration = Integer.valueOf(args.get(2));
         // generate the list of samplers
         List<Sampler> targets = Lists.newArrayList();
         for (String s : samplers.split(","))
@@ -97,7 +97,7 @@ public class TopPartitions extends NodeToolCmd
             if(!first)
                 System.out.println();
             System.out.println(result.getKey().toString()+ " Sampler:");
-            System.out.printf("  Cardinality: ~%d (%d capacity)%n", (long) sampling.get("cardinality"), size);
+            System.out.printf("  Cardinality: ~%d (%d capacity)%n", sampling.get("cardinality"), size);
             System.out.printf("  Top %d partitions:%n", topCount);
             if (topk.size() == 0)
             {

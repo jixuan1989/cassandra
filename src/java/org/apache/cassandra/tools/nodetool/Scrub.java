@@ -43,21 +43,33 @@ public class Scrub extends NodeToolCmd
             description = "Skip corrupted partitions even when scrubbing counter tables. (default false)")
     private boolean skipCorrupted = false;
 
+    @Option(title = "no_validate",
+                   name = {"-n", "--no-validate"},
+                   description = "Do not validate columns using column validator")
+    private boolean noValidation = false;
+
+    @Option(title = "jobs",
+            name = {"-j", "--jobs"},
+            description = "Number of sstables to scrub simultanously, set to 0 to use all available compaction threads")
+    private int jobs = 2;
+
     @Override
     public void execute(NodeProbe probe)
     {
         List<String> keyspaces = parseOptionalKeyspace(args, probe);
-        String[] cfnames = parseOptionalColumnFamilies(args);
+        String[] tableNames = parseOptionalTables(args);
 
         for (String keyspace : keyspaces)
         {
             try
             {
-                probe.scrub(System.out, disableSnapshot, skipCorrupted, keyspace, cfnames);
-            } catch (IllegalArgumentException e)
+                probe.scrub(System.out, disableSnapshot, skipCorrupted, !noValidation, jobs, keyspace, tableNames);
+            }
+            catch (IllegalArgumentException e)
             {
                 throw e;
-            } catch (Exception e)
+            }
+            catch (Exception e)
             {
                 throw new RuntimeException("Error occurred during scrubbing", e);
             }

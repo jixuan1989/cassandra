@@ -17,12 +17,13 @@
  */
 package org.apache.cassandra.utils;
 
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 import org.junit.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.DataInputStream;
-import java.util.*;
-
+import org.apache.cassandra.io.util.DataInputBuffer;
 import org.apache.cassandra.io.util.DataOutputBuffer;
 
 import static org.junit.Assert.assertEquals;
@@ -50,11 +51,11 @@ public class StreamingHistogramTest
         expected1.put(36.0, 1L);
 
         Iterator<Map.Entry<Double, Long>> expectedItr = expected1.entrySet().iterator();
-        for (Map.Entry<Double, Long> actual : hist.getAsMap().entrySet())
+        for (Map.Entry<Number, long[]> actual : hist.getAsMap().entrySet())
         {
             Map.Entry<Double, Long> entry = expectedItr.next();
-            assertEquals(entry.getKey(), actual.getKey(), 0.01);
-            assertEquals(entry.getValue(), actual.getValue());
+            assertEquals(entry.getKey(), actual.getKey().doubleValue(), 0.01);
+            assertEquals(entry.getValue().longValue(), actual.getValue()[0]);
         }
 
         // merge test
@@ -72,11 +73,11 @@ public class StreamingHistogramTest
         expected2.put(32.67, 3L);
         expected2.put(45.0, 1L);
         expectedItr = expected2.entrySet().iterator();
-        for (Map.Entry<Double, Long> actual : hist.getAsMap().entrySet())
+        for (Map.Entry<Number, long[]> actual : hist.getAsMap().entrySet())
         {
             Map.Entry<Double, Long> entry = expectedItr.next();
-            assertEquals(entry.getKey(), actual.getKey(), 0.01);
-            assertEquals(entry.getValue(), actual.getValue());
+            assertEquals(entry.getKey(), actual.getKey().doubleValue(), 0.01);
+            assertEquals(entry.getValue().longValue(), actual.getValue()[0]);
         }
 
         // sum test
@@ -101,7 +102,7 @@ public class StreamingHistogramTest
         StreamingHistogram.serializer.serialize(hist, out);
         byte[] bytes = out.toByteArray();
 
-        StreamingHistogram deserialized = StreamingHistogram.serializer.deserialize(new DataInputStream(new ByteArrayInputStream(bytes)));
+        StreamingHistogram deserialized = StreamingHistogram.serializer.deserialize(new DataInputBuffer(bytes));
 
         // deserialized histogram should have following values
         Map<Double, Long> expected1 = new LinkedHashMap<Double, Long>(5);
@@ -112,11 +113,40 @@ public class StreamingHistogramTest
         expected1.put(36.0, 1L);
 
         Iterator<Map.Entry<Double, Long>> expectedItr = expected1.entrySet().iterator();
-        for (Map.Entry<Double, Long> actual : deserialized.getAsMap().entrySet())
+        for (Map.Entry<Number, long[]> actual : deserialized.getAsMap().entrySet())
         {
             Map.Entry<Double, Long> entry = expectedItr.next();
-            assertEquals(entry.getKey(), actual.getKey(), 0.01);
-            assertEquals(entry.getValue(), actual.getValue());
+            assertEquals(entry.getKey(), actual.getKey().doubleValue(), 0.01);
+            assertEquals(entry.getValue().longValue(), actual.getValue()[0]);
         }
+    }
+
+
+    @Test
+    public void testNumericTypes() throws Exception
+    {
+        StreamingHistogram hist = new StreamingHistogram(5);
+
+        hist.update(2);
+        hist.update(2.0);
+        hist.update(2L);
+
+        Map<Number, long[]> asMap = hist.getAsMap();
+
+        assertEquals(1, asMap.size());
+        assertEquals(3L, asMap.get(2)[0]);
+
+        //Make sure it's working with Serde
+        DataOutputBuffer out = new DataOutputBuffer();
+        StreamingHistogram.serializer.serialize(hist, out);
+        byte[] bytes = out.toByteArray();
+
+        StreamingHistogram deserialized = StreamingHistogram.serializer.deserialize(new DataInputBuffer(bytes));
+
+        deserialized.update(2L);
+
+        asMap = deserialized.getAsMap();
+        assertEquals(1, asMap.size());
+        assertEquals(4L, asMap.get(2)[0]);
     }
 }

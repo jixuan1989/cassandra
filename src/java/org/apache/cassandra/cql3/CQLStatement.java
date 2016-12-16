@@ -50,17 +50,21 @@ public interface CQLStatement
      *
      * @param state the current query state
      * @param options options for this query (consistency, variables, pageSize, ...)
+     * @param queryStartNanoTime the timestamp returned by System.nanoTime() when this statement was received
      */
-    public ResultMessage execute(QueryState state, QueryOptions options) throws RequestValidationException, RequestExecutionException;
+    public ResultMessage execute(QueryState state, QueryOptions options, long queryStartNanoTime) throws RequestValidationException, RequestExecutionException;
 
     /**
-     * Variante of execute used for internal query against the system tables, and thus only query the local node.
+     * Variant of execute used for internal query against the system tables, and thus only query the local node.
      *
      * @param state the current query state
      */
     public ResultMessage executeInternal(QueryState state, QueryOptions options) throws RequestValidationException, RequestExecutionException;
 
-    boolean usesFunction(String ksName, String functionName);
-
+    /**
+     * Return an Iterable over all of the functions (both native and user-defined) used by any component
+     * of the statement
+     * @return functions all functions found (may contain duplicates)
+     */
     public Iterable<Function> getFunctions();
 }

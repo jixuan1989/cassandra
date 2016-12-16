@@ -19,15 +19,20 @@ package org.apache.cassandra.cql3.functions;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
-
-import com.google.common.collect.Iterables;
+import java.util.stream.Collectors;
 
 import org.apache.cassandra.cql3.*;
+import org.apache.cassandra.cql3.statements.RequestValidations;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.serializers.MarshalException;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
+
+import static org.apache.cassandra.cql3.statements.RequestValidations.invalidRequest;
 
 public class FunctionCall extends Term.NonTerminal
 {
@@ -40,14 +45,10 @@ public class FunctionCall extends Term.NonTerminal
         this.terms = terms;
     }
 
-    public boolean usesFunction(String ksName, String functionName)
+    public void addFunctionsTo(List<Function> functions)
     {
-        return fun.usesFunction(ksName, functionName);
-    }
-
-    public Iterable<Function> getFunctions()
-    {
-        return Iterables.concat(Terms.getFunctions(terms), fun.getFunctions());
+        Terms.addFunctions(terms, functions);
+        fun.addFunctionsTo(functions);
     }
 
     public void collectMarkerSpecification(VariableSpecifications boundNames)
@@ -65,11 +66,15 @@ public class FunctionCall extends Term.NonTerminal
     {
         List<ByteBuffer> buffers = new ArrayList<>(terms.size());
         for (Term t : terms)
-            buffers.add(t.bindAndGet(options));
+        {
+            ByteBuffer functionArg = t.bindAndGet(options);
+            RequestValidations.checkBindValueSet(functionArg, "Invalid unset value for argument in call to function %s", fun.name().name);
+            buffers.add(functionArg);
+        }
         return executeInternal(options.getProtocolVersion(), fun, buffers);
     }
 
-    private static ByteBuffer executeInternal(int protocolVersion, ScalarFunction fun, List<ByteBuffer> params) throws InvalidRequestException
+    private static ByteBuffer executeInternal(ProtocolVersion protocolVersion, ScalarFunction fun, List<ByteBuffer> params) throws InvalidRequestException
     {
         ByteBuffer result = fun.execute(protocolVersion, params);
         try
@@ -96,21 +101,29 @@ public class FunctionCall extends Term.NonTerminal
         return false;
     }
 
-    private static Term.Terminal makeTerminal(Function fun, ByteBuffer result, int version) throws InvalidRequestException
+    private static Term.Terminal makeTerminal(Function fun, ByteBuffer result, ProtocolVersion version) throws InvalidRequestException
     {
-        if (!(fun.returnType() instanceof CollectionType))
-            return new Constants.Value(result);
-
-        switch (((CollectionType)fun.returnType()).kind)
+        if (fun.returnType().isCollection())
         {
-            case LIST: return Lists.Value.fromSerialized(result, (ListType)fun.returnType(), version);
-            case SET:  return Sets.Value.fromSerialized(result, (SetType)fun.returnType(), version);
-            case MAP:  return Maps.Value.fromSerialized(result, (MapType)fun.returnType(), version);
+            switch (((CollectionType) fun.returnType()).kind)
+            {
+                case LIST:
+                    return Lists.Value.fromSerialized(result, (ListType) fun.returnType(), version);
+                case SET:
+                    return Sets.Value.fromSerialized(result, (SetType) fun.returnType(), version);
+                case MAP:
+                    return Maps.Value.fromSerialized(result, (MapType) fun.returnType(), version);
+            }
         }
-        throw new AssertionError();
+        else if (fun.returnType().isUDT())
+        {
+            return UserTypes.Value.fromSerialized(result, (UserType) fun.returnType());
+        }
+
+        return new Constants.Value(result);
     }
 
-    public static class Raw implements Term.Raw
+    public static class Raw extends Term.Raw
     {
         private FunctionName name;
         private final List<Term.Raw> terms;
@@ -121,31 +134,50 @@ public class FunctionCall extends Term.NonTerminal
             this.terms = terms;
         }
 
+        public static Raw newOperation(char operator, Term.Raw left, Term.Raw right)
+        {
+            FunctionName name = OperationFcts.getFunctionNameFromOperator(operator);
+            return new Raw(name, Arrays.asList(left, right));
+        }
+
+        public static Raw newNegation(Term.Raw raw)
+        {
+            FunctionName name = FunctionName.nativeFunction(OperationFcts.NEGATION_FUNCTION_NAME);
+            return new Raw(name, Collections.singletonList(raw));
+        }
+
         public Term prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException
         {
-            Function fun = Functions.get(keyspace, name, terms, receiver.ksName, receiver.cfName, receiver.type);
+            Function fun = FunctionResolver.get(keyspace, name, terms, receiver.ksName, receiver.cfName, receiver.type);
             if (fun == null)
-                throw new InvalidRequestException(String.format("Unknown function %s called", name));
+                throw invalidRequest("Unknown function %s called", name);
             if (fun.isAggregate())
-                throw new InvalidRequestException("Aggregation function are not supported in the where clause");
+                throw invalidRequest("Aggregation function are not supported in the where clause");
 
             ScalarFunction scalarFun = (ScalarFunction) fun;
 
             // Functions.get() will complain if no function "name" type check with the provided arguments.
             // We still have to validate that the return type matches however
-            if (!receiver.type.isValueCompatibleWith(scalarFun.returnType()))
-                throw new InvalidRequestException(String.format("Type error: cannot assign result of function %s (type %s) to %s (type %s)",
-                                                                scalarFun.name(), scalarFun.returnType().asCQL3Type(),
-                                                                receiver.name, receiver.type.asCQL3Type()));
+            if (!scalarFun.testAssignment(keyspace, receiver).isAssignable())
+            {
+                if (OperationFcts.isOperation(name))
+                    throw invalidRequest("Type error: cannot assign result of operation %s (type %s) to %s (type %s)",
+                                         OperationFcts.getOperator(scalarFun.name()), scalarFun.returnType().asCQL3Type(),
+                                         receiver.name, receiver.type.asCQL3Type());
+
+                throw invalidRequest("Type error: cannot assign result of function %s (type %s) to %s (type %s)",
+                                     scalarFun.name(), scalarFun.returnType().asCQL3Type(),
+                                     receiver.name, receiver.type.asCQL3Type());
+            }
 
             if (fun.argTypes().size() != terms.size())
-                throw new InvalidRequestException(String.format("Incorrect number of arguments specified for function %s (expected %d, found %d)",
-                                                                fun, fun.argTypes().size(), terms.size()));
+                throw invalidRequest("Incorrect number of arguments specified for function %s (expected %d, found %d)",
+                                     fun, fun.argTypes().size(), terms.size());
 
             List<Term> parameters = new ArrayList<>(terms.size());
             for (int i = 0; i < terms.size(); i++)
             {
-                Term t = terms.get(i).prepare(keyspace, Functions.makeArgSpec(receiver.ksName, receiver.cfName, scalarFun, i));
+                Term t = terms.get(i).prepare(keyspace, FunctionResolver.makeArgSpec(receiver.ksName, receiver.cfName, scalarFun, i));
                 parameters.add(t);
             }
 
@@ -160,7 +192,7 @@ public class FunctionCall extends Term.NonTerminal
             // later with a more helpful error message that if we were to return false here.
             try
             {
-                Function fun = Functions.get(keyspace, name, terms, receiver.ksName, receiver.cfName, receiver.type);
+                Function fun = FunctionResolver.get(keyspace, name, terms, receiver.ksName, receiver.cfName, receiver.type);
 
                 // Because fromJson() can return whatever type the receiver is, we'll always get EXACT_MATCH.  To
                 // handle potentially ambiguous function calls with fromJson() as an argument, always return
@@ -181,18 +213,19 @@ public class FunctionCall extends Term.NonTerminal
             }
         }
 
-        @Override
-        public String toString()
+        public AbstractType<?> getExactTypeIfKnown(String keyspace)
         {
-            StringBuilder sb = new StringBuilder();
-            sb.append(name).append("(");
-            for (int i = 0; i < terms.size(); i++)
-            {
-                if (i > 0)
-                    sb.append(", ");
-                sb.append(terms.get(i));
-            }
-            return sb.append(")").toString();
+            // We could implement this, but the method is only used in selection clause, where FunctionCall is not used 
+            // we use a Selectable.WithFunction instead). And if that method is later used in other places, better to
+            // let that future patch make sure this can be implemented properly (note in particular we don't have access
+            // to the receiver type, which FunctionResolver.get() takes) rather than provide an implementation that may
+            // not work in all cases.
+            throw new UnsupportedOperationException();
+        }
+
+        public String getText()
+        {
+            return name + terms.stream().map(Term.Raw::getText).collect(Collectors.joining(", ", "(", ")"));
         }
     }
 }

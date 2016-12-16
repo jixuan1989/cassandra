@@ -22,9 +22,12 @@ package org.apache.cassandra.stress.settings;
 
 import java.io.Serializable;
 import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.util.*;
 
-import org.apache.cassandra.thrift.*;
+import com.datastax.driver.core.exceptions.AlreadyExistsException;
+import org.apache.cassandra.stress.util.JavaDriverClient;
+import org.apache.cassandra.stress.util.ResultLogger;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 public class SettingsSchema implements Serializable
@@ -54,102 +57,148 @@ public class SettingsSchema implements Serializable
         compactionStrategyOptions = options.compaction.getOptions();
     }
 
-    public void createKeySpaces(StressSettings settings)
-    {
-        createKeySpacesThrift(settings);
-    }
-
-
     /**
      * Create Keyspace with Standard and Super/Counter column families
      */
-    public void createKeySpacesThrift(StressSettings settings)
+    public void createKeySpaces(StressSettings settings)
     {
-        KsDef ksdef = new KsDef();
 
-        // column family for standard columns
-        CfDef standardCfDef = new CfDef(keyspace, "standard1");
-        Map<String, String> compressionOptions = new HashMap<>();
-        if (compression != null)
-            compressionOptions.put("sstable_compression", compression);
-
-        String comparator = settings.columns.comparator;
-        standardCfDef.setComparator_type(comparator)
-                .setDefault_validation_class(DEFAULT_VALIDATOR)
-                .setCompression_options(compressionOptions);
-
-        for (int i = 0; i < settings.columns.names.size(); i++)
-            standardCfDef.addToColumn_metadata(new ColumnDef(settings.columns.names.get(i), "BytesType"));
-
-        // column family for standard counters
-        CfDef counterCfDef = new CfDef(keyspace, "counter1")
-                .setComparator_type(comparator)
-                .setDefault_validation_class("CounterColumnType")
-                .setCompression_options(compressionOptions);
-
-        ksdef.setName(keyspace);
-        ksdef.setStrategy_class(replicationStrategy);
-
-        if (!replicationStrategyOptions.isEmpty())
-        {
-            ksdef.setStrategy_options(replicationStrategyOptions);
-        }
-
-        if (compactionStrategy != null)
-        {
-            standardCfDef.setCompaction_strategy(compactionStrategy);
-            counterCfDef.setCompaction_strategy(compactionStrategy);
-            if (!compactionStrategyOptions.isEmpty())
-            {
-                standardCfDef.setCompaction_strategy_options(compactionStrategyOptions);
-                counterCfDef.setCompaction_strategy_options(compactionStrategyOptions);
-            }
-        }
-
-        ksdef.setCf_defs(new ArrayList<>(Arrays.asList(standardCfDef, counterCfDef)));
-
-        Cassandra.Client client = settings.getRawThriftClient(false);
+        JavaDriverClient client  = settings.getJavaDriverClient(false);
 
         try
         {
-            client.system_add_keyspace(ksdef);
+            //Keyspace
+            client.execute(createKeyspaceStatementCQL3(), org.apache.cassandra.db.ConsistencyLevel.LOCAL_ONE);
 
-            /* CQL3 counter cf */
-            client.set_cql_version("3.0.0"); // just to create counter cf for cql3
+            client.execute("USE \""+keyspace+"\"", org.apache.cassandra.db.ConsistencyLevel.LOCAL_ONE);
 
-            client.set_keyspace(keyspace);
-            client.execute_cql3_query(createCounterCFStatementForCQL3(settings), Compression.NONE, ConsistencyLevel.ONE);
-
-            if (settings.mode.cqlVersion.isCql())
-                client.set_cql_version(settings.mode.cqlVersion.connectVersion);
-            /* end */
+            //Add standard1 and counter1
+            client.execute(createStandard1StatementCQL3(settings), org.apache.cassandra.db.ConsistencyLevel.LOCAL_ONE);
+            client.execute(createCounter1StatementCQL3(settings), org.apache.cassandra.db.ConsistencyLevel.LOCAL_ONE);
 
             System.out.println(String.format("Created keyspaces. Sleeping %ss for propagation.", settings.node.nodes.size()));
             Thread.sleep(settings.node.nodes.size() * 1000L); // seconds
         }
-        catch (InvalidRequestException e)
+        catch (AlreadyExistsException e)
         {
-            System.err.println("Unable to create stress keyspace: " + e.getWhy());
+            //Ok.
         }
         catch (Exception e)
         {
-            System.err.println("!!!! " + e.getMessage());
+            throw new RuntimeException("Encountered exception creating schema", e);
         }
     }
 
-    private ByteBuffer createCounterCFStatementForCQL3(StressSettings options)
+    String createKeyspaceStatementCQL3()
     {
-        StringBuilder counter3 = new StringBuilder("CREATE TABLE \"Counter3\" (KEY blob PRIMARY KEY, ");
+        StringBuilder b = new StringBuilder();
 
-        for (int i = 0; i < options.columns.maxColumnsPerKey; i++)
+        //Create Keyspace
+        b.append("CREATE KEYSPACE IF NOT EXISTS \"")
+         .append(keyspace)
+         .append("\" WITH replication = {'class': '")
+         .append(replicationStrategy)
+         .append("'");
+
+        if (replicationStrategyOptions.isEmpty())
         {
-            counter3.append("c").append(i).append(" counter");
-            if (i != options.columns.maxColumnsPerKey - 1)
-                counter3.append(", ");
+            b.append(", 'replication_factor': '1'}");
         }
-        counter3.append(");");
+        else
+        {
+            for(Map.Entry<String, String> entry : replicationStrategyOptions.entrySet())
+            {
+                b.append(", '").append(entry.getKey()).append("' : '").append(entry.getValue()).append("'");
+            }
 
-        return ByteBufferUtil.bytes(counter3.toString());
+            b.append("}");
+        }
+
+        b.append(" AND durable_writes = true;\n");
+
+        return b.toString();
+    }
+
+    String createStandard1StatementCQL3(StressSettings settings)
+    {
+
+        StringBuilder b = new StringBuilder();
+
+        b.append("CREATE TABLE IF NOT EXISTS ")
+         .append("standard1 (key blob PRIMARY KEY ");
+
+        try
+        {
+            for (ByteBuffer name : settings.columns.names)
+                b.append("\n, \"").append(ByteBufferUtil.string(name)).append("\" blob");
+        }
+        catch (CharacterCodingException e)
+        {
+            throw new RuntimeException(e);
+        }
+
+        //Compression
+        b.append(") WITH COMPACT STORAGE AND compression = {");
+        if (compression != null)
+            b.append("'sstable_compression' : '").append(compression).append("'");
+
+        b.append("}");
+
+        //Compaction
+        if (compactionStrategy != null)
+        {
+            b.append(" AND compaction = { 'class' : '").append(compactionStrategy).append("'");
+
+            for (Map.Entry<String, String> entry : compactionStrategyOptions.entrySet())
+                b.append(", '").append(entry.getKey()).append("' : '").append(entry.getValue()).append("'");
+
+            b.append("}");
+        }
+
+        b.append(";\n");
+
+        return b.toString();
+    }
+
+    String createCounter1StatementCQL3(StressSettings settings)
+    {
+
+        StringBuilder b = new StringBuilder();
+
+        b.append("CREATE TABLE IF NOT EXISTS ")
+         .append("counter1 (key blob PRIMARY KEY,");
+
+        try
+        {
+            for (ByteBuffer name : settings.columns.names)
+                b.append("\n, \"").append(ByteBufferUtil.string(name)).append("\" counter");
+        }
+        catch (CharacterCodingException e)
+        {
+            throw new RuntimeException(e);
+        }
+
+        //Compression
+        b.append(") WITH COMPACT STORAGE AND compression = {");
+        if (compression != null)
+            b.append("'sstable_compression' : '").append(compression).append("'");
+
+        b.append("}");
+
+        //Compaction
+        if (compactionStrategy != null)
+        {
+            b.append(" AND compaction = { 'class' : '").append(compactionStrategy).append("'");
+
+            for (Map.Entry<String, String> entry : compactionStrategyOptions.entrySet())
+                b.append(", '").append(entry.getKey()).append("' : '").append(entry.getValue()).append("'");
+
+            b.append("}");
+        }
+
+        b.append(";\n");
+
+        return b.toString();
     }
 
     // Option Declarations
@@ -169,6 +218,17 @@ public class SettingsSchema implements Serializable
     }
 
     // CLI Utility Methods
+    public void printSettings(ResultLogger out)
+    {
+        out.println("  Keyspace: " + keyspace);
+        out.println("  Replication Strategy: " + replicationStrategy);
+        out.println("  Replication Strategy Pptions: " + replicationStrategyOptions);
+
+        out.println("  Table Compression: " + compression);
+        out.println("  Table Compaction Strategy: " + compactionStrategy);
+        out.println("  Table Compaction Strategy Options: " + compactionStrategyOptions);
+    }
+
 
     public static SettingsSchema get(Map<String, String[]> clArgs, SettingsCommand command)
     {

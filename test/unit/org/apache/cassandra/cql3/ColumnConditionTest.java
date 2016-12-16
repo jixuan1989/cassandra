@@ -17,26 +17,30 @@
  */
 package org.apache.cassandra.cql3;
 
+import java.nio.ByteBuffer;
+import java.util.*;
+
+import org.junit.BeforeClass;
+import org.junit.Test;
+
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
-import org.apache.cassandra.db.BufferCell;
-import org.apache.cassandra.db.Cell;
-import org.apache.cassandra.db.composites.*;
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.db.rows.BufferCell;
+import org.apache.cassandra.db.rows.Cell;
+import org.apache.cassandra.db.rows.CellPath;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.serializers.Int32Serializer;
 import org.apache.cassandra.utils.ByteBufferUtil;
-import org.junit.Test;
+import org.apache.cassandra.utils.UUIDGen;
 
-import java.nio.ByteBuffer;
-import java.util.*;
-
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.fail;
+import static org.junit.Assert.*;
 
 public class ColumnConditionTest
 {
+    private static final CellPath LIST_PATH = CellPath.create(ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes()));
+
     public static final ByteBuffer ZERO = Int32Type.instance.fromString("0");
     public static final ByteBuffer ONE = Int32Type.instance.fromString("1");
     public static final ByteBuffer TWO = Int32Type.instance.fromString("2");
@@ -44,16 +48,26 @@ public class ColumnConditionTest
     public static final ByteBuffer A = AsciiType.instance.fromString("a");
     public static final ByteBuffer B = AsciiType.instance.fromString("b");
 
+    @BeforeClass
+    public static void setupDD()
+    {
+        DatabaseDescriptor.daemonInitialization();
+    }
+
     private static boolean isSatisfiedBy(ColumnCondition.Bound bound, ByteBuffer conditionValue, ByteBuffer columnValue) throws InvalidRequestException
     {
         Cell cell = null;
         if (columnValue != null)
         {
-            CompoundSparseCellNameType nameType = new CompoundSparseCellNameType(Collections.EMPTY_LIST);
-            ColumnDefinition definition = new ColumnDefinition("ks", "cf", new ColumnIdentifier("c", true), Int32Type.instance, null, null, null, null, null);
-            cell = new BufferCell(nameType.create(Composites.EMPTY, definition), columnValue);
+            ColumnDefinition definition = ColumnDefinition.regularDef("ks", "cf", "c", ListType.getInstance(Int32Type.instance, true));
+            cell = testCell(definition, columnValue, LIST_PATH);
         }
-        return bound.isSatisfiedByValue(conditionValue, cell, Int32Type.instance, bound.operator, 1234);
+        return bound.isSatisfiedByValue(conditionValue, cell, Int32Type.instance, bound.operator);
+    }
+
+    private static Cell testCell(ColumnDefinition column, ByteBuffer value, CellPath path)
+    {
+        return new BufferCell(column, 0L, Cell.NO_TTL, Cell.NO_DELETION_TIME, value, path);
     }
 
     private static void assertThrowsIRE(ColumnCondition.Bound bound, ByteBuffer conditionValue, ByteBuffer columnValue)
@@ -68,7 +82,7 @@ public class ColumnConditionTest
     @Test
     public void testSimpleBoundIsSatisfiedByValue() throws InvalidRequestException
     {
-        ColumnDefinition definition = new ColumnDefinition("ks", "cf", new ColumnIdentifier("c", true), Int32Type.instance, null, null, null, null, null);
+        ColumnDefinition definition = ColumnDefinition.regularDef("ks", "cf", "c", ListType.getInstance(Int32Type.instance, true));
 
         // EQ
         ColumnCondition condition = ColumnCondition.condition(definition, new Constants.Value(ONE), Operator.EQ);
@@ -155,8 +169,8 @@ public class ColumnConditionTest
         CFMetaData cfm = CFMetaData.compile("create table foo(a int PRIMARY KEY, b int, c list<int>)", "ks");
         Map<ByteBuffer, CollectionType> typeMap = new HashMap<>();
         typeMap.put(ByteBufferUtil.bytes("c"), ListType.getInstance(Int32Type.instance, true));
-        CompoundSparseCellNameType.WithCollection nameType = new CompoundSparseCellNameType.WithCollection(Collections.EMPTY_LIST, ColumnToCollectionType.getInstance(typeMap));
-        ColumnDefinition definition = new ColumnDefinition(cfm, ByteBufferUtil.bytes("c"), ListType.getInstance(Int32Type.instance, true), 0, ColumnDefinition.Kind.REGULAR);
+
+        ColumnDefinition definition = ColumnDefinition.regularDef(cfm, ByteBufferUtil.bytes("c"), ListType.getInstance(Int32Type.instance, true));
 
         List<Cell> cells = new ArrayList<>(columnValues.size());
         if (columnValues != null)
@@ -165,7 +179,7 @@ public class ColumnConditionTest
             {
                 ByteBuffer key = Int32Serializer.instance.serialize(i);
                 ByteBuffer value = columnValues.get(i);
-                cells.add(new BufferCell(nameType.create(Composites.EMPTY, definition, key), value));
+                cells.add(testCell(definition, value, CellPath.create(key)));
             };
         }
 
@@ -176,10 +190,10 @@ public class ColumnConditionTest
     // sets use the same check as lists
     public void testListCollectionBoundAppliesTo() throws InvalidRequestException
     {
-        ColumnDefinition definition = new ColumnDefinition("ks", "cf", new ColumnIdentifier("c", true), ListType.getInstance(Int32Type.instance, true), null, null, null, null, null);
+        ColumnDefinition definition = ColumnDefinition.regularDef("ks", "cf", "c", ListType.getInstance(Int32Type.instance, true));
 
         // EQ
-        ColumnCondition condition = ColumnCondition.condition(definition, null, new Lists.Value(Arrays.asList(ONE)), Operator.EQ);
+        ColumnCondition condition = ColumnCondition.condition(definition, new Lists.Value(Arrays.asList(ONE)), Operator.EQ);
         ColumnCondition.CollectionBound bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
         assertTrue(listAppliesTo(bound, list(ONE), list(ONE)));
         assertTrue(listAppliesTo(bound, list(), list()));
@@ -195,7 +209,7 @@ public class ColumnConditionTest
         assertTrue(listAppliesTo(bound, list(ByteBufferUtil.EMPTY_BYTE_BUFFER), list(ByteBufferUtil.EMPTY_BYTE_BUFFER)));
 
         // NEQ
-        condition = ColumnCondition.condition(definition, null, new Lists.Value(Arrays.asList(ONE)), Operator.NEQ);
+        condition = ColumnCondition.condition(definition, new Lists.Value(Arrays.asList(ONE)), Operator.NEQ);
         bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
         assertFalse(listAppliesTo(bound, list(ONE), list(ONE)));
         assertFalse(listAppliesTo(bound, list(), list()));
@@ -211,7 +225,7 @@ public class ColumnConditionTest
         assertFalse(listAppliesTo(bound, list(ByteBufferUtil.EMPTY_BYTE_BUFFER), list(ByteBufferUtil.EMPTY_BYTE_BUFFER)));
 
         // LT
-        condition = ColumnCondition.condition(definition, null, new Lists.Value(Arrays.asList(ONE)), Operator.LT);
+        condition = ColumnCondition.condition(definition, new Lists.Value(Arrays.asList(ONE)), Operator.LT);
         bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
         assertFalse(listAppliesTo(bound, list(ONE), list(ONE)));
         assertFalse(listAppliesTo(bound, list(), list()));
@@ -227,7 +241,7 @@ public class ColumnConditionTest
         assertFalse(listAppliesTo(bound, list(ByteBufferUtil.EMPTY_BYTE_BUFFER), list(ByteBufferUtil.EMPTY_BYTE_BUFFER)));
 
         // LTE
-        condition = ColumnCondition.condition(definition, null, new Lists.Value(Arrays.asList(ONE)), Operator.LTE);
+        condition = ColumnCondition.condition(definition, new Lists.Value(Arrays.asList(ONE)), Operator.LTE);
         bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
         assertTrue(listAppliesTo(bound, list(ONE), list(ONE)));
         assertTrue(listAppliesTo(bound, list(), list()));
@@ -243,7 +257,7 @@ public class ColumnConditionTest
         assertTrue(listAppliesTo(bound, list(ByteBufferUtil.EMPTY_BYTE_BUFFER), list(ByteBufferUtil.EMPTY_BYTE_BUFFER)));
 
         // GT
-        condition = ColumnCondition.condition(definition, null, new Lists.Value(Arrays.asList(ONE)), Operator.GT);
+        condition = ColumnCondition.condition(definition, new Lists.Value(Arrays.asList(ONE)), Operator.GT);
         bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
         assertFalse(listAppliesTo(bound, list(ONE), list(ONE)));
         assertFalse(listAppliesTo(bound, list(), list()));
@@ -259,7 +273,7 @@ public class ColumnConditionTest
         assertFalse(listAppliesTo(bound, list(ByteBufferUtil.EMPTY_BYTE_BUFFER), list(ByteBufferUtil.EMPTY_BYTE_BUFFER)));
 
         // GTE
-        condition = ColumnCondition.condition(definition, null, new Lists.Value(Arrays.asList(ONE)), Operator.GTE);
+        condition = ColumnCondition.condition(definition, new Lists.Value(Arrays.asList(ONE)), Operator.GTE);
         bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
         assertTrue(listAppliesTo(bound, list(ONE), list(ONE)));
         assertTrue(listAppliesTo(bound, list(), list()));
@@ -287,8 +301,7 @@ public class ColumnConditionTest
         CFMetaData cfm = CFMetaData.compile("create table foo(a int PRIMARY KEY, b int, c set<int>)", "ks");
         Map<ByteBuffer, CollectionType> typeMap = new HashMap<>();
         typeMap.put(ByteBufferUtil.bytes("c"), SetType.getInstance(Int32Type.instance, true));
-        CompoundSparseCellNameType.WithCollection nameType = new CompoundSparseCellNameType.WithCollection(Collections.EMPTY_LIST, ColumnToCollectionType.getInstance(typeMap));
-        ColumnDefinition definition = new ColumnDefinition(cfm, ByteBufferUtil.bytes("c"), SetType.getInstance(Int32Type.instance, true), 0, ColumnDefinition.Kind.REGULAR);
+        ColumnDefinition definition = ColumnDefinition.regularDef(cfm, ByteBufferUtil.bytes("c"), SetType.getInstance(Int32Type.instance, true));
 
         List<Cell> cells = new ArrayList<>(columnValues.size());
         if (columnValues != null)
@@ -296,7 +309,7 @@ public class ColumnConditionTest
             for (int i = 0; i < columnValues.size(); i++)
             {
                 ByteBuffer key = columnValues.get(i);
-                cells.add(new BufferCell(nameType.create(Composites.EMPTY, definition, key), ByteBufferUtil.EMPTY_BYTE_BUFFER));
+                cells.add(testCell(definition, ByteBufferUtil.EMPTY_BYTE_BUFFER, CellPath.create(key)));
             };
         }
 
@@ -306,10 +319,10 @@ public class ColumnConditionTest
     @Test
     public void testSetCollectionBoundAppliesTo() throws InvalidRequestException
     {
-        ColumnDefinition definition = new ColumnDefinition("ks", "cf", new ColumnIdentifier("c", true), SetType.getInstance(Int32Type.instance, true), null, null, null, null, null);
+        ColumnDefinition definition = ColumnDefinition.regularDef("ks", "cf", "c", ListType.getInstance(Int32Type.instance, true));
 
         // EQ
-        ColumnCondition condition = ColumnCondition.condition(definition, null, new Sets.Value(set(ONE)), Operator.EQ);
+        ColumnCondition condition = ColumnCondition.condition(definition, new Sets.Value(set(ONE)), Operator.EQ);
         ColumnCondition.CollectionBound bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
         assertTrue(setAppliesTo(bound, set(ONE), list(ONE)));
         assertTrue(setAppliesTo(bound, set(), list()));
@@ -325,7 +338,7 @@ public class ColumnConditionTest
         assertTrue(setAppliesTo(bound, set(ByteBufferUtil.EMPTY_BYTE_BUFFER), list(ByteBufferUtil.EMPTY_BYTE_BUFFER)));
 
         // NEQ
-        condition = ColumnCondition.condition(definition, null, new Sets.Value(set(ONE)), Operator.NEQ);
+        condition = ColumnCondition.condition(definition, new Sets.Value(set(ONE)), Operator.NEQ);
         bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
         assertFalse(setAppliesTo(bound, set(ONE), list(ONE)));
         assertFalse(setAppliesTo(bound, set(), list()));
@@ -341,7 +354,7 @@ public class ColumnConditionTest
         assertFalse(setAppliesTo(bound, set(ByteBufferUtil.EMPTY_BYTE_BUFFER), list(ByteBufferUtil.EMPTY_BYTE_BUFFER)));
 
         // LT
-        condition = ColumnCondition.condition(definition, null, new Lists.Value(Arrays.asList(ONE)), Operator.LT);
+        condition = ColumnCondition.condition(definition, new Lists.Value(Arrays.asList(ONE)), Operator.LT);
         bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
         assertFalse(setAppliesTo(bound, set(ONE), list(ONE)));
         assertFalse(setAppliesTo(bound, set(), list()));
@@ -357,7 +370,7 @@ public class ColumnConditionTest
         assertFalse(setAppliesTo(bound, set(ByteBufferUtil.EMPTY_BYTE_BUFFER), list(ByteBufferUtil.EMPTY_BYTE_BUFFER)));
 
         // LTE
-        condition = ColumnCondition.condition(definition, null, new Lists.Value(Arrays.asList(ONE)), Operator.LTE);
+        condition = ColumnCondition.condition(definition, new Lists.Value(Arrays.asList(ONE)), Operator.LTE);
         bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
         assertTrue(setAppliesTo(bound, set(ONE), list(ONE)));
         assertTrue(setAppliesTo(bound, set(), list()));
@@ -373,7 +386,7 @@ public class ColumnConditionTest
         assertTrue(setAppliesTo(bound, set(ByteBufferUtil.EMPTY_BYTE_BUFFER), list(ByteBufferUtil.EMPTY_BYTE_BUFFER)));
 
         // GT
-        condition = ColumnCondition.condition(definition, null, new Lists.Value(Arrays.asList(ONE)), Operator.GT);
+        condition = ColumnCondition.condition(definition, new Lists.Value(Arrays.asList(ONE)), Operator.GT);
         bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
         assertFalse(setAppliesTo(bound, set(ONE), list(ONE)));
         assertFalse(setAppliesTo(bound, set(), list()));
@@ -389,7 +402,7 @@ public class ColumnConditionTest
         assertFalse(setAppliesTo(bound, set(ByteBufferUtil.EMPTY_BYTE_BUFFER), list(ByteBufferUtil.EMPTY_BYTE_BUFFER)));
 
         // GTE
-        condition = ColumnCondition.condition(definition, null, new Lists.Value(Arrays.asList(ONE)), Operator.GTE);
+        condition = ColumnCondition.condition(definition, new Lists.Value(Arrays.asList(ONE)), Operator.GTE);
         bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
         assertTrue(setAppliesTo(bound, set(ONE), list(ONE)));
         assertTrue(setAppliesTo(bound, set(), list()));
@@ -420,14 +433,13 @@ public class ColumnConditionTest
         CFMetaData cfm = CFMetaData.compile("create table foo(a int PRIMARY KEY, b map<int, int>)", "ks");
         Map<ByteBuffer, CollectionType> typeMap = new HashMap<>();
         typeMap.put(ByteBufferUtil.bytes("b"), MapType.getInstance(Int32Type.instance, Int32Type.instance, true));
-        CompoundSparseCellNameType.WithCollection nameType = new CompoundSparseCellNameType.WithCollection(Collections.EMPTY_LIST, ColumnToCollectionType.getInstance(typeMap));
-        ColumnDefinition definition = new ColumnDefinition(cfm, ByteBufferUtil.bytes("b"), MapType.getInstance(Int32Type.instance, Int32Type.instance, true), 0, ColumnDefinition.Kind.REGULAR);
+        ColumnDefinition definition = ColumnDefinition.regularDef(cfm, ByteBufferUtil.bytes("b"), MapType.getInstance(Int32Type.instance, Int32Type.instance, true));
 
         List<Cell> cells = new ArrayList<>(columnValues.size());
         if (columnValues != null)
         {
             for (Map.Entry<ByteBuffer, ByteBuffer> entry : columnValues.entrySet())
-                cells.add(new BufferCell(nameType.create(Composites.EMPTY, definition, entry.getKey()), entry.getValue()));
+                cells.add(testCell(definition, entry.getValue(), CellPath.create(entry.getKey())));
         }
 
         return bound.mapAppliesTo(MapType.getInstance(Int32Type.instance, Int32Type.instance, true), cells.iterator(), conditionValues, bound.operator);
@@ -436,14 +448,14 @@ public class ColumnConditionTest
     @Test
     public void testMapCollectionBoundIsSatisfiedByValue() throws InvalidRequestException
     {
-        ColumnDefinition definition = new ColumnDefinition("ks", "cf", new ColumnIdentifier("b", true), MapType.getInstance(Int32Type.instance, Int32Type.instance, true), null, null, null, null, null);
+        ColumnDefinition definition = ColumnDefinition.regularDef("ks", "cf", "c", ListType.getInstance(Int32Type.instance, true));
 
         Map<ByteBuffer, ByteBuffer> placeholderMap = new TreeMap<>();
         placeholderMap.put(ONE, ONE);
         Maps.Value placeholder = new Maps.Value(placeholderMap);
 
         // EQ
-        ColumnCondition condition = ColumnCondition.condition(definition, null, placeholder, Operator.EQ);
+        ColumnCondition condition = ColumnCondition.condition(definition, placeholder, Operator.EQ);
         ColumnCondition.CollectionBound bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
 
         assertTrue(mapAppliesTo(bound, map(ONE, ONE), map(ONE, ONE)));
@@ -465,7 +477,7 @@ public class ColumnConditionTest
         assertTrue(mapAppliesTo(bound, map(ONE, ByteBufferUtil.EMPTY_BYTE_BUFFER), map(ONE, ByteBufferUtil.EMPTY_BYTE_BUFFER)));
 
         // NEQ
-        condition = ColumnCondition.condition(definition, null, placeholder, Operator.NEQ);
+        condition = ColumnCondition.condition(definition, placeholder, Operator.NEQ);
         bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
 
         assertFalse(mapAppliesTo(bound, map(ONE, ONE), map(ONE, ONE)));
@@ -487,7 +499,7 @@ public class ColumnConditionTest
         assertFalse(mapAppliesTo(bound, map(ONE, ByteBufferUtil.EMPTY_BYTE_BUFFER), map(ONE, ByteBufferUtil.EMPTY_BYTE_BUFFER)));
 
         // LT
-        condition = ColumnCondition.condition(definition, null, placeholder, Operator.LT);
+        condition = ColumnCondition.condition(definition, placeholder, Operator.LT);
         bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
 
         assertFalse(mapAppliesTo(bound, map(ONE, ONE), map(ONE, ONE)));
@@ -509,7 +521,7 @@ public class ColumnConditionTest
         assertFalse(mapAppliesTo(bound, map(ONE, ByteBufferUtil.EMPTY_BYTE_BUFFER), map(ONE, ByteBufferUtil.EMPTY_BYTE_BUFFER)));
 
         // LTE
-        condition = ColumnCondition.condition(definition, null, placeholder, Operator.LTE);
+        condition = ColumnCondition.condition(definition, placeholder, Operator.LTE);
         bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
 
         assertTrue(mapAppliesTo(bound, map(ONE, ONE), map(ONE, ONE)));
@@ -531,7 +543,7 @@ public class ColumnConditionTest
         assertTrue(mapAppliesTo(bound, map(ONE, ByteBufferUtil.EMPTY_BYTE_BUFFER), map(ONE, ByteBufferUtil.EMPTY_BYTE_BUFFER)));
 
         // GT
-        condition = ColumnCondition.condition(definition, null, placeholder, Operator.GT);
+        condition = ColumnCondition.condition(definition, placeholder, Operator.GT);
         bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
 
         assertFalse(mapAppliesTo(bound, map(ONE, ONE), map(ONE, ONE)));
@@ -553,7 +565,7 @@ public class ColumnConditionTest
         assertFalse(mapAppliesTo(bound, map(ONE, ByteBufferUtil.EMPTY_BYTE_BUFFER), map(ONE, ByteBufferUtil.EMPTY_BYTE_BUFFER)));
 
         // GTE
-        condition = ColumnCondition.condition(definition, null, placeholder, Operator.GTE);
+        condition = ColumnCondition.condition(definition, placeholder, Operator.GTE);
         bound = (ColumnCondition.CollectionBound) condition.bind(QueryOptions.DEFAULT);
 
         assertTrue(mapAppliesTo(bound, map(ONE, ONE), map(ONE, ONE)));

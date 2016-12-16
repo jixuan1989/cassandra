@@ -17,20 +17,26 @@
  */
 package org.apache.cassandra.cql3.statements;
 
+import java.util.regex.Pattern;
+
 import org.apache.cassandra.auth.*;
+import org.apache.cassandra.cql3.Validation;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.exceptions.*;
-import org.apache.cassandra.locator.AbstractReplicationStrategy;
+import org.apache.cassandra.locator.LocalStrategy;
+import org.apache.cassandra.schema.KeyspaceMetadata;
+import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.service.*;
-import org.apache.cassandra.thrift.ThriftValidation;
 import org.apache.cassandra.transport.Event;
 
 /** A <code>CREATE KEYSPACE</code> statement parsed from a CQL query. */
 public class CreateKeyspaceStatement extends SchemaAlteringStatement
 {
+    private static final Pattern PATTERN_WORD_CHARS = Pattern.compile("\\w+");
+
     private final String name;
-    private final KSPropDefs attrs;
+    private final KeyspaceAttributes attrs;
     private final boolean ifNotExists;
 
     /**
@@ -40,7 +46,7 @@ public class CreateKeyspaceStatement extends SchemaAlteringStatement
      * @param name the name of the keyspace to create
      * @param attrs map of the raw keyword arguments that followed the <code>WITH</code> keyword.
      */
-    public CreateKeyspaceStatement(String name, KSPropDefs attrs, boolean ifNotExists)
+    public CreateKeyspaceStatement(String name, KeyspaceAttributes attrs, boolean ifNotExists)
     {
         super();
         this.name = name;
@@ -68,13 +74,13 @@ public class CreateKeyspaceStatement extends SchemaAlteringStatement
      */
     public void validate(ClientState state) throws RequestValidationException
     {
-        ThriftValidation.validateKeyspaceNotSystem(name);
+        Validation.validateKeyspaceNotSystem(name);
 
         // keyspace name
-        if (!name.matches("\\w+"))
+        if (!PATTERN_WORD_CHARS.matcher(name).matches())
             throw new InvalidRequestException(String.format("\"%s\" is not a valid keyspace name", name));
-        if (name.length() > Schema.NAME_LENGTH)
-            throw new InvalidRequestException(String.format("Keyspace names shouldn't be more than %s characters long (got \"%s\")", Schema.NAME_LENGTH, name));
+        if (name.length() > SchemaConstants.NAME_LENGTH)
+            throw new InvalidRequestException(String.format("Keyspace names shouldn't be more than %s characters long (got \"%s\")", SchemaConstants.NAME_LENGTH, name));
 
         attrs.validate();
 
@@ -84,31 +90,26 @@ public class CreateKeyspaceStatement extends SchemaAlteringStatement
         // The strategy is validated through KSMetaData.validate() in announceNewKeyspace below.
         // However, for backward compatibility with thrift, this doesn't validate unexpected options yet,
         // so doing proper validation here.
-        AbstractReplicationStrategy.validateReplicationStrategy(name,
-                                                                AbstractReplicationStrategy.getClass(attrs.getReplicationStrategyClass()),
-                                                                StorageService.instance.getTokenMetadata(),
-                                                                DatabaseDescriptor.getEndpointSnitch(),
-                                                                attrs.getReplicationOptions());
+        KeyspaceParams params = attrs.asNewKeyspaceParams();
+        params.validate(name);
+        if (params.replication.klass.equals(LocalStrategy.class))
+            throw new ConfigurationException("Unable to use given strategy class: LocalStrategy is reserved for internal use.");
     }
 
-    public boolean announceMigration(boolean isLocalOnly) throws RequestValidationException
+    public Event.SchemaChange announceMigration(boolean isLocalOnly) throws RequestValidationException
     {
+        KeyspaceMetadata ksm = KeyspaceMetadata.create(name, attrs.asNewKeyspaceParams());
         try
         {
-            MigrationManager.announceNewKeyspace(attrs.asKSMetadata(name), isLocalOnly);
-            return true;
+            MigrationManager.announceNewKeyspace(ksm, isLocalOnly);
+            return new Event.SchemaChange(Event.SchemaChange.Change.CREATED, keyspace());
         }
         catch (AlreadyExistsException e)
         {
             if (ifNotExists)
-                return false;
+                return null;
             throw e;
         }
-    }
-
-    public Event.SchemaChange changeEvent()
-    {
-        return new Event.SchemaChange(Event.SchemaChange.Change.CREATED, keyspace());
     }
 
     protected void grantPermissionsToCreator(QueryState state)

@@ -18,63 +18,82 @@
 package org.apache.cassandra.cql3.restrictions;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 import com.google.common.collect.BoundType;
 import com.google.common.collect.ImmutableRangeSet;
 import com.google.common.collect.Range;
 import com.google.common.collect.RangeSet;
 
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.QueryOptions;
+import org.apache.cassandra.cql3.functions.Function;
 import org.apache.cassandra.cql3.statements.Bound;
-import org.apache.cassandra.db.composites.Composite;
+import org.apache.cassandra.db.filter.RowFilter;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.InvalidRequestException;
-import org.apache.cassandra.service.StorageService;
+import org.apache.cassandra.index.SecondaryIndexManager;
 
 import static org.apache.cassandra.cql3.statements.Bound.END;
 import static org.apache.cassandra.cql3.statements.Bound.START;
 
 /**
  * <code>Restriction</code> decorator used to merge non-token restriction and token restriction on partition keys.
+ *
+ * <p>If all partition key columns have non-token restrictions and do not need filtering, they take precedence
+ * when calculating bounds, incusiveness etc (see CASSANDRA-12149).</p>
  */
-final class TokenFilter extends ForwardingPrimaryKeyRestrictions
+final class TokenFilter implements PartitionKeyRestrictions
 {
     /**
      * The decorated restriction
      */
-    private PrimaryKeyRestrictions restrictions;
+    private final PartitionKeyRestrictions restrictions;
 
     /**
      * The restriction on the token
      */
-    private TokenRestriction tokenRestriction;
+    private final TokenRestriction tokenRestriction;
 
     /**
-     * The partitioner
+     * Partitioner to manage tokens, extracted from tokenRestriction metadata.
      */
-    private static final IPartitioner partitioner = StorageService.getPartitioner();
+    private final IPartitioner partitioner;
+
+    public boolean hasIN()
+    {
+        return isOnToken() ? false : restrictions.hasIN();
+    }
+
+    public boolean hasOnlyEqualityRestrictions()
+    {
+        return isOnToken() ? false : restrictions.hasOnlyEqualityRestrictions();
+    }
 
     @Override
-    protected PrimaryKeyRestrictions getDelegate()
+    public Set<Restriction> getRestrictions(ColumnDefinition columnDef)
     {
-        return restrictions;
+        Set<Restriction> set = new HashSet<>();
+        set.addAll(restrictions.getRestrictions(columnDef));
+        set.addAll(tokenRestriction.getRestrictions(columnDef));
+        return set;
     }
 
     @Override
     public boolean isOnToken()
     {
-        // if all partition key columns have non-token restrictions, we can simply use the token range to filter
-        // those restrictions and then ignore the token range
-        return restrictions.size() < tokenRestriction.size();
+        // if all partition key columns have non-token restrictions and do not need filtering,
+        // we can simply use the token range to filter those restrictions and then ignore the token range
+        return needFiltering(tokenRestriction.metadata) || restrictions.size() < tokenRestriction.size();
     }
 
-    public TokenFilter(PrimaryKeyRestrictions restrictions, TokenRestriction tokenRestriction)
+    public TokenFilter(PartitionKeyRestrictions restrictions, TokenRestriction tokenRestriction)
     {
         this.restrictions = restrictions;
         this.tokenRestriction = tokenRestriction;
+        this.partitioner = tokenRestriction.metadata.partitioner;
     }
 
     @Override
@@ -84,42 +103,30 @@ final class TokenFilter extends ForwardingPrimaryKeyRestrictions
     }
 
     @Override
-    public List<Composite> valuesAsComposites(QueryOptions options) throws InvalidRequestException
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public PrimaryKeyRestrictions mergeWith(Restriction restriction) throws InvalidRequestException
+    public PartitionKeyRestrictions mergeWith(Restriction restriction) throws InvalidRequestException
     {
         if (restriction.isOnToken())
             return new TokenFilter(restrictions, (TokenRestriction) tokenRestriction.mergeWith(restriction));
 
-        return new TokenFilter(super.mergeWith(restriction), tokenRestriction);
+        return new TokenFilter(restrictions.mergeWith(restriction), tokenRestriction);
     }
 
     @Override
     public boolean isInclusive(Bound bound)
     {
-        return tokenRestriction.isInclusive(bound);
+        return isOnToken() ? tokenRestriction.isInclusive(bound) : restrictions.isInclusive(bound);
     }
 
     @Override
-    public boolean hasBound(Bound b)
+    public boolean hasBound(Bound bound)
     {
-        return tokenRestriction.hasBound(b);
+        return isOnToken() ? tokenRestriction.hasBound(bound) : restrictions.hasBound(bound);
     }
 
     @Override
     public List<ByteBuffer> bounds(Bound bound, QueryOptions options) throws InvalidRequestException
     {
-        return tokenRestriction.bounds(bound, options);
-    }
-
-    @Override
-    public List<Composite> boundsAsComposites(Bound bound, QueryOptions options) throws InvalidRequestException
-    {
-        return tokenRestriction.boundsAsComposites(bound, options);
+        return isOnToken() ? tokenRestriction.bounds(bound, options) : restrictions.bounds(bound, options);
     }
 
     /**
@@ -132,8 +139,8 @@ final class TokenFilter extends ForwardingPrimaryKeyRestrictions
      */
     private List<ByteBuffer> filter(List<ByteBuffer> values, QueryOptions options) throws InvalidRequestException
     {
-        RangeSet<Token> rangeSet = tokenRestriction.isSlice() ? toRangeSet(tokenRestriction, options)
-                                                              : toRangeSet(tokenRestriction.values(options));
+        RangeSet<Token> rangeSet = tokenRestriction.hasSlice() ? toRangeSet(tokenRestriction, options)
+                                                               : toRangeSet(tokenRestriction.values(options));
 
         return filterWithRangeSet(rangeSet, values);
     }
@@ -145,7 +152,7 @@ final class TokenFilter extends ForwardingPrimaryKeyRestrictions
      * @param values the restricted values
      * @return the values for which the tokens are not included within the specified range.
      */
-    private static List<ByteBuffer> filterWithRangeSet(RangeSet<Token> tokens, List<ByteBuffer> values)
+    private List<ByteBuffer> filterWithRangeSet(RangeSet<Token> tokens, List<ByteBuffer> values)
     {
         List<ByteBuffer> remaining = new ArrayList<>();
 
@@ -167,7 +174,7 @@ final class TokenFilter extends ForwardingPrimaryKeyRestrictions
      * @param buffers the token restriction values
      * @return the range set corresponding to the specified list
      */
-    private static RangeSet<Token> toRangeSet(List<ByteBuffer> buffers)
+    private RangeSet<Token> toRangeSet(List<ByteBuffer> buffers)
     {
         ImmutableRangeSet.Builder<Token> builder = ImmutableRangeSet.builder();
 
@@ -185,7 +192,7 @@ final class TokenFilter extends ForwardingPrimaryKeyRestrictions
      * @return the range set corresponding to the specified slice
      * @throws InvalidRequestException if the request is invalid
      */
-    private static RangeSet<Token> toRangeSet(TokenRestriction slice, QueryOptions options) throws InvalidRequestException
+    private RangeSet<Token> toRangeSet(TokenRestriction slice, QueryOptions options) throws InvalidRequestException
     {
         if (slice.hasBound(START))
         {
@@ -225,7 +232,7 @@ final class TokenFilter extends ForwardingPrimaryKeyRestrictions
      * @param buffer the buffer
      * @return the token corresponding to the specified buffer
      */
-    private static Token deserializeToken(ByteBuffer buffer)
+    private Token deserializeToken(ByteBuffer buffer)
     {
         return partitioner.getTokenFactory().fromByteArray(buffer);
     }
@@ -233,5 +240,71 @@ final class TokenFilter extends ForwardingPrimaryKeyRestrictions
     private static BoundType toBoundType(boolean inclusive)
     {
         return inclusive ? BoundType.CLOSED : BoundType.OPEN;
+    }
+
+    @Override
+    public ColumnDefinition getFirstColumn()
+    {
+        return restrictions.getFirstColumn();
+    }
+
+    @Override
+    public ColumnDefinition getLastColumn()
+    {
+        return restrictions.getLastColumn();
+    }
+
+    @Override
+    public List<ColumnDefinition> getColumnDefs()
+    {
+        return restrictions.getColumnDefs();
+    }
+
+    @Override
+    public void addFunctionsTo(List<Function> functions)
+    {
+        restrictions.addFunctionsTo(functions);
+    }
+
+    @Override
+    public boolean hasSupportingIndex(SecondaryIndexManager indexManager)
+    {
+        return restrictions.hasSupportingIndex(indexManager);
+    }
+
+    @Override
+    public void addRowFilterTo(RowFilter filter, SecondaryIndexManager indexManager, QueryOptions options)
+    {
+        restrictions.addRowFilterTo(filter, indexManager, options);
+    }
+
+    @Override
+    public boolean isEmpty()
+    {
+        return restrictions.isEmpty();
+    }
+
+    @Override
+    public int size()
+    {
+        return restrictions.size();
+    }
+
+    @Override
+    public boolean needFiltering(CFMetaData cfm)
+    {
+        return restrictions.needFiltering(cfm);
+    }
+
+    @Override
+    public boolean hasUnrestrictedPartitionKeyComponents(CFMetaData cfm)
+    {
+        return restrictions.hasUnrestrictedPartitionKeyComponents(cfm);
+    }
+
+    @Override
+    public boolean hasSlice()
+    {
+        return restrictions.hasSlice();
     }
 }

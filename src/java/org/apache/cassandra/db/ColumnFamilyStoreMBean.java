@@ -17,12 +17,16 @@
  */
 package org.apache.cassandra.db;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
 
 import javax.management.openmbean.CompositeData;
 import javax.management.openmbean.OpenDataException;
+
+import org.apache.cassandra.dht.Range;
+import org.apache.cassandra.dht.Token;
 
 /**
  * The MBean interface for ColumnFamilyStore
@@ -32,7 +36,10 @@ public interface ColumnFamilyStoreMBean
     /**
      * @return the name of the column family
      */
+    @Deprecated
     public String getColumnFamilyName();
+
+    public String getTableName();
 
     /**
      * force a major compaction of this column family
@@ -41,6 +48,10 @@ public interface ColumnFamilyStoreMBean
      */
     public void forceMajorCompaction(boolean splitOutput) throws ExecutionException, InterruptedException;
 
+    /**
+     * force a major compaction of specified key range in this column family
+     */
+    public void forceCompactionForTokenRange(Collection<Range<Token>> tokenRanges) throws ExecutionException, InterruptedException;
     /**
      * Gets the minimum number of sstables in queue before compaction kicks off
      */
@@ -67,15 +78,24 @@ public interface ColumnFamilyStoreMBean
     public void setMaximumCompactionThreshold(int threshold);
 
     /**
-     * Sets the compaction strategy by class name
-     * @param className the name of the compaction strategy class
+     * Sets the compaction parameters locally for this node
+     *
+     * Note that this will be set until an ALTER with compaction = {..} is executed or the node is restarted
+     *
+     * @param options compaction options with the same syntax as when doing ALTER ... WITH compaction = {..}
      */
-    public void setCompactionStrategyClass(String className);
+    public void setCompactionParametersJson(String options);
+    public String getCompactionParametersJson();
 
     /**
-     * Gets the compaction strategy class name
+     * Sets the compaction parameters locally for this node
+     *
+     * Note that this will be set until an ALTER with compaction = {..} is executed or the node is restarted
+     *
+     * @param options compaction options map
      */
-    public String getCompactionStrategyClass();
+    public void setCompactionParameters(Map<String, String> options);
+    public Map<String, String> getCompactionParameters();
 
     /**
      * Get the compression parameters
@@ -112,6 +132,14 @@ public interface ColumnFamilyStoreMBean
     public List<String> getSSTablesForKey(String key);
 
     /**
+     * Returns a list of filenames that contain the given key on this node
+     * @param key
+     * @param hexFormat if key is in hex string format
+     * @return list of filenames containing the key
+     */
+    public List<String> getSSTablesForKey(String key, boolean hexFormat);
+
+    /**
      * Scan through Keyspace/ColumnFamily's data directory
      * determine which SSTables should be loaded and load them
      */
@@ -127,6 +155,11 @@ public interface ColumnFamilyStoreMBean
      *         array index corresponds to level(int[0] is for level 0, ...).
      */
     public int[] getSSTableCountPerLevel();
+
+    /**
+     * @return sstable fanout size for level compaction strategy.
+     */
+    public int getLevelFanoutSize();
 
     /**
      * Get the ratio of droppable tombstones to real columns (and non-droppable tombstones)
@@ -149,4 +182,14 @@ public interface ColumnFamilyStoreMBean
      * @return top <i>count</i> items for the sampler since beginLocalSampling was called
      */
     public CompositeData finishLocalSampling(String sampler, int count) throws OpenDataException;
+
+    /*
+        Is Compaction space check enabled
+     */
+    public boolean isCompactionDiskSpaceCheckEnabled();
+
+    /*
+       Enable/Disable compaction space check
+     */
+    public void compactionDiskSpaceCheck(boolean enable);
 }

@@ -19,22 +19,28 @@ package org.apache.cassandra.io.util;
 
 import java.io.File;
 import java.nio.ByteBuffer;
-
-import org.apache.cassandra.io.sstable.Descriptor;
+import java.util.Optional;
 
 public class ChecksummedSequentialWriter extends SequentialWriter
 {
-    private final SequentialWriter crcWriter;
-    private final DataIntegrityMetadata.ChecksumWriter crcMetadata;
+    private static final SequentialWriterOption CRC_WRITER_OPTION = SequentialWriterOption.newBuilder()
+                                                                                          .bufferSize(8 * 1024)
+                                                                                          .build();
 
-    public ChecksummedSequentialWriter(File file, int bufferSize, File crcPath)
+    private final SequentialWriter crcWriter;
+    private final ChecksumWriter crcMetadata;
+    private final Optional<File> digestFile;
+
+    public ChecksummedSequentialWriter(File file, File crcPath, File digestFile, SequentialWriterOption option)
     {
-        super(file, bufferSize, false);
-        crcWriter = new SequentialWriter(crcPath, 8 * 1024, false);
-        crcMetadata = new DataIntegrityMetadata.ChecksumWriter(crcWriter.stream);
+        super(file, option);
+        crcWriter = new SequentialWriter(crcPath, CRC_WRITER_OPTION);
+        crcMetadata = new ChecksumWriter(crcWriter);
         crcMetadata.writeChunkSize(buffer.capacity());
+        this.digestFile = Optional.ofNullable(digestFile);
     }
 
+    @Override
     protected void flushData()
     {
         super.flushData();
@@ -44,20 +50,32 @@ public class ChecksummedSequentialWriter extends SequentialWriter
         crcMetadata.appendDirect(toAppend, false);
     }
 
-    public void writeFullChecksum(Descriptor descriptor)
+    protected class TransactionalProxy extends SequentialWriter.TransactionalProxy
     {
-        crcMetadata.writeFullChecksum(descriptor);
+        @Override
+        protected Throwable doCommit(Throwable accumulate)
+        {
+            return super.doCommit(crcWriter.commit(accumulate));
+        }
+
+        @Override
+        protected Throwable doAbort(Throwable accumulate)
+        {
+            return super.doAbort(crcWriter.abort(accumulate));
+        }
+
+        @Override
+        protected void doPrepare()
+        {
+            syncInternal();
+            digestFile.ifPresent(crcMetadata::writeFullChecksum);
+            crcWriter.prepareToCommit();
+        }
     }
 
-    public void close()
+    @Override
+    protected SequentialWriter.TransactionalProxy txnProxy()
     {
-        super.close();
-        crcWriter.close();
-    }
-
-    public void abort()
-    {
-        super.abort();
-        crcWriter.abort();
+        return new TransactionalProxy();
     }
 }

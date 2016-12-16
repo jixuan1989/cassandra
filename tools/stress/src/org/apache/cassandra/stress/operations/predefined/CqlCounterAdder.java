@@ -29,9 +29,9 @@ import org.apache.cassandra.stress.generate.Distribution;
 import org.apache.cassandra.stress.generate.DistributionFactory;
 import org.apache.cassandra.stress.generate.PartitionGenerator;
 import org.apache.cassandra.stress.generate.SeedManager;
+import org.apache.cassandra.stress.report.Timer;
 import org.apache.cassandra.stress.settings.Command;
 import org.apache.cassandra.stress.settings.StressSettings;
-import org.apache.cassandra.stress.util.Timer;
 
 public class CqlCounterAdder extends CqlOperation<Integer>
 {
@@ -46,7 +46,7 @@ public class CqlCounterAdder extends CqlOperation<Integer>
     @Override
     protected String buildQuery()
     {
-        StringBuilder query = new StringBuilder("UPDATE \"Counter3\" SET ");
+        StringBuilder query = new StringBuilder("UPDATE counter1 SET ");
 
         // TODO : increment distribution subset of columns
         for (int i = 0; i < settings.columns.maxColumnsPerKey; i++)
@@ -54,7 +54,7 @@ public class CqlCounterAdder extends CqlOperation<Integer>
             if (i > 0)
                 query.append(",");
 
-            String name = settings.columns.namestrs.get(i);
+            String name = wrapInQuotes(settings.columns.namestrs.get(i));
             query.append(name).append("=").append(name).append("+?");
         }
         query.append(" WHERE KEY=?");

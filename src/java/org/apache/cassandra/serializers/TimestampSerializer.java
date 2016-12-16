@@ -17,53 +17,81 @@
  */
 package org.apache.cassandra.serializers;
 
+import io.netty.util.concurrent.FastThreadLocal;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
 import java.text.ParseException;
 import java.util.Date;
+import java.util.TimeZone;
 import java.util.regex.Pattern;
 
 import org.apache.commons.lang3.time.DateUtils;
 
 public class TimestampSerializer implements TypeSerializer<Date>
 {
-    private static final String[] dateStringPatterns = new String[] {
+
+    //NOTE: This list is used below and if you change the order
+    //      you need to update the default format and json formats in the code below.
+    private static final String[] dateStringPatterns = new String[]
+    {
             "yyyy-MM-dd HH:mm",
             "yyyy-MM-dd HH:mm:ss",
+            "yyyy-MM-dd HH:mm z",
+            "yyyy-MM-dd HH:mm zz",
+            "yyyy-MM-dd HH:mm zzz",
             "yyyy-MM-dd HH:mmX",
             "yyyy-MM-dd HH:mmXX",  // DEFAULT_FORMAT
             "yyyy-MM-dd HH:mmXXX",
+            "yyyy-MM-dd HH:mm:ss",
+            "yyyy-MM-dd HH:mm:ss z",
+            "yyyy-MM-dd HH:mm:ss zz",
+            "yyyy-MM-dd HH:mm:ss zzz",
             "yyyy-MM-dd HH:mm:ssX",
             "yyyy-MM-dd HH:mm:ssXX",
             "yyyy-MM-dd HH:mm:ssXXX",
-            "yyyy-MM-dd HH:mm:ss.SSS",  // TO_JSON_FORMAT
-            "yyyy-MM-dd HH:mm:ss.SSSX",
+            "yyyy-MM-dd HH:mm:ss.SSS",
+            "yyyy-MM-dd HH:mm:ss.SSS z",
+            "yyyy-MM-dd HH:mm:ss.SSS zz",
+            "yyyy-MM-dd HH:mm:ss.SSS zzz",
+            "yyyy-MM-dd HH:mm:ss.SSSX", // TO_JSON_FORMAT
             "yyyy-MM-dd HH:mm:ss.SSSXX",
             "yyyy-MM-dd HH:mm:ss.SSSXXX",
             "yyyy-MM-dd'T'HH:mm",
+            "yyyy-MM-dd'T'HH:mm z",
+            "yyyy-MM-dd'T'HH:mm zz",
+            "yyyy-MM-dd'T'HH:mm zzz",
             "yyyy-MM-dd'T'HH:mmX",
             "yyyy-MM-dd'T'HH:mmXX",
             "yyyy-MM-dd'T'HH:mmXXX",
             "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd'T'HH:mm:ss z",
+            "yyyy-MM-dd'T'HH:mm:ss zz",
+            "yyyy-MM-dd'T'HH:mm:ss zzz",
             "yyyy-MM-dd'T'HH:mm:ssX",
             "yyyy-MM-dd'T'HH:mm:ssXX",
             "yyyy-MM-dd'T'HH:mm:ssXXX",
             "yyyy-MM-dd'T'HH:mm:ss.SSS",
-            "yyyy-MM-dd'T'HH:mm:ss.SSSX",
+            "yyyy-MM-dd'T'HH:mm:ss.SSS z",
+            "yyyy-MM-dd'T'HH:mm:ss.SSS zz",
+            "yyyy-MM-dd'T'HH:mm:ss.SSS zzz",
+            "yyyy-MM-dd'T'HH:mm:ss.SSSX",  // UTC_FORMAT
             "yyyy-MM-dd'T'HH:mm:ss.SSSXX",
             "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
             "yyyy-MM-dd",
+            "yyyy-MM-dd z",
+            "yyyy-MM-dd zz",
+            "yyyy-MM-dd zzz",
             "yyyy-MM-ddX",
             "yyyy-MM-ddXX",
             "yyyy-MM-ddXXX"
     };
 
-    private static final String DEFAULT_FORMAT = dateStringPatterns[3];
+    private static final String DEFAULT_FORMAT = dateStringPatterns[6];
     private static final Pattern timestampPattern = Pattern.compile("^-?\\d+$");
 
-    private static final ThreadLocal<SimpleDateFormat> FORMATTER = new ThreadLocal<SimpleDateFormat>()
+    private static final FastThreadLocal<SimpleDateFormat> FORMATTER = new FastThreadLocal<SimpleDateFormat>()
     {
         protected SimpleDateFormat initialValue()
         {
@@ -71,7 +99,29 @@ public class TimestampSerializer implements TypeSerializer<Date>
         }
     };
 
-    public static final SimpleDateFormat TO_JSON_FORMAT = new SimpleDateFormat(dateStringPatterns[8]);
+    private static final String UTC_FORMAT = dateStringPatterns[40];
+    private static final FastThreadLocal<SimpleDateFormat> FORMATTER_UTC = new FastThreadLocal<SimpleDateFormat>()
+    {
+        protected SimpleDateFormat initialValue()
+        {
+            SimpleDateFormat sdf = new SimpleDateFormat(UTC_FORMAT);
+            sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
+            return sdf;
+        }
+    };
+
+    private static final String TO_JSON_FORMAT = dateStringPatterns[19];
+    private static final FastThreadLocal<SimpleDateFormat> FORMATTER_TO_JSON = new FastThreadLocal<SimpleDateFormat>()
+    {
+        protected SimpleDateFormat initialValue()
+        {
+            SimpleDateFormat sdf = new SimpleDateFormat(TO_JSON_FORMAT);
+            sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
+            return sdf;
+        }
+    };
+
+
 
     public static final TimestampSerializer instance = new TimestampSerializer();
 
@@ -114,6 +164,11 @@ public class TimestampSerializer implements TypeSerializer<Date>
         }
     }
 
+    public static SimpleDateFormat getJsonDateFormatter()
+    {
+    	return FORMATTER_TO_JSON.get();
+    }
+
     public void validate(ByteBuffer bytes) throws MarshalException
     {
         if (bytes.remaining() != 8 && bytes.remaining() != 0)
@@ -125,8 +180,25 @@ public class TimestampSerializer implements TypeSerializer<Date>
         return value == null ? "" : FORMATTER.get().format(value);
     }
 
+    public String toStringUTC(Date value)
+    {
+        return value == null ? "" : FORMATTER_UTC.get().format(value);
+    }
+
     public Class<Date> getType()
     {
         return Date.class;
+    }
+
+    /**
+     * Builds CQL literal for a timestamp using time zone UTC and fixed date format.
+     * @see #FORMATTER_UTC
+     */
+    @Override
+    public String toCQLLiteral(ByteBuffer buffer)
+    {
+        return buffer == null || !buffer.hasRemaining()
+             ? "null"
+             : FORMATTER_UTC.get().format(deserialize(buffer));
     }
 }

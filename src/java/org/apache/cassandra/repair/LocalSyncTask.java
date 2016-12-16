@@ -26,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.streaming.ProgressInfo;
 import org.apache.cassandra.streaming.StreamEvent;
 import org.apache.cassandra.streaming.StreamEventHandler;
@@ -46,10 +47,13 @@ public class LocalSyncTask extends SyncTask implements StreamEventHandler
 
     private final long repairedAt;
 
-    public LocalSyncTask(RepairJobDesc desc, TreeResponse r1, TreeResponse r2, long repairedAt)
+    private final boolean pullRepair;
+
+    public LocalSyncTask(RepairJobDesc desc, TreeResponse r1, TreeResponse r2, long repairedAt, boolean pullRepair)
     {
         super(desc, r1, r2);
         this.repairedAt = repairedAt;
+        this.pullRepair = pullRepair;
     }
 
     /**
@@ -65,14 +69,24 @@ public class LocalSyncTask extends SyncTask implements StreamEventHandler
 
         String message = String.format("Performing streaming repair of %d ranges with %s", differences.size(), dst);
         logger.info("[repair #{}] {}", desc.sessionId, message);
+        boolean isIncremental = false;
+        if (desc.parentSessionId != null)
+        {
+            ActiveRepairService.ParentRepairSession prs = ActiveRepairService.instance.getParentRepairSession(desc.parentSessionId);
+            isIncremental = prs.isIncremental;
+        }
         Tracing.traceRepair(message);
-        new StreamPlan("Repair", repairedAt, 1, false).listeners(this)
+        StreamPlan plan = new StreamPlan("Repair", repairedAt, 1, false, isIncremental, false).listeners(this)
                                             .flushBeforeTransfer(true)
                                             // request ranges from the remote node
-                                            .requestRanges(dst, preferred, desc.keyspace, differences, desc.columnFamily)
-                                            // send ranges to the remote node
-                                            .transferRanges(dst, preferred, desc.keyspace, differences, desc.columnFamily)
-                                            .execute();
+                                            .requestRanges(dst, preferred, desc.keyspace, differences, desc.columnFamily);
+        if (!pullRepair)
+        {
+            // send ranges to the remote node if we are not performing a pull repair
+            plan.transferRanges(dst, preferred, desc.keyspace, differences, desc.columnFamily);
+        }
+
+        plan.execute();
     }
 
     public void handleStreamEvent(StreamEvent event)
@@ -91,9 +105,9 @@ public class LocalSyncTask extends SyncTask implements StreamEventHandler
                 break;
             case FILE_PROGRESS:
                 ProgressInfo pi = ((StreamEvent.ProgressEvent) event).progress;
-                state.trace("{}/{} bytes ({}%) {} idx:{}{}",
-                            new Object[] { pi.currentBytes,
-                                           pi.totalBytes,
+                state.trace("{}/{} ({}%) {} idx:{}{}",
+                            new Object[] { FBUtilities.prettyPrintMemory(pi.currentBytes),
+                                           FBUtilities.prettyPrintMemory(pi.totalBytes),
                                            pi.currentBytes * 100 / pi.totalBytes,
                                            pi.direction == ProgressInfo.Direction.OUT ? "sent to" : "received from",
                                            pi.sessionIndex,

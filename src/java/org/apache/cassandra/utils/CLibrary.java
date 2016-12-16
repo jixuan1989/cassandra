@@ -17,26 +17,28 @@
  */
 package org.apache.cassandra.utils;
 
+import java.io.File;
 import java.io.FileDescriptor;
+import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.RandomAccessFile;
 import java.lang.reflect.Field;
 import java.nio.channels.FileChannel;
-import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
+import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.sun.jna.LastErrorException;
 import com.sun.jna.Native;
+import com.sun.jna.Pointer;
+import sun.nio.ch.FileChannelImpl;
 
 public final class CLibrary
 {
     private static final Logger logger = LoggerFactory.getLogger(CLibrary.class);
 
-    private static final int MCL_CURRENT = 1;
-    private static final int MCL_FUTURE = 2;
+    private static final int MCL_CURRENT;
+    private static final int MCL_FUTURE;
 
     private static final int ENOMEM = 12;
 
@@ -55,9 +57,25 @@ public final class CLibrary
 
     static boolean jnaAvailable = true;
     static boolean jnaLockable = false;
+    private static boolean fsyncUnavailable = false;
+
+    private static final boolean OS_LINUX;
+    private static final boolean OS_AIX;
+    private static final boolean OS_MAC;
+
+    private static final Field FILE_DESCRIPTOR_FD_FIELD;
+    private static final Field FILE_CHANNEL_FD_FIELD;
 
     static
     {
+        String os = System.getProperty("os.name").toLowerCase();
+        OS_LINUX = os.contains("linux");
+        OS_AIX = os.contains("aix");
+        OS_MAC = os.contains("mac");
+
+        FILE_DESCRIPTOR_FD_FIELD = FBUtilities.getProtectedField(FileDescriptor.class, "fd");
+        FILE_CHANNEL_FD_FIELD = FBUtilities.getProtectedField(FileChannelImpl.class, "fd");
+
         try
         {
             Native.register("c");
@@ -70,12 +88,36 @@ public final class CLibrary
         catch (UnsatisfiedLinkError e)
         {
             logger.warn("JNA link failure, one or more native method will be unavailable.");
-            logger.debug("JNA link failure details: {}", e.getMessage());
+            logger.trace("JNA link failure details: {}", e.getMessage());
         }
         catch (NoSuchMethodError e)
         {
             logger.warn("Obsolete version of JNA present; unable to register C library. Upgrade to JNA 3.2.7 or later");
             jnaAvailable = false;
+        }
+
+        if (System.getProperty("os.arch").toLowerCase().contains("ppc"))
+        {
+            if (OS_LINUX)
+            {
+               MCL_CURRENT = 0x2000;
+               MCL_FUTURE = 0x4000;
+            }
+            else if (OS_AIX)
+            {
+                MCL_CURRENT = 0x100;
+                MCL_FUTURE = 0x200;
+            }
+            else
+            {
+                MCL_CURRENT = 1;
+                MCL_FUTURE = 2;
+            }
+        }
+        else
+        {
+            MCL_CURRENT = 1;
+            MCL_FUTURE = 2;
         }
     }
 
@@ -86,6 +128,7 @@ public final class CLibrary
     private static native int open(String path, int flags) throws LastErrorException;
     private static native int fsync(int fd) throws LastErrorException;
     private static native int close(int fd) throws LastErrorException;
+    private static native Pointer strerror(int errnum) throws LastErrorException;
 
     private static int errno(RuntimeException e)
     {
@@ -130,13 +173,13 @@ public final class CLibrary
             if (!(e instanceof LastErrorException))
                 throw e;
 
-            if (errno(e) == ENOMEM && System.getProperty("os.name").toLowerCase().contains("linux"))
+            if (OS_LINUX && errno(e) == ENOMEM)
             {
                 logger.warn("Unable to lock JVM memory (ENOMEM)."
                         + " This can result in part of the JVM being swapped out, especially with mmapped I/O enabled."
                         + " Increase RLIMIT_MEMLOCK or run Cassandra as root.");
             }
-            else if (!System.getProperty("os.name").toLowerCase().contains("mac"))
+            else if (!OS_MAC)
             {
                 // OS X allows mlockall to be called, but always returns an error
                 logger.warn("Unknown mlockall error {}", errno(e));
@@ -146,33 +189,52 @@ public final class CLibrary
 
     public static void trySkipCache(String path, long offset, long len)
     {
-        trySkipCache(getfd(path), offset, len);
+        File f = new File(path);
+        if (!f.exists())
+            return;
+
+        try (FileInputStream fis = new FileInputStream(f))
+        {
+            trySkipCache(getfd(fis.getChannel()), offset, len, path);
+        }
+        catch (IOException e)
+        {
+            logger.warn("Could not skip cache", e);
+        }
     }
 
-    public static void trySkipCache(int fd, long offset, long len)
+    public static void trySkipCache(int fd, long offset, long len, String path)
     {
         if (len == 0)
-            trySkipCache(fd, 0, 0);
+            trySkipCache(fd, 0, 0, path);
 
         while (len > 0)
         {
             int sublen = (int) Math.min(Integer.MAX_VALUE, len);
-            trySkipCache(fd, offset, sublen);
+            trySkipCache(fd, offset, sublen, path);
             len -= sublen;
             offset -= sublen;
         }
     }
 
-    public static void trySkipCache(int fd, long offset, int len)
+    public static void trySkipCache(int fd, long offset, int len, String path)
     {
         if (fd < 0)
             return;
 
         try
         {
-            if (System.getProperty("os.name").toLowerCase().contains("linux"))
+            if (OS_LINUX)
             {
-                posix_fadvise(fd, offset, len, POSIX_FADV_DONTNEED);
+                int result = posix_fadvise(fd, offset, len, POSIX_FADV_DONTNEED);
+                if (result != 0)
+                    NoSpamLogger.log(
+                            logger,
+                            NoSpamLogger.Level.WARN,
+                            10,
+                            TimeUnit.MINUTES,
+                            "Failed trySkipCache on file: {} Error: " + strerror(result).getString(0),
+                            path);
             }
         }
         catch (UnsatisfiedLinkError e)
@@ -185,7 +247,7 @@ public final class CLibrary
             if (!(e instanceof LastErrorException))
                 throw e;
 
-            logger.warn(String.format("posix_fadvise(%d, %d) failed, errno (%d).", fd, offset, errno(e)));
+            logger.warn("posix_fadvise({}, {}) failed, errno ({}).", fd, offset, errno(e));
         }
     }
 
@@ -207,7 +269,7 @@ public final class CLibrary
             if (!(e instanceof LastErrorException))
                 throw e;
 
-            logger.warn(String.format("fcntl(%d, %d, %d) failed, errno (%d).", fd, command, flags, errno(e)));
+            logger.warn("fcntl({}, {}, {}) failed, errno ({}).", fd, command, flags, errno(e));
         }
 
         return result;
@@ -230,7 +292,7 @@ public final class CLibrary
             if (!(e instanceof LastErrorException))
                 throw e;
 
-            logger.warn(String.format("open(%s, O_RDONLY) failed, errno (%d).", path, errno(e)));
+            logger.warn("open({}, O_RDONLY) failed, errno ({}).", path, errno(e));
         }
 
         return fd;
@@ -238,7 +300,7 @@ public final class CLibrary
 
     public static void trySync(int fd)
     {
-        if (fd == -1)
+        if (fsyncUnavailable || fd == -1)
             return;
 
         try
@@ -248,13 +310,14 @@ public final class CLibrary
         catch (UnsatisfiedLinkError e)
         {
             // JNA is unavailable just skipping Direct I/O
+            fsyncUnavailable = true;
         }
         catch (RuntimeException e)
         {
             if (!(e instanceof LastErrorException))
                 throw e;
 
-            logger.warn(String.format("fsync(%d) failed, errno (%d).", fd, errno(e)));
+            logger.warn(String.format("fsync(%d) failed, errno (%d) {}", fd, errno(e)), e);
         }
     }
 
@@ -276,17 +339,15 @@ public final class CLibrary
             if (!(e instanceof LastErrorException))
                 throw e;
 
-            logger.warn(String.format("close(%d) failed, errno (%d).", fd, errno(e)));
+            logger.warn("close({}) failed, errno ({}).", fd, errno(e));
         }
     }
 
     public static int getfd(FileChannel channel)
     {
-        Field field = FBUtilities.getProtectedField(channel.getClass(), "fd");
-
         try
         {
-            return getfd((FileDescriptor)field.get(channel));
+            return getfd((FileDescriptor)FILE_CHANNEL_FD_FIELD.get(channel));
         }
         catch (IllegalArgumentException|IllegalAccessException e)
         {
@@ -302,11 +363,9 @@ public final class CLibrary
      */
     public static int getfd(FileDescriptor descriptor)
     {
-        Field field = FBUtilities.getProtectedField(descriptor.getClass(), "fd");
-
         try
         {
-            return field.getInt(descriptor);
+            return FILE_DESCRIPTOR_FD_FIELD.getInt(descriptor);
         }
         catch (Exception e)
         {
@@ -315,19 +374,5 @@ public final class CLibrary
         }
 
         return -1;
-    }
-
-    public static int getfd(String path)
-    {
-        try(FileChannel channel = FileChannel.open(Paths.get(path), StandardOpenOption.READ))
-        {
-            return getfd(channel);
-        }
-        catch (IOException e)
-        {
-            JVMStabilityInspector.inspectThrowable(e);
-            // ignore
-            return -1;
-        }
     }
 }

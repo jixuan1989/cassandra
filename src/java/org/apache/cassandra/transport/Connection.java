@@ -19,19 +19,18 @@ package org.apache.cassandra.transport;
 
 import io.netty.channel.Channel;
 import io.netty.util.AttributeKey;
-import org.apache.cassandra.transport.messages.EventMessage;
 
 public class Connection
 {
     static final AttributeKey<Connection> attributeKey = AttributeKey.valueOf("CONN");
 
     private final Channel channel;
-    private final int version;
+    private final ProtocolVersion version;
     private final Tracker tracker;
 
     private volatile FrameCompressor frameCompressor;
 
-    public Connection(Channel channel, int version, Tracker tracker)
+    public Connection(Channel channel, ProtocolVersion version, Tracker tracker)
     {
         this.channel = channel;
         this.version = version;
@@ -55,7 +54,7 @@ public class Connection
         return tracker;
     }
 
-    public int getVersion()
+    public ProtocolVersion getVersion()
     {
         return version;
     }
@@ -65,21 +64,13 @@ public class Connection
         return channel;
     }
 
-    public void sendIfRegistered(Event event)
-    {
-        if (getTracker().isRegistered(event.type, channel))
-            channel.writeAndFlush(new EventMessage(event));
-    }
-
     public interface Factory
     {
-        Connection newConnection(Channel channel, int version);
+        Connection newConnection(Channel channel, ProtocolVersion version);
     }
 
     public interface Tracker
     {
         void addConnection(Channel ch, Connection connection);
-
-        boolean isRegistered(Event.Type type, Channel ch);
     }
 }

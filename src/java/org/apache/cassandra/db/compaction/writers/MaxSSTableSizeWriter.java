@@ -17,86 +17,106 @@
  */
 package org.apache.cassandra.db.compaction.writers;
 
-import java.io.File;
-import java.util.List;
 import java.util.Set;
 
 import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.RowIndexEntry;
-import org.apache.cassandra.db.compaction.AbstractCompactedRow;
-import org.apache.cassandra.db.compaction.CompactionTask;
+import org.apache.cassandra.db.SerializationHeader;
 import org.apache.cassandra.db.compaction.OperationType;
+import org.apache.cassandra.db.rows.UnfilteredRowIterator;
+import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.io.sstable.Descriptor;
-import org.apache.cassandra.io.sstable.SSTableRewriter;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.sstable.format.SSTableWriter;
 import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
 
 public class MaxSSTableSizeWriter extends CompactionAwareWriter
 {
-    private final long estimatedTotalKeys;
-    private final long expectedWriteSize;
-    private final SSTableRewriter sstableWriter;
     private final long maxSSTableSize;
     private final int level;
     private final long estimatedSSTables;
     private final Set<SSTableReader> allSSTables;
+    private Directories.DataDirectory sstableDirectory;
 
-    public MaxSSTableSizeWriter(ColumnFamilyStore cfs, Set<SSTableReader> allSSTables, Set<SSTableReader> nonExpiredSSTables, long maxSSTableSize, int level, boolean offline, OperationType compactionType)
+    public MaxSSTableSizeWriter(ColumnFamilyStore cfs,
+                                Directories directories,
+                                LifecycleTransaction txn,
+                                Set<SSTableReader> nonExpiredSSTables,
+                                long maxSSTableSize,
+                                int level)
     {
-        super(cfs, nonExpiredSSTables);
-        this.allSSTables = allSSTables;
-        this.level = level;
-        this.maxSSTableSize = maxSSTableSize;
-        long totalSize = cfs.getExpectedCompactedFileSize(nonExpiredSSTables, compactionType);
-        expectedWriteSize = Math.min(maxSSTableSize, totalSize);
-        estimatedTotalKeys = SSTableReader.getApproximateKeyCount(nonExpiredSSTables);
-        estimatedSSTables = Math.max(1, estimatedTotalKeys / maxSSTableSize);
-        sstableWriter = new SSTableRewriter(cfs, allSSTables, CompactionTask.getMaxDataAge(nonExpiredSSTables), offline);
-        File sstableDirectory = cfs.directories.getLocationForDisk(getWriteDirectory(expectedWriteSize));
-        SSTableWriter writer = SSTableWriter.create(Descriptor.fromFilename(cfs.getTempSSTablePath(sstableDirectory)),
-                                                    estimatedTotalKeys / estimatedSSTables,
-                                                    minRepairedAt,
-                                                    cfs.metadata,
-                                                    cfs.partitioner,
-                                                    new MetadataCollector(allSSTables, cfs.metadata.comparator, level));
-        sstableWriter.switchWriter(writer);
+        this(cfs, directories, txn, nonExpiredSSTables, maxSSTableSize, level, false);
     }
 
-    @Override
-    public boolean append(AbstractCompactedRow row)
+    @Deprecated
+    public MaxSSTableSizeWriter(ColumnFamilyStore cfs,
+                                Directories directories,
+                                LifecycleTransaction txn,
+                                Set<SSTableReader> nonExpiredSSTables,
+                                long maxSSTableSize,
+                                int level,
+                                boolean offline,
+                                boolean keepOriginals)
     {
-        RowIndexEntry rie = sstableWriter.append(row);
-        if (sstableWriter.currentWriter().getOnDiskFilePointer() > maxSSTableSize)
-        {
-            File sstableDirectory = cfs.directories.getLocationForDisk(getWriteDirectory(expectedWriteSize));
-            SSTableWriter writer = SSTableWriter.create(Descriptor.fromFilename(cfs.getTempSSTablePath(sstableDirectory)),
-                                                                estimatedTotalKeys / estimatedSSTables,
-                                                                minRepairedAt,
-                                                                cfs.metadata,
-                                                                cfs.partitioner,
-                                                                new MetadataCollector(allSSTables, cfs.metadata.comparator, level));
+        this(cfs, directories, txn, nonExpiredSSTables, maxSSTableSize, level, keepOriginals);
+    }
 
-            sstableWriter.switchWriter(writer);
+    public MaxSSTableSizeWriter(ColumnFamilyStore cfs,
+                                Directories directories,
+                                LifecycleTransaction txn,
+                                Set<SSTableReader> nonExpiredSSTables,
+                                long maxSSTableSize,
+                                int level,
+                                boolean keepOriginals)
+    {
+        super(cfs, directories, txn, nonExpiredSSTables, keepOriginals);
+        this.allSSTables = txn.originals();
+        this.level = level;
+        this.maxSSTableSize = maxSSTableSize;
+
+        long totalSize = getTotalWriteSize(nonExpiredSSTables, estimatedTotalKeys, cfs, txn.opType());
+        estimatedSSTables = Math.max(1, totalSize / maxSSTableSize);
+    }
+
+    /**
+     * Gets the estimated total amount of data to write during compaction
+     */
+    private static long getTotalWriteSize(Iterable<SSTableReader> nonExpiredSSTables, long estimatedTotalKeys, ColumnFamilyStore cfs, OperationType compactionType)
+    {
+        long estimatedKeysBeforeCompaction = 0;
+        for (SSTableReader sstable : nonExpiredSSTables)
+            estimatedKeysBeforeCompaction += sstable.estimatedKeys();
+        estimatedKeysBeforeCompaction = Math.max(1, estimatedKeysBeforeCompaction);
+        double estimatedCompactionRatio = (double) estimatedTotalKeys / estimatedKeysBeforeCompaction;
+
+        return Math.round(estimatedCompactionRatio * cfs.getExpectedCompactedFileSize(nonExpiredSSTables, compactionType));
+    }
+
+    protected boolean realAppend(UnfilteredRowIterator partition)
+    {
+        RowIndexEntry rie = sstableWriter.append(partition);
+        if (sstableWriter.currentWriter().getEstimatedOnDiskBytesWritten() > maxSSTableSize)
+        {
+            switchCompactionLocation(sstableDirectory);
         }
         return rie != null;
     }
 
     @Override
-    public void abort()
+    public void switchCompactionLocation(Directories.DataDirectory location)
     {
-        sstableWriter.abort();
-    }
+        sstableDirectory = location;
+        @SuppressWarnings("resource")
+        SSTableWriter writer = SSTableWriter.create(cfs.newSSTableDescriptor(getDirectories().getLocationForDisk(sstableDirectory)),
+                                                    estimatedTotalKeys / estimatedSSTables,
+                                                    minRepairedAt,
+                                                    cfs.metadata,
+                                                    new MetadataCollector(allSSTables, cfs.metadata.comparator, level),
+                                                    SerializationHeader.make(cfs.metadata, nonExpiredSSTables),
+                                                    cfs.indexManager.listIndexes(),
+                                                    txn);
 
-    @Override
-    public List<SSTableReader> finish()
-    {
-        return sstableWriter.finish();
-    }
-
-    @Override
-    public long estimatedKeys()
-    {
-        return estimatedTotalKeys;
+        sstableWriter.switchWriter(writer);
     }
 }

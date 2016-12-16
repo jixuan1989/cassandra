@@ -41,6 +41,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 
 public class ByteOrderedPartitioner implements IPartitioner
 {
@@ -116,6 +117,20 @@ public class ByteOrderedPartitioner implements IPartitioner
         {
             return token;
         }
+
+        @Override
+        public double size(Token next)
+        {
+            throw new UnsupportedOperationException(String.format("Token type %s does not support token allocation.",
+                                                                  getClass().getSimpleName()));
+        }
+
+        @Override
+        public Token increaseSlightly()
+        {
+            throw new UnsupportedOperationException(String.format("Token type %s does not support token allocation.",
+                                                                  getClass().getSimpleName()));
+        }
     }
 
     public BytesToken getToken(ByteBuffer key)
@@ -141,6 +156,11 @@ public class ByteOrderedPartitioner implements IPartitioner
 
         Pair<BigInteger,Boolean> midpair = FBUtilities.midpoint(left, right, 8*sigbytes);
         return new BytesToken(bytesForBig(midpair.left, sigbytes, midpair.right));
+    }
+
+    public Token split(Token left, Token right, double ratioToLeft)
+    {
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -189,13 +209,18 @@ public class ByteOrderedPartitioner implements IPartitioner
 
     public BytesToken getRandomToken()
     {
-        Random r = new Random();
+       return getRandomToken(ThreadLocalRandom.current());
+    }
+
+    public BytesToken getRandomToken(Random random)
+    {
         byte[] buffer = new byte[16];
-        r.nextBytes(buffer);
+        random.nextBytes(buffer);
         return new BytesToken(buffer);
     }
 
-    private final Token.TokenFactory tokenFactory = new Token.TokenFactory() {
+    private final Token.TokenFactory tokenFactory = new Token.TokenFactory() 
+    {
         public ByteBuffer toByteArray(Token token)
         {
             BytesToken bytesToken = (BytesToken) token;
@@ -262,7 +287,7 @@ public class ByteOrderedPartitioner implements IPartitioner
 
         for (String ks : Schema.instance.getKeyspaces())
         {
-            for (CFMetaData cfmd : Schema.instance.getKSMetaData(ks).cfMetaData().values())
+            for (CFMetaData cfmd : Schema.instance.getTablesAndViews(ks))
             {
                 for (Range<Token> r : sortedRanges)
                 {
@@ -283,6 +308,11 @@ public class ByteOrderedPartitioner implements IPartitioner
     }
 
     public AbstractType<?> getTokenValidator()
+    {
+        return BytesType.instance;
+    }
+
+    public AbstractType<?> partitionOrdering()
     {
         return BytesType.instance;
     }

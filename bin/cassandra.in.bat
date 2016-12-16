@@ -31,7 +31,7 @@ REM set JAVA_HOME="<directory>"
 REM ***** CLASSPATH library setting *****
 
 REM Ensure that any user defined CLASSPATH variables are not used on startup
-set CLASSPATH="%CASSANDRA_HOME%\conf"
+set CLASSPATH=%CASSANDRA_CONF%
 
 REM For each jar in the CASSANDRA_HOME lib directory call append to build the CLASSPATH variable.
 for %%i in ("%CASSANDRA_HOME%\lib\*.jar") do call :append "%%i"
@@ -44,7 +44,7 @@ goto :eof
 :okClasspath
 
 REM Include the build\classes\main directory so it works in development
-set CASSANDRA_CLASSPATH=%CLASSPATH%;"%CASSANDRA_HOME%\build\classes\main";%CASSANDRA_CONF%;"%CASSANDRA_HOME%\build\classes\thrift"
+set CASSANDRA_CLASSPATH=%CLASSPATH%;"%CASSANDRA_HOME%\build\classes\main";%CASSANDRA_CONF%
 
 REM Add the default storage location.  Can be overridden in conf\cassandra.yaml
 set CASSANDRA_PARAMS=%CASSANDRA_PARAMS% "-Dcassandra.storagedir=%CASSANDRA_HOME%\data"

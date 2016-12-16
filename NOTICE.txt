@@ -46,13 +46,6 @@ Written by Adrien Grand.
 Contains bindings to the C LZ4 implementation (http://code.google.com/p/lz4/)
 Copyright (C) 2011-2012, Yann Collet.
 
-Alternative Disruptor backed thrift server from https://github.com/xedin/disruptor_thrift_server
-Written by Pavel Yaskevich.
-
-LMAX Disruptor
-(http://lmax-exchange.github.io/disruptor/)
-Copyright 2011 LMAX Ltd.
-
 Airline
 (https://github.com/airlift/airline)
 Copyright 2011, Dain Sundstrom dain@iq80.com
@@ -61,8 +54,11 @@ Copyright 2010, Cedric Beust cedric@beust.com
 HLL++ support provided by stream-lib
 (https://github.com/addthis/stream-lib)
 
-Javassist
-(http://www.csg.ci.i.u-tokyo.ac.jp/~chiba/javassist/)
+Eclipse JDT
+Java compilation software for user-defined-functions is provided by Eclipse,
+which is open source software.  The original software and
+related information is available at http://www.eclipse.org/
+(http://www.eclipse.org/jdt/)
 
 SIGAR
 http://sigar.hyperic.com/
@@ -71,3 +67,18 @@ OHC
 (https://github.com/snazy/ohc)
 Java Off-Heap-Cache, licensed under APLv2
 Copyright 2014-2015 Robert Stupp, Germany.
+
+Protocol buffers for varint encoding
+https://developers.google.com/protocol-buffers/
+Copyright 2008 Google Inc.  All rights reserved.
+BSD 3-clause
+
+ASM
+(http://asm.ow2.org/)
+Copyright (c) 2000-2011 INRIA, France Telecom
+
+HdrHistogram
+http://hdrhistogram.org
+
+JCTools
+http://jctools.github.io/JCTools/

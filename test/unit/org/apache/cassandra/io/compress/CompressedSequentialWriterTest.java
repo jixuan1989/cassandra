@@ -17,25 +17,41 @@
  */
 package org.apache.cassandra.io.compress;
 
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.Arrays;
-import java.util.Random;
+import java.util.*;
 
+import static org.apache.commons.io.FileUtils.readFileToByteArray;
 import static org.junit.Assert.assertEquals;
+
+import com.google.common.io.Files;
+import org.junit.After;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
-import org.apache.cassandra.db.composites.SimpleDenseCellNameType;
-import org.apache.cassandra.db.marshal.BytesType;
-import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
-import org.apache.cassandra.io.util.ChannelProxy;
-import org.apache.cassandra.io.util.FileMark;
-import org.apache.cassandra.io.util.RandomAccessReader;
+import junit.framework.Assert;
 
-public class CompressedSequentialWriterTest
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.db.ClusteringComparator;
+import org.apache.cassandra.db.marshal.BytesType;
+import org.apache.cassandra.db.marshal.UTF8Type;
+import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
+import org.apache.cassandra.io.util.*;
+import org.apache.cassandra.schema.CompressionParams;
+import org.apache.cassandra.utils.ChecksumType;
+
+public class CompressedSequentialWriterTest extends SequentialWriterTest
 {
-    private ICompressor compressor;
+    private CompressionParams compressionParameters;
+
+    @BeforeClass
+    public static void setupDD()
+    {
+        DatabaseDescriptor.daemonInitialization();
+    }
 
     private void runTests(String testName) throws IOException
     {
@@ -43,46 +59,46 @@ public class CompressedSequentialWriterTest
         testWrite(File.createTempFile(testName + "_small", "1"), 25);
 
         // Test to confirm pipeline w/chunk-aligned data writes works
-        testWrite(File.createTempFile(testName + "_chunkAligned", "1"), CompressionParameters.DEFAULT_CHUNK_LENGTH);
+        testWrite(File.createTempFile(testName + "_chunkAligned", "1"), CompressionParams.DEFAULT_CHUNK_LENGTH);
 
         // Test to confirm pipeline on non-chunk boundaries works
-        testWrite(File.createTempFile(testName + "_large", "1"), CompressionParameters.DEFAULT_CHUNK_LENGTH * 3 + 100);
+        testWrite(File.createTempFile(testName + "_large", "1"), CompressionParams.DEFAULT_CHUNK_LENGTH * 3 + 100);
     }
 
     @Test
     public void testLZ4Writer() throws IOException
     {
-        compressor = LZ4Compressor.instance;
+        compressionParameters = CompressionParams.lz4();
         runTests("LZ4");
     }
 
     @Test
     public void testDeflateWriter() throws IOException
     {
-        compressor = DeflateCompressor.instance;
+        compressionParameters = CompressionParams.deflate();
         runTests("Deflate");
     }
 
     @Test
     public void testSnappyWriter() throws IOException
     {
-        compressor = SnappyCompressor.instance;
+        compressionParameters = CompressionParams.snappy();
         runTests("Snappy");
     }
 
     private void testWrite(File f, int bytesToTest) throws IOException
     {
         final String filename = f.getAbsolutePath();
-        final ChannelProxy channel = new ChannelProxy(f);
+        MetadataCollector sstableMetadataCollector = new MetadataCollector(new ClusteringComparator(Collections.singletonList(BytesType.instance)));
 
-        try
+        byte[] dataPre = new byte[bytesToTest];
+        byte[] rawPost = new byte[bytesToTest];
+        try (CompressedSequentialWriter writer = new CompressedSequentialWriter(f, filename + ".metadata",
+                null, SequentialWriterOption.DEFAULT,
+                compressionParameters,
+                sstableMetadataCollector))
         {
-            MetadataCollector sstableMetadataCollector = new MetadataCollector(new SimpleDenseCellNameType(BytesType.instance)).replayPosition(null);
-            CompressedSequentialWriter writer = new CompressedSequentialWriter(f, filename + ".metadata", new CompressionParameters(compressor), sstableMetadataCollector);
-
-            byte[] dataPre = new byte[bytesToTest];
-            byte[] rawPost = new byte[bytesToTest];
-            Random r = new Random();
+            Random r = new Random(42);
 
             // Test both write with byte[] and ByteBuffer
             r.nextBytes(dataPre);
@@ -92,19 +108,23 @@ public class CompressedSequentialWriterTest
             dataPost.flip();
 
             writer.write(dataPre);
-            FileMark mark = writer.mark();
+            DataPosition mark = writer.mark();
 
             // Write enough garbage to transition chunk
-            for (int i = 0; i < CompressionParameters.DEFAULT_CHUNK_LENGTH; i++)
+            for (int i = 0; i < CompressionParams.DEFAULT_CHUNK_LENGTH; i++)
             {
                 writer.write((byte)i);
             }
             writer.resetAndTruncate(mark);
             writer.write(dataPost);
-            writer.close();
+            writer.finish();
+        }
 
-            assert f.exists();
-            RandomAccessReader reader = CompressedRandomAccessReader.open(channel, new CompressionMetadata(filename + ".metadata", f.length()));
+        assert f.exists();
+        try (FileHandle.Builder builder = new FileHandle.Builder(filename).withCompressionMetadata(new CompressionMetadata(filename + ".metadata", f.length()));
+             FileHandle fh = builder.complete();
+             RandomAccessReader reader = fh.createReader())
+        {
             assertEquals(dataPre.length + rawPost.length, reader.length());
             byte[] result = new byte[(int)reader.length()];
 
@@ -120,9 +140,6 @@ public class CompressedSequentialWriterTest
         }
         finally
         {
-            // cleanup
-            channel.close();
-
             if (f.exists())
                 f.delete();
             File metadata = new File(f + ".metadata");
@@ -133,8 +150,133 @@ public class CompressedSequentialWriterTest
 
     private ByteBuffer makeBB(int size)
     {
-        return compressor.useDirectOutputByteBuffers()
-                ? ByteBuffer.allocateDirect(size)
-                : ByteBuffer.allocate(size);
+        return compressionParameters.getSstableCompressor().preferredBufferType().allocate(size);
     }
+
+    private final List<TestableCSW> writers = new ArrayList<>();
+
+    @After
+    public void cleanup()
+    {
+        for (TestableCSW sw : writers)
+            sw.cleanup();
+        writers.clear();
+    }
+
+    @Test
+    @Override
+    public void resetAndTruncateTest()
+    {
+        File tempFile = new File(Files.createTempDir(), "reset.txt");
+        File offsetsFile = FileUtils.createTempFile("compressedsequentialwriter.offset", "test");
+        final int bufferSize = 48;
+        final int writeSize = 64;
+        byte[] toWrite = new byte[writeSize];
+        try (SequentialWriter writer = new CompressedSequentialWriter(tempFile, offsetsFile.getPath(),
+                                                                      null, SequentialWriterOption.DEFAULT,
+                                                                      CompressionParams.lz4(bufferSize),
+                                                                      new MetadataCollector(new ClusteringComparator(UTF8Type.instance))))
+        {
+            // write bytes greather than buffer
+            writer.write(toWrite);
+            long flushedOffset = writer.getLastFlushOffset();
+            assertEquals(writeSize, writer.position());
+            // mark thi position
+            DataPosition pos = writer.mark();
+            // write another
+            writer.write(toWrite);
+            // another buffer should be flushed
+            assertEquals(flushedOffset * 2, writer.getLastFlushOffset());
+            assertEquals(writeSize * 2, writer.position());
+            // reset writer
+            writer.resetAndTruncate(pos);
+            // current position and flushed size should be changed
+            assertEquals(writeSize, writer.position());
+            assertEquals(flushedOffset, writer.getLastFlushOffset());
+            // write another byte less than buffer
+            writer.write(new byte[]{0});
+            assertEquals(writeSize + 1, writer.position());
+            // flush off set should not be increase
+            assertEquals(flushedOffset, writer.getLastFlushOffset());
+            writer.finish();
+        }
+        catch (IOException e)
+        {
+            Assert.fail();
+        }
+    }
+
+    protected TestableTransaction newTest() throws IOException
+    {
+        TestableCSW sw = new TestableCSW();
+        writers.add(sw);
+        return sw;
+    }
+
+    private static class TestableCSW extends TestableSW
+    {
+        final File offsetsFile;
+
+        private TestableCSW() throws IOException
+        {
+            this(tempFile("compressedsequentialwriter"),
+                 tempFile("compressedsequentialwriter.offsets"));
+        }
+
+        private TestableCSW(File file, File offsetsFile) throws IOException
+        {
+            this(file, offsetsFile, new CompressedSequentialWriter(file, offsetsFile.getPath(),
+                                                                   null, SequentialWriterOption.DEFAULT,
+                                                                   CompressionParams.lz4(BUFFER_SIZE),
+                                                                   new MetadataCollector(new ClusteringComparator(UTF8Type.instance))));
+
+        }
+
+        private TestableCSW(File file, File offsetsFile, CompressedSequentialWriter sw) throws IOException
+        {
+            super(file, sw);
+            this.offsetsFile = offsetsFile;
+        }
+
+        protected void assertInProgress() throws Exception
+        {
+            Assert.assertTrue(file.exists());
+            Assert.assertFalse(offsetsFile.exists());
+            byte[] compressed = readFileToByteArray(file);
+            byte[] uncompressed = new byte[partialContents.length];
+            LZ4Compressor.create(Collections.<String, String>emptyMap()).uncompress(compressed, 0, compressed.length - 4, uncompressed, 0);
+            Assert.assertTrue(Arrays.equals(partialContents, uncompressed));
+        }
+
+        protected void assertPrepared() throws Exception
+        {
+            Assert.assertTrue(file.exists());
+            Assert.assertTrue(offsetsFile.exists());
+            DataInputStream offsets = new DataInputStream(new ByteArrayInputStream(readFileToByteArray(offsetsFile)));
+            Assert.assertTrue(offsets.readUTF().endsWith("LZ4Compressor"));
+            Assert.assertEquals(0, offsets.readInt());
+            Assert.assertEquals(BUFFER_SIZE, offsets.readInt());
+            Assert.assertEquals(fullContents.length, offsets.readLong());
+            Assert.assertEquals(2, offsets.readInt());
+            Assert.assertEquals(0, offsets.readLong());
+            int offset = (int) offsets.readLong();
+            byte[] compressed = readFileToByteArray(file);
+            byte[] uncompressed = new byte[fullContents.length];
+            LZ4Compressor.create(Collections.<String, String>emptyMap()).uncompress(compressed, 0, offset - 4, uncompressed, 0);
+            LZ4Compressor.create(Collections.<String, String>emptyMap()).uncompress(compressed, offset, compressed.length - (4 + offset), uncompressed, partialContents.length);
+            Assert.assertTrue(Arrays.equals(fullContents, uncompressed));
+        }
+
+        protected void assertAborted() throws Exception
+        {
+            super.assertAborted();
+        }
+
+        void cleanup()
+        {
+            file.delete();
+            offsetsFile.delete();
+        }
+    }
+
 }

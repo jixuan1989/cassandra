@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.utils;
 
+import org.apache.cassandra.concurrent.NamedThreadFactory;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.io.util.FileUtils;
 import org.slf4j.Logger;
@@ -32,6 +33,7 @@ import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
+import java.util.Locale;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
@@ -48,7 +50,8 @@ public class CoalescingStrategies
     private static final String DEBUG_COALESCING_PATH_PROPERTY = Config.PROPERTY_PREFIX + "coalescing_debug_path";
     private static final String DEBUG_COALESCING_PATH = System.getProperty(DEBUG_COALESCING_PATH_PROPERTY, "/tmp/coleascing_debug");
 
-    static {
+    static
+    {
         if (DEBUG_COALESCING)
         {
             File directory = new File(DEBUG_COALESCING_PATH);
@@ -76,7 +79,8 @@ public class CoalescingStrategies
         }
     };
 
-    public static interface Coalescable {
+    public static interface Coalescable
+    {
         long timestampNanos();
     }
 
@@ -124,22 +128,21 @@ public class CoalescingStrategies
             this.displayName = displayName;
             if (DEBUG_COALESCING)
             {
-                new Thread(displayName + " debug thread") {
-                    @Override
-                    public void run() {
-                        while (true) {
-                            try
-                            {
-                                Thread.sleep(5000);
-                            }
-                            catch (InterruptedException e)
-                            {
-                                throw new AssertionError();
-                            }
-                            shouldLogAverage = true;
+                NamedThreadFactory.createThread(() ->
+                {
+                    while (true)
+                    {
+                        try
+                        {
+                            Thread.sleep(5000);
                         }
+                        catch (InterruptedException e)
+                        {
+                            throw new AssertionError();
+                        }
+                        shouldLogAverage = true;
                     }
-                }.start();
+                }, displayName + " debug thread").start();
             }
             RandomAccessFile rasTemp = null;
             ByteBuffer logBufferTemp = null;
@@ -189,9 +192,12 @@ public class CoalescingStrategies
          * If debugging is enabled log the timestamps of all the items in the provided collection
          * to a file.
          */
-        final protected <C extends Coalescable> void debugTimestamps(Collection<C> coalescables) {
-            if (DEBUG_COALESCING) {
-                for (C coalescable : coalescables) {
+        final protected <C extends Coalescable> void debugTimestamps(Collection<C> coalescables)
+        {
+            if (DEBUG_COALESCING)
+            {
+                for (C coalescable : coalescables)
+                {
                     debugTimestamp(coalescable.timestampNanos());
                 }
             }
@@ -350,7 +356,8 @@ public class CoalescingStrategies
         }
 
         @Override
-        public String toString() {
+        public String toString()
+        {
             return "Time horizon moving average";
         }
     }
@@ -425,7 +432,8 @@ public class CoalescingStrategies
         }
 
         @Override
-        public String toString() {
+        public String toString()
+        {
             return "Moving average";
         }
     }
@@ -457,7 +465,8 @@ public class CoalescingStrategies
         }
 
         @Override
-        public String toString() {
+        public String toString()
+        {
             return "Fixed";
         }
     }
@@ -486,7 +495,8 @@ public class CoalescingStrategies
         }
 
         @Override
-        public String toString() {
+        public String toString()
+        {
             return "Disabled";
         }
     }
@@ -499,7 +509,7 @@ public class CoalescingStrategies
                                                     String displayName)
     {
         String classname = null;
-        String strategyCleaned = strategy.trim().toUpperCase();
+        String strategyCleaned = strategy.trim().toUpperCase(Locale.ENGLISH);
         switch(strategyCleaned)
         {
         case "MOVINGAVERAGE":

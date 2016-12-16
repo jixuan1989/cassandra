@@ -17,11 +17,12 @@
  */
 package org.apache.cassandra.repair.messages;
 
-import java.io.DataInput;
 import java.io.IOException;
 import java.net.InetAddress;
+import java.util.Objects;
 
 import org.apache.cassandra.db.TypeSizes;
+import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.repair.NodePair;
 import org.apache.cassandra.repair.RepairJobDesc;
@@ -53,6 +54,24 @@ public class SyncComplete extends RepairMessage
         this.success = success;
     }
 
+    @Override
+    public boolean equals(Object o)
+    {
+        if (!(o instanceof SyncComplete))
+            return false;
+        SyncComplete other = (SyncComplete)o;
+        return messageType == other.messageType &&
+               desc.equals(other.desc) &&
+               success == other.success &&
+               nodes.equals(other.nodes);
+    }
+
+    @Override
+    public int hashCode()
+    {
+        return Objects.hash(messageType, desc, success, nodes);
+    }
+
     private static class SyncCompleteSerializer implements MessageSerializer<SyncComplete>
     {
         public void serialize(SyncComplete message, DataOutputPlus out, int version) throws IOException
@@ -62,7 +81,7 @@ public class SyncComplete extends RepairMessage
             out.writeBoolean(message.success);
         }
 
-        public SyncComplete deserialize(DataInput in, int version) throws IOException
+        public SyncComplete deserialize(DataInputPlus in, int version) throws IOException
         {
             RepairJobDesc desc = RepairJobDesc.serializer.deserialize(in, version);
             NodePair nodes = NodePair.serializer.deserialize(in, version);
@@ -73,7 +92,7 @@ public class SyncComplete extends RepairMessage
         {
             long size = RepairJobDesc.serializer.serializedSize(message.desc, version);
             size += NodePair.serializer.serializedSize(message.nodes, version);
-            size += TypeSizes.NATIVE.sizeof(message.success);
+            size += TypeSizes.sizeof(message.success);
             return size;
         }
     }

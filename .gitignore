@@ -71,15 +71,8 @@ lib/jsr223/jython/*.jar
 lib/jsr223/jython/cachedir
 lib/jsr223/scala/*.jar
 
-#忽略所有ant出来的文件
-build/*
-.ant-targets-build.xml
-src/gen-java/
-.classpath
-.project
+/.ant-targets-build.xml
 
-#忽略数据文件
-data_cassandra/*
-bin/data_cassandra/*
-log_cassandra/*
-bin/log_cassandra/*
+# Generated files from the documentation
+doc/source/configuration/cassandra_config_file.rst
+doc/source/tools/nodetool

@@ -18,7 +18,7 @@
 
 package org.apache.cassandra.serializers;
 
-import org.apache.cassandra.transport.Server;
+import org.apache.cassandra.transport.ProtocolVersion;
 
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
@@ -60,7 +60,7 @@ public class ListSerializer<T> extends CollectionSerializer<List<T>>
         return value.size();
     }
 
-    public void validateForNativeProtocol(ByteBuffer bytes, int version)
+    public void validateForNativeProtocol(ByteBuffer bytes, ProtocolVersion version)
     {
         try
         {
@@ -78,13 +78,21 @@ public class ListSerializer<T> extends CollectionSerializer<List<T>>
         }
     }
 
-    public List<T> deserializeForNativeProtocol(ByteBuffer bytes, int version)
+    public List<T> deserializeForNativeProtocol(ByteBuffer bytes, ProtocolVersion version)
     {
         try
         {
             ByteBuffer input = bytes.duplicate();
             int n = readCollectionSize(input, version);
-            List<T> l = new ArrayList<T>(n);
+
+            if (n < 0)
+                throw new MarshalException("The data cannot be deserialized as a list");
+
+            // If the received bytes are not corresponding to a list, n might be a huge number.
+            // In such a case we do not want to initialize the list with that size as it can result
+            // in an OOM (see CASSANDRA-12618). On the other hand we do not want to have to resize the list
+            // if we can avoid it, so we put a reasonable limit on the initialCapacity.
+            List<T> l = new ArrayList<T>(Math.min(n, 256));
             for (int i = 0; i < n; i++)
             {
                 // We can have nulls in lists that are used for IN values
@@ -112,20 +120,6 @@ public class ListSerializer<T> extends CollectionSerializer<List<T>>
     }
 
     /**
-     * Deserializes a serialized list and returns a list of unserialized (ByteBuffer) elements.
-     */
-    public List<ByteBuffer> deserializeToByteBufferCollection(ByteBuffer bytes, int version)
-    {
-        ByteBuffer input = bytes.duplicate();
-        int n = readCollectionSize(input, version);
-        List<ByteBuffer> l = new ArrayList<>(n);
-        for (int i = 0; i < n; i++)
-            l.add(readValue(input, version));
-
-        return l;
-    }
-
-    /**
      * Returns the element at the given index in a list.
      * @param serializedList a serialized list
      * @param index the index to get
@@ -136,7 +130,7 @@ public class ListSerializer<T> extends CollectionSerializer<List<T>>
         try
         {
             ByteBuffer input = serializedList.duplicate();
-            int n = readCollectionSize(input, Server.VERSION_3);
+            int n = readCollectionSize(input, ProtocolVersion.V3);
             if (n <= index)
                 return null;
 
@@ -145,7 +139,7 @@ public class ListSerializer<T> extends CollectionSerializer<List<T>>
                 int length = input.getInt();
                 input.position(input.position() + length);
             }
-            return readValue(input, Server.VERSION_3);
+            return readValue(input, ProtocolVersion.V3);
         }
         catch (BufferUnderflowException e)
         {
@@ -157,14 +151,16 @@ public class ListSerializer<T> extends CollectionSerializer<List<T>>
     {
         StringBuilder sb = new StringBuilder();
         boolean isFirst = true;
+        sb.append('[');
         for (T element : value)
         {
             if (isFirst)
                 isFirst = false;
             else
-                sb.append("; ");
+                sb.append(", ");
             sb.append(elements.toString(element));
         }
+        sb.append(']');
         return sb.toString();
     }
 

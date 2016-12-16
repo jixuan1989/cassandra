@@ -18,80 +18,95 @@
 */
 package org.apache.cassandra.db;
 
-import static org.apache.cassandra.Util.column;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
-import org.apache.cassandra.config.KSMetaData;
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.ParameterizedClass;
 import org.apache.cassandra.db.commitlog.CommitLog;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.locator.SimpleStrategy;
+import org.apache.cassandra.io.compress.DeflateCompressor;
+import org.apache.cassandra.io.compress.LZ4Compressor;
+import org.apache.cassandra.io.compress.SnappyCompressor;
+import org.apache.cassandra.schema.KeyspaceParams;
+import org.apache.cassandra.security.EncryptionContext;
+import org.apache.cassandra.security.EncryptionContextGenerator;
+
+import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
-import org.apache.cassandra.utils.ByteBufferUtil;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameters;
+
+import static org.junit.Assert.*;
 
 /**
  * Test for the truncate operation.
  */
+@RunWith(Parameterized.class)
 public class RecoveryManagerTruncateTest
 {
     private static final String KEYSPACE1 = "RecoveryManagerTruncateTest";
     private static final String CF_STANDARD1 = "Standard1";
+
+    public RecoveryManagerTruncateTest(ParameterizedClass commitLogCompression, EncryptionContext encryptionContext)
+    {
+        DatabaseDescriptor.setCommitLogCompression(commitLogCompression);
+        DatabaseDescriptor.setEncryptionContext(encryptionContext);
+    }
+
+    @Parameters()
+    public static Collection<Object[]> generateData()
+    {
+        return Arrays.asList(new Object[][]{
+            {null, EncryptionContextGenerator.createDisabledContext()}, // No compression, no encryption
+            {null, EncryptionContextGenerator.createContext(true)}, // Encryption
+            {new ParameterizedClass(LZ4Compressor.class.getName(), Collections.emptyMap()), EncryptionContextGenerator.createDisabledContext()},
+            {new ParameterizedClass(SnappyCompressor.class.getName(), Collections.emptyMap()), EncryptionContextGenerator.createDisabledContext()},
+            {new ParameterizedClass(DeflateCompressor.class.getName(), Collections.emptyMap()), EncryptionContextGenerator.createDisabledContext()}});
+    }
+
+    @Before
+    public void setUp() throws IOException
+    {
+        CommitLog.instance.resetUnsafe(true);
+    }
 
     @BeforeClass
     public static void defineSchema() throws ConfigurationException
     {
         SchemaLoader.prepareServer();
         SchemaLoader.createKeyspace(KEYSPACE1,
-                                    SimpleStrategy.class,
-                                    KSMetaData.optsWithRF(1),
+                                    KeyspaceParams.simple(1),
                                     SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD1));
     }
 
-	@Test
-	public void testTruncate() throws IOException
-	{
-		Keyspace keyspace = Keyspace.open(KEYSPACE1);
-		ColumnFamilyStore cfs = keyspace.getColumnFamilyStore("Standard1");
+    @Test
+    public void testTruncate() throws IOException
+    {
+        Keyspace keyspace = Keyspace.open(KEYSPACE1);
+        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore("Standard1");
 
-		Mutation rm;
-		ColumnFamily cf;
+        // add a single cell
+        new RowUpdateBuilder(cfs.metadata, 0, "key1")
+            .clustering("cc")
+            .add("val", "val1")
+            .build()
+            .applyUnsafe();
 
-		// add a single cell
-        cf = ArrayBackedSortedColumns.factory.create(KEYSPACE1, "Standard1");
-		cf.addColumn(column("col1", "val1", 1L));
-        rm = new Mutation(KEYSPACE1, ByteBufferUtil.bytes("keymulti"), cf);
-		rm.applyUnsafe();
+        // Make sure data was written
+        assertTrue(Util.getAll(Util.cmd(cfs).build()).size() > 0);
 
-		// Make sure data was written
-		assertNotNull(getFromTable(keyspace, "Standard1", "keymulti", "col1"));
+        // and now truncate it
+        cfs.truncateBlocking();
+        assert 0 != CommitLog.instance.resetUnsafe(false);
 
-		// and now truncate it
-		cfs.truncateBlocking();
-        CommitLog.instance.resetUnsafe(false);
-		CommitLog.instance.recover();
-
-		// and validate truncation.
-		assertNull(getFromTable(keyspace, "Standard1", "keymulti", "col1"));
-	}
-
-	private Cell getFromTable(Keyspace keyspace, String cfName, String keyName, String columnName)
-	{
-		ColumnFamily cf;
-		ColumnFamilyStore cfStore = keyspace.getColumnFamilyStore(cfName);
-		if (cfStore == null)
-		{
-			return null;
-		}
-		cf = cfStore.getColumnFamily(Util.namesQueryFilter(cfStore, Util.dk(keyName), columnName));
-		if (cf == null)
-		{
-			return null;
-		}
-		return cf.getColumn(Util.cellname(columnName));
-	}
+        // and validate truncation.
+        Util.assertEmptyUnfiltered(Util.cmd(cfs).build());
+    }
 }

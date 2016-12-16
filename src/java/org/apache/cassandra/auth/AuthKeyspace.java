@@ -17,19 +17,19 @@
  */
 package org.apache.cassandra.auth;
 
-import java.util.Arrays;
-import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-import com.google.common.collect.ImmutableMap;
-
 import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.config.KSMetaData;
-import org.apache.cassandra.locator.SimpleStrategy;
+import org.apache.cassandra.config.SchemaConstants;
+import org.apache.cassandra.schema.KeyspaceMetadata;
+import org.apache.cassandra.schema.KeyspaceParams;
+import org.apache.cassandra.schema.Tables;
 
-public class AuthKeyspace
+public final class AuthKeyspace
 {
-    public static final String NAME = "system_auth";
+    private AuthKeyspace()
+    {
+    }
 
     public static final String ROLES = "roles";
     public static final String ROLE_MEMBERS = "role_members";
@@ -77,14 +77,13 @@ public class AuthKeyspace
 
     private static CFMetaData compile(String name, String description, String schema)
     {
-        return CFMetaData.compile(String.format(schema, name), NAME)
+        return CFMetaData.compile(String.format(schema, name), SchemaConstants.AUTH_KEYSPACE_NAME)
                          .comment(description)
                          .gcGraceSeconds((int) TimeUnit.DAYS.toSeconds(90));
     }
 
-    public static KSMetaData definition()
+    public static KeyspaceMetadata metadata()
     {
-        List<CFMetaData> tables = Arrays.asList(Roles, RoleMembers, RolePermissions, ResourceRoleIndex);
-        return new KSMetaData(NAME, SimpleStrategy.class, ImmutableMap.of("replication_factor", "1"), true, tables);
+        return KeyspaceMetadata.create(SchemaConstants.AUTH_KEYSPACE_NAME, KeyspaceParams.simple(1), Tables.of(Roles, RoleMembers, RolePermissions, ResourceRoleIndex));
     }
 }

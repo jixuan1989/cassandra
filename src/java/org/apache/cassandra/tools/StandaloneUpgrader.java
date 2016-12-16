@@ -20,17 +20,19 @@ package org.apache.cassandra.tools;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.commons.cli.*;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.compaction.CompactionManager;
+import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.db.compaction.Upgrader;
+import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.io.sstable.*;
+import org.apache.cassandra.io.sstable.format.SSTableFormat;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.OutputHandler;
 
@@ -41,10 +43,13 @@ public class StandaloneUpgrader
     private static final String TOOL_NAME = "sstableupgrade";
     private static final String DEBUG_OPTION  = "debug";
     private static final String HELP_OPTION  = "help";
+    private static final String KEEP_SOURCE = "keep-source";
 
     public static void main(String args[])
     {
         Options options = Options.parseArgs(args);
+        Util.initDatabaseDescriptor();
+
         try
         {
             // load keyspace descriptions.
@@ -59,7 +64,7 @@ public class StandaloneUpgrader
             ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(options.cf);
 
             OutputHandler handler = new OutputHandler.SystemOutput(false, options.debug);
-            Directories.SSTableLister lister = cfs.directories.sstableLister();
+            Directories.SSTableLister lister = cfs.getDirectories().sstableLister(Directories.OnTxnErr.THROW);
             if (options.snapshot != null)
                 lister.onlyBackups(true).snapshots(options.snapshot);
             else
@@ -77,8 +82,11 @@ public class StandaloneUpgrader
                 try
                 {
                     SSTableReader sstable = SSTableReader.openNoValidation(entry.getKey(), components, cfs);
-                    if (sstable.descriptor.version.equals(DatabaseDescriptor.getSSTableFormat().info.getLatestVersion()))
+                    if (sstable.descriptor.version.equals(SSTableFormat.Type.current().info.getLatestVersion()))
+                    {
+                        sstable.selfRef().release();
                         continue;
+                    }
                     readers.add(sstable);
                 }
                 catch (Exception e)
@@ -87,8 +95,6 @@ public class StandaloneUpgrader
                     System.err.println(String.format("Error Loading %s: %s", entry.getKey(), e.getMessage()));
                     if (options.debug)
                         e.printStackTrace(System.err);
-
-                    continue;
                 }
             }
 
@@ -97,10 +103,10 @@ public class StandaloneUpgrader
 
             for (SSTableReader sstable : readers)
             {
-                try
+                try (LifecycleTransaction txn = LifecycleTransaction.offline(OperationType.UPGRADE_SSTABLES, sstable))
                 {
-                    Upgrader upgrader = new Upgrader(cfs, sstable, handler);
-                    upgrader.upgrade();
+                    Upgrader upgrader = new Upgrader(cfs, txn, handler);
+                    upgrader.upgrade(options.keepSource);
                 }
                 catch (Exception e)
                 {
@@ -108,9 +114,15 @@ public class StandaloneUpgrader
                     if (options.debug)
                         e.printStackTrace(System.err);
                 }
+                finally
+                {
+                    // we should have released this through commit of the LifecycleTransaction,
+                    // but in case the upgrade failed (or something else went wrong) make sure we don't retain a reference
+                    sstable.selfRef().ensureReleased();
+                }
             }
             CompactionManager.instance.finishCompactionsAndShutdown(5, TimeUnit.MINUTES);
-            SSTableDeletingTask.waitForDeletions();
+            LifecycleTransaction.waitForDeletions();
             System.exit(0);
         }
         catch (Exception e)
@@ -129,6 +141,7 @@ public class StandaloneUpgrader
         public final String snapshot;
 
         public boolean debug;
+        public boolean keepSource;
 
         private Options(String keyspace, String cf, String snapshot)
         {
@@ -168,6 +181,7 @@ public class StandaloneUpgrader
                 Options opts = new Options(keyspace, cf, snapshot);
 
                 opts.debug = cmd.hasOption(DEBUG_OPTION);
+                opts.keepSource = cmd.hasOption(KEEP_SOURCE);
 
                 return opts;
             }
@@ -190,6 +204,7 @@ public class StandaloneUpgrader
             CmdLineOptions options = new CmdLineOptions();
             options.addOption(null, DEBUG_OPTION,          "display stack traces");
             options.addOption("h",  HELP_OPTION,           "display this help message");
+            options.addOption("k",  KEEP_SOURCE,           "do not delete the source sstables");
             return options;
         }
 

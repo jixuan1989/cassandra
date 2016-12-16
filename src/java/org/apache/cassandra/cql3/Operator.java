@@ -20,6 +20,13 @@ package org.apache.cassandra.cql3;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import org.apache.cassandra.db.marshal.*;
+import org.apache.cassandra.utils.ByteBufferUtil;
 
 public enum Operator
 {
@@ -38,12 +45,6 @@ public enum Operator
         {
             return "<";
         }
-
-        @Override
-        public Operator reverse()
-        {
-            return GT;
-        }
     },
     LTE(3)
     {
@@ -51,12 +52,6 @@ public enum Operator
         public String toString()
         {
             return "<=";
-        }
-
-        @Override
-        public Operator reverse()
-        {
-            return GTE;
         }
     },
     GTE(1)
@@ -66,12 +61,6 @@ public enum Operator
         {
             return ">=";
         }
-
-        @Override
-        public Operator reverse()
-        {
-            return LTE;
-        }
     },
     GT(2)
     {
@@ -79,12 +68,6 @@ public enum Operator
         public String toString()
         {
             return ">";
-        }
-
-        @Override
-        public Operator reverse()
-        {
-            return LT;
         }
     },
     IN(7)
@@ -107,6 +90,54 @@ public enum Operator
         public String toString()
         {
             return "!=";
+        }
+    },
+    IS_NOT(9)
+    {
+        @Override
+        public String toString()
+        {
+            return "IS NOT";
+        }
+    },
+    LIKE_PREFIX(10)
+    {
+        @Override
+        public String toString()
+        {
+            return "LIKE '<term>%'";
+        }
+    },
+    LIKE_SUFFIX(11)
+    {
+        @Override
+        public String toString()
+        {
+            return "LIKE '%<term>'";
+        }
+    },
+    LIKE_CONTAINS(12)
+    {
+        @Override
+        public String toString()
+        {
+            return "LIKE '%<term>%'";
+        }
+    },
+    LIKE_MATCHES(13)
+    {
+        @Override
+        public String toString()
+        {
+            return "LIKE '<term>'";
+        }
+    },
+    LIKE(14)
+    {
+        @Override
+        public String toString()
+        {
+            return "LIKE";
         }
     };
 
@@ -135,6 +166,11 @@ public enum Operator
         output.writeInt(b);
     }
 
+    public int getValue()
+    {
+        return b;
+    }
+
     /**
      * Deserializes a <code>Operator</code> instance from the specified input.
      *
@@ -152,19 +188,70 @@ public enum Operator
           throw new IOException(String.format("Cannot resolve Relation.Type from binary representation: %s", b));
     }
 
+    /**
+     * Whether 2 values satisfy this operator (given the type they should be compared with).
+     *
+     * @throws AssertionError for CONTAINS and CONTAINS_KEY as this doesn't support those operators yet
+     */
+    public boolean isSatisfiedBy(AbstractType<?> type, ByteBuffer leftOperand, ByteBuffer rightOperand)
+    {
+        switch (this)
+        {
+            case EQ:
+                return type.compareForCQL(leftOperand, rightOperand) == 0;
+            case LT:
+                return type.compareForCQL(leftOperand, rightOperand) < 0;
+            case LTE:
+                return type.compareForCQL(leftOperand, rightOperand) <= 0;
+            case GT:
+                return type.compareForCQL(leftOperand, rightOperand) > 0;
+            case GTE:
+                return type.compareForCQL(leftOperand, rightOperand) >= 0;
+            case NEQ:
+                return type.compareForCQL(leftOperand, rightOperand) != 0;
+            case IN:
+                List inValues = ((List) ListType.getInstance(type, false).getSerializer().deserialize(rightOperand));
+                return inValues.contains(type.getSerializer().deserialize(leftOperand));
+            case CONTAINS:
+                if (type instanceof ListType)
+                {
+                    List list = (List) type.getSerializer().deserialize(leftOperand);
+                    return list.contains(((ListType) type).getElementsType().getSerializer().deserialize(rightOperand));
+                }
+                else if (type instanceof SetType)
+                {
+                    Set set = (Set) type.getSerializer().deserialize(leftOperand);
+                    return set.contains(((SetType) type).getElementsType().getSerializer().deserialize(rightOperand));
+                }
+                else  // MapType
+                {
+                    Map map = (Map) type.getSerializer().deserialize(leftOperand);
+                    return map.containsValue(((MapType) type).getValuesType().getSerializer().deserialize(rightOperand));
+                }
+            case CONTAINS_KEY:
+                Map map = (Map) type.getSerializer().deserialize(leftOperand);
+                return map.containsKey(((MapType) type).getKeysType().getSerializer().deserialize(rightOperand));
+            case LIKE_PREFIX:
+                return ByteBufferUtil.startsWith(leftOperand, rightOperand);
+            case LIKE_SUFFIX:
+                return ByteBufferUtil.endsWith(leftOperand, rightOperand);
+            case LIKE_MATCHES:
+            case LIKE_CONTAINS:
+                return ByteBufferUtil.contains(leftOperand, rightOperand);
+            default:
+                // we shouldn't get LIKE, CONTAINS, CONTAINS KEY, or IS NOT here
+                throw new AssertionError();
+        }
+    }
+
+    public int serializedSize()
+    {
+        return 4;
+    }
+
     @Override
     public String toString()
     {
          return this.name();
-    }
-
-    /**
-     * Returns the reverse operator if this one.
-     *
-     * @return the reverse operator of this one.
-     */
-    public Operator reverse()
-    {
-        return this;
     }
 }

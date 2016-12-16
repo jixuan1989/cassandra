@@ -17,39 +17,37 @@
  */
 package org.apache.cassandra.service;
 
-import java.io.DataInputStream;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
 
 import com.google.common.util.concurrent.Futures;
 
+import org.apache.cassandra.db.lifecycle.SSTableSet;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.apache.cassandra.cache.*;
 import org.apache.cassandra.cache.AutoSavingCache.CacheSerializer;
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
-import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.composites.CellName;
+import org.apache.cassandra.db.rows.*;
+import org.apache.cassandra.db.filter.*;
+import org.apache.cassandra.db.partitions.CachedBTreePartition;
+import org.apache.cassandra.db.partitions.CachedPartition;
 import org.apache.cassandra.db.context.CounterContext;
-import org.apache.cassandra.db.filter.QueryFilter;
-import org.apache.cassandra.io.sstable.Descriptor;
+import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
@@ -61,7 +59,7 @@ public class CacheService implements CacheServiceMBean
 
     public static final String MBEAN_NAME = "org.apache.cassandra.db:type=Caches";
 
-    public static enum CacheType
+    public enum CacheType
     {
         KEY_CACHE("KeyCache"),
         ROW_CACHE("RowCache"),
@@ -69,7 +67,7 @@ public class CacheService implements CacheServiceMBean
 
         private final String name;
 
-        private CacheType(String typeName)
+        CacheType(String typeName)
         {
             name = typeName;
         }
@@ -267,13 +265,13 @@ public class CacheService implements CacheServiceMBean
         keyCache.clear();
     }
 
-    public void invalidateKeyCacheForCf(UUID cfId)
+    public void invalidateKeyCacheForCf(Pair<String, String> ksAndCFName)
     {
         Iterator<KeyCacheKey> keyCacheIterator = keyCache.keyIterator();
         while (keyCacheIterator.hasNext())
         {
             KeyCacheKey key = keyCacheIterator.next();
-            if (key.cfId.equals(cfId))
+            if (key.ksAndCFName.equals(ksAndCFName))
                 keyCacheIterator.remove();
         }
     }
@@ -283,24 +281,24 @@ public class CacheService implements CacheServiceMBean
         rowCache.clear();
     }
 
-    public void invalidateRowCacheForCf(UUID cfId)
+    public void invalidateRowCacheForCf(Pair<String, String> ksAndCFName)
     {
         Iterator<RowCacheKey> rowCacheIterator = rowCache.keyIterator();
         while (rowCacheIterator.hasNext())
         {
             RowCacheKey rowCacheKey = rowCacheIterator.next();
-            if (rowCacheKey.cfId.equals(cfId))
+            if (rowCacheKey.ksAndCFName.equals(ksAndCFName))
                 rowCacheIterator.remove();
         }
     }
 
-    public void invalidateCounterCacheForCf(UUID cfId)
+    public void invalidateCounterCacheForCf(Pair<String, String> ksAndCFName)
     {
         Iterator<CounterCacheKey> counterCacheIterator = counterCache.keyIterator();
         while (counterCacheIterator.hasNext())
         {
             CounterCacheKey counterCacheKey = counterCacheIterator.next();
-            if (counterCacheKey.cfId.equals(cfId))
+            if (counterCacheKey.ksAndCFName.equals(ksAndCFName))
                 counterCacheIterator.remove();
         }
     }
@@ -353,33 +351,29 @@ public class CacheService implements CacheServiceMBean
 
     public static class CounterCacheSerializer implements CacheSerializer<CounterCacheKey, ClockAndCount>
     {
-        public void serialize(CounterCacheKey key, DataOutputPlus out) throws IOException
+        public void serialize(CounterCacheKey key, DataOutputPlus out, ColumnFamilyStore cfs) throws IOException
         {
-            ByteBufferUtil.writeWithLength(key.partitionKey, out);
-            ByteBufferUtil.writeWithLength(key.cellName, out);
+            assert(cfs.metadata.isCounter());
+            out.write(cfs.metadata.ksAndCFBytes);
+            key.write(out);
         }
 
-        public Future<Pair<CounterCacheKey, ClockAndCount>> deserialize(DataInputStream in, final ColumnFamilyStore cfs) throws IOException
+        public Future<Pair<CounterCacheKey, ClockAndCount>> deserialize(DataInputPlus in, final ColumnFamilyStore cfs) throws IOException
         {
-            final ByteBuffer partitionKey = ByteBufferUtil.readWithLength(in);
-            final CellName cellName = cfs.metadata.comparator.cellFromByteBuffer(ByteBufferUtil.readWithLength(in));
+            //Keyspace and CF name are deserialized by AutoSaving cache and used to fetch the CFS provided as a
+            //parameter so they aren't deserialized here, even though they are serialized by this serializer
+            final CounterCacheKey cacheKey = CounterCacheKey.read(cfs.metadata.ksAndCFName, in);
+            if (cfs == null || !cfs.metadata.isCounter() || !cfs.isCounterCacheEnabled())
+                return null;
+
             return StageManager.getStage(Stage.READ).submit(new Callable<Pair<CounterCacheKey, ClockAndCount>>()
             {
                 public Pair<CounterCacheKey, ClockAndCount> call() throws Exception
                 {
-                    DecoratedKey key = cfs.partitioner.decorateKey(partitionKey);
-                    QueryFilter filter = QueryFilter.getNamesFilter(key,
-                                                                    cfs.metadata.cfName,
-                                                                    FBUtilities.singleton(cellName, cfs.metadata.comparator),
-                                                                    Long.MIN_VALUE);
-                    ColumnFamily cf = cfs.getTopLevelColumns(filter, Integer.MIN_VALUE);
-                    if (cf == null)
-                        return null;
-                    Cell cell = cf.getColumn(cellName);
-                    if (cell == null || !cell.isLive(Long.MIN_VALUE))
-                        return null;
-                    ClockAndCount clockAndCount = CounterContext.instance().getLocalClockAndCount(cell.value());
-                    return Pair.create(CounterCacheKey.create(cfs.metadata.cfId, partitionKey, cellName), clockAndCount);
+                    ByteBuffer value = cacheKey.readCounterValue(cfs);
+                    return value == null
+                         ? null
+                         : Pair.create(cacheKey, CounterContext.instance().getLocalClockAndCount(value));
                 }
             });
         }
@@ -387,22 +381,35 @@ public class CacheService implements CacheServiceMBean
 
     public static class RowCacheSerializer implements CacheSerializer<RowCacheKey, IRowCacheEntry>
     {
-        public void serialize(RowCacheKey key, DataOutputPlus out) throws IOException
+        public void serialize(RowCacheKey key, DataOutputPlus out, ColumnFamilyStore cfs) throws IOException
         {
+            assert(!cfs.isIndex());//Shouldn't have row cache entries for indexes
+            out.write(cfs.metadata.ksAndCFBytes);
             ByteBufferUtil.writeWithLength(key.key, out);
         }
 
-        public Future<Pair<RowCacheKey, IRowCacheEntry>> deserialize(DataInputStream in, final ColumnFamilyStore cfs) throws IOException
+        public Future<Pair<RowCacheKey, IRowCacheEntry>> deserialize(DataInputPlus in, final ColumnFamilyStore cfs) throws IOException
         {
+            //Keyspace and CF name are deserialized by AutoSaving cache and used to fetch the CFS provided as a
+            //parameter so they aren't deserialized here, even though they are serialized by this serializer
             final ByteBuffer buffer = ByteBufferUtil.readWithLength(in);
+            if (cfs == null  || !cfs.isRowCacheEnabled())
+                return null;
+            final int rowsToCache = cfs.metadata.params.caching.rowsPerPartitionToCache();
+            assert(!cfs.isIndex());//Shouldn't have row cache entries for indexes
+
             return StageManager.getStage(Stage.READ).submit(new Callable<Pair<RowCacheKey, IRowCacheEntry>>()
             {
                 public Pair<RowCacheKey, IRowCacheEntry> call() throws Exception
                 {
-                    DecoratedKey key = cfs.partitioner.decorateKey(buffer);
-                    QueryFilter cacheFilter = new QueryFilter(key, cfs.getColumnFamilyName(), cfs.readFilterForCache(), Integer.MIN_VALUE);
-                    ColumnFamily data = cfs.getTopLevelColumns(cacheFilter, Integer.MIN_VALUE);
-                    return Pair.create(new RowCacheKey(cfs.metadata.cfId, key), (IRowCacheEntry) data);
+                    DecoratedKey key = cfs.decorateKey(buffer);
+                    int nowInSec = FBUtilities.nowInSeconds();
+                    SinglePartitionReadCommand cmd = SinglePartitionReadCommand.fullPartitionRead(cfs.metadata, nowInSec, key);
+                    try (ReadExecutionController controller = cmd.executionController(); UnfilteredRowIterator iter = cmd.queryMemtableAndDisk(cfs, controller))
+                    {
+                        CachedPartition toCache = CachedBTreePartition.create(DataLimits.cqlLimits(rowsToCache).filter(iter, nowInSec), nowInSec);
+                        return Pair.create(new RowCacheKey(cfs.metadata.ksAndCFName, key), (IRowCacheEntry)toCache);
+                    }
                 }
             });
         }
@@ -410,24 +417,25 @@ public class CacheService implements CacheServiceMBean
 
     public static class KeyCacheSerializer implements CacheSerializer<KeyCacheKey, RowIndexEntry>
     {
-        public void serialize(KeyCacheKey key, DataOutputPlus out) throws IOException
+        public void serialize(KeyCacheKey key, DataOutputPlus out, ColumnFamilyStore cfs) throws IOException
         {
-            RowIndexEntry entry = CacheService.instance.keyCache.get(key);
+            RowIndexEntry entry = CacheService.instance.keyCache.getInternal(key);
             if (entry == null)
                 return;
 
-            CFMetaData cfm = Schema.instance.getCFMetaData(key.cfId);
-            if (cfm == null)
-                return; // the table no longer exists.
-
+            out.write(cfs.metadata.ksAndCFBytes);
             ByteBufferUtil.writeWithLength(key.key, out);
             out.writeInt(key.desc.generation);
             out.writeBoolean(true);
-            key.desc.getFormat().getIndexSerializer(cfm).serialize(entry, out);
+
+            SerializationHeader header = new SerializationHeader(false, cfs.metadata, cfs.metadata.partitionColumns(), EncodingStats.NO_STATS);
+            key.desc.getFormat().getIndexSerializer(cfs.metadata, key.desc.version, header).serializeForCache(entry, out);
         }
 
-        public Future<Pair<KeyCacheKey, RowIndexEntry>> deserialize(DataInputStream input, ColumnFamilyStore cfs) throws IOException
+        public Future<Pair<KeyCacheKey, RowIndexEntry>> deserialize(DataInputPlus input, ColumnFamilyStore cfs) throws IOException
         {
+            //Keyspace and CF name are deserialized by AutoSaving cache and used to fetch the CFS provided as a
+            //parameter so they aren't deserialized here, even though they are serialized by this serializer
             int keyLength = input.readInt();
             if (keyLength > FBUtilities.MAX_UNSIGNED_SHORT)
             {
@@ -436,18 +444,25 @@ public class CacheService implements CacheServiceMBean
             }
             ByteBuffer key = ByteBufferUtil.read(input, keyLength);
             int generation = input.readInt();
-            SSTableReader reader = findDesc(generation, cfs.getSSTables());
             input.readBoolean(); // backwards compatibility for "promoted indexes" boolean
-            if (reader == null)
+            SSTableReader reader;
+            if (cfs == null || !cfs.isKeyCacheEnabled() || (reader = findDesc(generation, cfs.getSSTables(SSTableSet.CANONICAL))) == null)
             {
-                RowIndexEntry.Serializer.skipPromotedIndex(input);
+                // The sstable doesn't exist anymore, so we can't be sure of the exact version and assume its the current version. The only case where we'll be
+                // wrong is during upgrade, in which case we fail at deserialization. This is not a huge deal however since 1) this is unlikely enough that
+                // this won't affect many users (if any) and only once, 2) this doesn't prevent the node from starting and 3) CASSANDRA-10219 shows that this
+                // part of the code has been broken for a while without anyone noticing (it is, btw, still broken until CASSANDRA-10219 is fixed).
+                RowIndexEntry.Serializer.skipForCache(input);
                 return null;
             }
-            RowIndexEntry entry = reader.descriptor.getFormat().getIndexSerializer(reader.metadata).deserialize(input, reader.descriptor.version);
-            return Futures.immediateFuture(Pair.create(new KeyCacheKey(cfs.metadata.cfId, reader.descriptor, key), entry));
+            RowIndexEntry.IndexSerializer<?> indexSerializer = reader.descriptor.getFormat().getIndexSerializer(reader.metadata,
+                                                                                                                reader.descriptor.version,
+                                                                                                                reader.header);
+            RowIndexEntry<?> entry = indexSerializer.deserializeForCache(input);
+            return Futures.immediateFuture(Pair.create(new KeyCacheKey(cfs.metadata.ksAndCFName, reader.descriptor, key), entry));
         }
 
-        private SSTableReader findDesc(int generation, Collection<SSTableReader> collection)
+        private SSTableReader findDesc(int generation, Iterable<SSTableReader> collection)
         {
             for (SSTableReader sstable : collection)
             {
