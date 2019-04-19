@@ -286,6 +286,9 @@ public class CassandraServer implements Cassandra.Iface
     public List<ColumnOrSuperColumn> get_slice(ByteBuffer key, ColumnParent column_parent, SlicePredicate predicate, ConsistencyLevel consistency_level)
     throws InvalidRequestException, UnavailableException, TimedOutException
     {
+
+        ReadWriteLogger.logGetSlice(key, column_parent, predicate, consistency_level, state().getRemoteAddress().getHostString());
+
         if (startSessionIfRequested())
         {
             Map<String, String> traceParameters = ImmutableMap.of("key", ByteBufferUtil.bytesToHex(key),
@@ -331,6 +334,7 @@ public class CassandraServer implements Cassandra.Iface
     public Map<ByteBuffer, List<ColumnOrSuperColumn>> multiget_slice(List<ByteBuffer> keys, ColumnParent column_parent, SlicePredicate predicate, ConsistencyLevel consistency_level)
     throws InvalidRequestException, UnavailableException, TimedOutException
     {
+        ReadWriteLogger.logMultiGetSlice(keys, column_parent, predicate, consistency_level, state().getRemoteAddress().getHostString());
         if (startSessionIfRequested())
         {
             List<String> keysList = Lists.newArrayList();
@@ -442,6 +446,7 @@ public class CassandraServer implements Cassandra.Iface
     public ColumnOrSuperColumn get(ByteBuffer key, ColumnPath column_path, ConsistencyLevel consistency_level)
     throws InvalidRequestException, NotFoundException, UnavailableException, TimedOutException
     {
+        ReadWriteLogger.logGet(key, column_path, consistency_level, state().getRemoteAddress().getHostString());
         if (startSessionIfRequested())
         {
             Map<String, String> traceParameters = ImmutableMap.of("key", ByteBufferUtil.bytesToHex(key),
@@ -510,6 +515,7 @@ public class CassandraServer implements Cassandra.Iface
     public int get_count(ByteBuffer key, ColumnParent column_parent, SlicePredicate predicate, ConsistencyLevel consistency_level)
     throws InvalidRequestException, UnavailableException, TimedOutException
     {
+        ReadWriteLogger.logGetCount(key, column_parent, consistency_level, state().getRemoteAddress().getHostString());
         if (startSessionIfRequested())
         {
             Map<String, String> traceParameters = ImmutableMap.of("key", ByteBufferUtil.bytesToHex(key),
@@ -585,6 +591,7 @@ public class CassandraServer implements Cassandra.Iface
     public Map<ByteBuffer, Integer> multiget_count(List<ByteBuffer> keys, ColumnParent column_parent, SlicePredicate predicate, ConsistencyLevel consistency_level)
     throws InvalidRequestException, UnavailableException, TimedOutException
     {
+        ReadWriteLogger.logMultiGetCount(keys, column_parent, consistency_level, state().getRemoteAddress().getHostString());
         if (startSessionIfRequested())
         {
             List<String> keysList = Lists.newArrayList();
@@ -675,6 +682,7 @@ public class CassandraServer implements Cassandra.Iface
     public void insert(ByteBuffer key, ColumnParent column_parent, Column column, ConsistencyLevel consistency_level)
     throws InvalidRequestException, UnavailableException, TimedOutException
     {
+
         if (startSessionIfRequested())
         {
             Map<String, String> traceParameters = ImmutableMap.of("key", ByteBufferUtil.bytesToHex(key),
@@ -1127,6 +1135,7 @@ public class CassandraServer implements Cassandra.Iface
     public List<KeySlice> get_range_slices(ColumnParent column_parent, SlicePredicate predicate, KeyRange range, ConsistencyLevel consistency_level)
     throws InvalidRequestException, UnavailableException, TException, TimedOutException
     {
+        ReadWriteLogger.logGetRangeSlice(column_parent, predicate, range, consistency_level, state().getRemoteAddress().getHostString());
         if (startSessionIfRequested())
         {
             Map<String, String> traceParameters = ImmutableMap.of(
@@ -1894,6 +1903,7 @@ public class CassandraServer implements Cassandra.Iface
         try
         {
             String queryString = uncompress(query, compression);
+            ReadWriteLogger.logThriftCql3Query(queryString, state().getRemoteAddress().getHostString());
             if (startSessionIfRequested())
             {
                 Tracing.instance.begin("execute_cql3_query",
@@ -1935,6 +1945,8 @@ public class CassandraServer implements Cassandra.Iface
         logger.trace("prepare_cql3_query");
 
         String queryString = uncompress(query, compression);
+        ReadWriteLogger.logPrepareThriftCql3Query(queryString, state().getRemoteAddress().getHostString());
+
         ThriftClientState cState = state();
         ReadWriteLogger.logStatement(queryString, cState.getRemoteAddress().getHostString());
         try
