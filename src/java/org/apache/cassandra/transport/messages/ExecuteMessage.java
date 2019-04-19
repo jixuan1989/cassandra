@@ -22,6 +22,8 @@ import java.util.List;
 import java.util.UUID;
 
 import com.google.common.collect.ImmutableMap;
+
+import cn.datarray.tool.ReadWriteLogger;
 import io.netty.buffer.ByteBuf;
 
 import org.apache.cassandra.cql3.CQLStatement;
@@ -106,7 +108,7 @@ public class ExecuteMessage extends Message.Request
             ParsedStatement.Prepared prepared = handler.getPrepared(statementId);
             if (prepared == null)
                 throw new PreparedQueryNotFoundException(statementId);
-
+            ReadWriteLogger.logRunPrepared(statementId.hashCode(), state.getClientAddress().getHostAddress());
             options.prepare(prepared.boundNames);
             CQLStatement statement = prepared.statement;
 

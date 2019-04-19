@@ -311,4 +311,13 @@ public class UpdateStatement extends ModificationStatement
             return stmt;
         }
     }
+
+//    public String print() {
+//        StringBuilder builder = new StringBuilder(this.processedKeys.size()*10);
+//
+//        for (ColumnIdentifier column : this.processedKeys.keySet()) {
+//             builder.append(column.toString()+", ");
+//         }
+//        return builder.toString();
+//    }
 }

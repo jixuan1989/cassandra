@@ -34,6 +34,7 @@ import com.google.common.primitives.Longs;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import cn.datarray.tool.ReadWriteLogger;
 import org.apache.cassandra.auth.Permission;
 import org.apache.cassandra.config.*;
 import org.apache.cassandra.cql3.QueryOptions;
@@ -1935,7 +1936,7 @@ public class CassandraServer implements Cassandra.Iface
 
         String queryString = uncompress(query, compression);
         ThriftClientState cState = state();
-
+        ReadWriteLogger.logStatement(queryString, cState.getRemoteAddress().getHostString());
         try
         {
             cState.validateLogin();
@@ -1970,6 +1971,7 @@ public class CassandraServer implements Cassandra.Iface
         {
             ThriftClientState cState = state();
             ParsedStatement.Prepared prepared = ClientState.getCQLQueryHandler().getPreparedForThrift(itemId);
+            ReadWriteLogger.logStatement(prepared.statement.toString(), cState.getRemoteAddress().getHostString());
 
             if (prepared == null)
                 throw new InvalidRequestException(String.format("Prepared query with ID %d not found" +
@@ -1977,7 +1979,7 @@ public class CassandraServer implements Cassandra.Iface
                                                                 " or you have prepared too many queries and it has been evicted from the internal cache)",
                                                                 itemId));
             logger.trace("Retrieved prepared statement #{} with {} bind markers", itemId, prepared.statement.getBoundTerms());
-
+            ReadWriteLogger.logRunPrepared(itemId, cState.getRemoteAddress().getHostString());
             return ClientState.getCQLQueryHandler().processPrepared(prepared.statement,
                                                                     cState.getQueryState(),
                                                                     QueryOptions.fromProtocolV2(ThriftConversion.fromThrift(cLevel), bindVariables),

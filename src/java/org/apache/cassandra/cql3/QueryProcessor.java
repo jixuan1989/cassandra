@@ -32,6 +32,7 @@ import com.google.common.primitives.Ints;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import cn.datarray.tool.ReadWriteLogger;
 import com.googlecode.concurrentlinkedhashmap.ConcurrentLinkedHashMap;
 import com.googlecode.concurrentlinkedhashmap.EntryWeigher;
 import com.googlecode.concurrentlinkedhashmap.EvictionListener;
@@ -245,6 +246,7 @@ public class QueryProcessor implements QueryHandler
     public ResultMessage process(String queryString, QueryState queryState, QueryOptions options)
     throws RequestExecutionException, RequestValidationException
     {
+        ReadWriteLogger.logStatement(queryString, queryState.getClientAddress().getHostAddress());
         ParsedStatement.Prepared p = getStatement(queryString, queryState.getClientState());
         options.prepare(p.boundNames);
         CQLStatement prepared = p.statement;
@@ -367,6 +369,7 @@ public class QueryProcessor implements QueryHandler
 
     public static ResultMessage.Prepared prepare(String queryString, ClientState clientState, boolean forThrift)
     {
+
         ResultMessage.Prepared existing = getStoredPreparedStatement(queryString, clientState.getRawKeyspace(), forThrift);
         if (existing != null)
             return existing;
@@ -377,7 +380,7 @@ public class QueryProcessor implements QueryHandler
             throw new InvalidRequestException(String.format("Too many markers(?). %d markers exceed the allowed maximum of %d", boundTerms, FBUtilities.MAX_UNSIGNED_SHORT));
         assert boundTerms == prepared.boundNames.size();
 
-        return storePreparedStatement(queryString, clientState.getRawKeyspace(), prepared, forThrift);
+        return storePreparedStatement(queryString, clientState.getRawKeyspace(), prepared, forThrift, clientState);
     }
 
     private static MD5Digest computeId(String queryString, String keyspace)
@@ -409,7 +412,7 @@ public class QueryProcessor implements QueryHandler
         }
     }
 
-    private static ResultMessage.Prepared storePreparedStatement(String queryString, String keyspace, ParsedStatement.Prepared prepared, boolean forThrift)
+    private static ResultMessage.Prepared storePreparedStatement(String queryString, String keyspace, ParsedStatement.Prepared prepared, boolean forThrift, ClientState clientState)
     throws InvalidRequestException
     {
         // Concatenate the current keyspace so we don't mix prepared statements between keyspace (#5352).
@@ -424,12 +427,14 @@ public class QueryProcessor implements QueryHandler
         {
             Integer statementId = computeThriftId(queryString, keyspace);
             thriftPreparedStatements.put(statementId, prepared);
+            ReadWriteLogger.logPrepared(statementId, queryString, clientState.getRemoteAddress().getHostString());
             return ResultMessage.Prepared.forThrift(statementId, prepared.boundNames);
         }
         else
         {
             MD5Digest statementId = computeId(queryString, keyspace);
             preparedStatements.put(statementId, prepared);
+            ReadWriteLogger.logPrepared(statementId.hashCode(), queryString, clientState.getRemoteAddress().getHostString());
             return new ResultMessage.Prepared(statementId, prepared);
         }
     }
@@ -472,6 +477,7 @@ public class QueryProcessor implements QueryHandler
                                       Map<String, ByteBuffer> customPayload)
                                               throws RequestExecutionException, RequestValidationException
     {
+        ReadWriteLogger.logBatchStatement(statement.getStatements().size(), state.getClientAddress().getHostAddress());
         return processBatch(statement, state, options);
     }
 
