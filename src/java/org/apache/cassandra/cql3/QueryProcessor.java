@@ -246,7 +246,9 @@ public class QueryProcessor implements QueryHandler
     public ResultMessage process(String queryString, QueryState queryState, QueryOptions options)
     throws RequestExecutionException, RequestValidationException
     {
-        ReadWriteLogger.logStatement(queryString, queryState.getClientAddress().getHostAddress());
+        if (queryState.getClientAddress() != null) {
+          ReadWriteLogger.logStatement(queryString, queryState.getClientAddress().getHostAddress());
+        }
         ParsedStatement.Prepared p = getStatement(queryString, queryState.getClientState());
         options.prepare(p.boundNames);
         CQLStatement prepared = p.statement;
@@ -477,7 +479,10 @@ public class QueryProcessor implements QueryHandler
                                       Map<String, ByteBuffer> customPayload)
                                               throws RequestExecutionException, RequestValidationException
     {
-        ReadWriteLogger.logBatchStatement(statement.getStatements().size(), state.getClientAddress().getHostAddress());
+        if (state.getClientAddress() != null) {
+          ReadWriteLogger.logBatchStatement(statement.getStatements().size(),
+              state.getClientAddress().getHostAddress());
+        }
         return processBatch(statement, state, options);
     }
 

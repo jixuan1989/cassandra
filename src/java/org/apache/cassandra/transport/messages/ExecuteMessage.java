@@ -108,7 +108,10 @@ public class ExecuteMessage extends Message.Request
             ParsedStatement.Prepared prepared = handler.getPrepared(statementId);
             if (prepared == null)
                 throw new PreparedQueryNotFoundException(statementId);
-            ReadWriteLogger.logRunPrepared(statementId.hashCode(), state.getClientAddress().getHostAddress());
+            if (state.getClientAddress() != null) {
+                ReadWriteLogger.logRunPrepared(statementId.hashCode(),
+                    state.getClientAddress().getHostAddress());
+            }
             options.prepare(prepared.boundNames);
             CQLStatement statement = prepared.statement;
 
