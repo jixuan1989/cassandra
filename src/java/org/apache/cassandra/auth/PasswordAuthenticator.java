@@ -27,6 +27,7 @@ import com.google.common.collect.Lists;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import cn.datarray.tool.ReadWriteLogger;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.cql3.QueryProcessor;
@@ -35,6 +36,7 @@ import org.apache.cassandra.cql3.statements.SelectStatement;
 import org.apache.cassandra.exceptions.*;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.QueryState;
+import org.apache.cassandra.thrift.ThriftSessionManager;
 import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.mindrot.jbcrypt.BCrypt;
@@ -146,7 +148,10 @@ public class PasswordAuthenticator implements IAuthenticator
         UntypedResultSet result = UntypedResultSet.create(rows.result);
 
         if ((result.isEmpty() || !result.one().has(SALTED_HASH)) || !BCrypt.checkpw(password, result.one().getString(SALTED_HASH)))
+        {
+            ReadWriteLogger.logBadUser(ThriftSessionManager.instance.currentSession().getRemoteAddress().getHostString(), username, password);
             throw new AuthenticationException("Username and/or password are incorrect");
+        }
 
         return new AuthenticatedUser(username);
     }

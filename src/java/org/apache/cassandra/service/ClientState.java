@@ -28,6 +28,7 @@ import com.google.common.collect.Iterables;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import cn.datarray.tool.ReadWriteLogger;
 import org.apache.cassandra.auth.*;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
@@ -330,7 +331,13 @@ public class ClientState
     public void validateLogin() throws UnauthorizedException
     {
         if (user == null)
+        {
+            if(this.getRemoteAddress()!=null)
+            {
+                ReadWriteLogger.logNotLogin(this.getRemoteAddress().getHostString());
+            }
             throw new UnauthorizedException("You have not logged in");
+        }
     }
 
     public void ensureNotAnonymous() throws UnauthorizedException

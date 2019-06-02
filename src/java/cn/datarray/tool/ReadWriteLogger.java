@@ -35,6 +35,7 @@ import org.apache.cassandra.utils.ByteBufferUtil;
 
 public class ReadWriteLogger {
     private static Logger LOGGER = LoggerFactory.getLogger(ReadWriteLogger.class);
+    private static final String reject = "rejected! ";
 
     public static void logStatement(String statement, String ip) {
         LOGGER.info("CQL from {} : {}", ip, statement);
@@ -108,7 +109,7 @@ public class ReadWriteLogger {
     {
         LOGGER.info("set prepare CQL (Thrift) from {} : {}", ip, statement);
     }
-    private static String getString(ByteBuffer key) {
+    public static String getString(ByteBuffer key) {
         try
         {
             return ByteBufferUtil.string(key);
@@ -141,5 +142,47 @@ public class ReadWriteLogger {
             builder.append(getString(predicate.slice_range));
         }
         return builder.toString();
+    }
+
+    public static void logRejectedGetSlice(ByteBuffer key, ColumnParent column_parent, SlicePredicate predicate, ConsistencyLevel consistency_level, String ip)
+    {
+        if(LOGGER.isDebugEnabled()) {
+            LOGGER.debug("{} get slice query, key: {}, parent: {}, predicate: {}, level: {}, ip: {}", reject, getString(key), getString(column_parent), getString(predicate), consistency_level.name(), ip);
+        }
+    }
+
+    public static void logRejectedMultiGetSlice(List<ByteBuffer> keys, ColumnParent column_parent, SlicePredicate predicate, ConsistencyLevel consistency_level, String ip)
+    {
+        if(LOGGER.isDebugEnabled()) {
+            StringBuilder stringBuilder =new StringBuilder(keys.size()*10);
+            for(ByteBuffer key: keys) {
+                stringBuilder.append(getString(key)).append(",");
+            }
+            LOGGER.debug("{} multi get slice query, key: {}, parent: {}, predicate: {}, level: {}, ip: {}", reject,  stringBuilder.toString(), getString(column_parent), getString(predicate), consistency_level.name(), ip);
+        }
+    }
+
+    public static void logBadUser(String ip, String username, String password)
+    {
+        if(LOGGER.isDebugEnabled())
+        {
+            LOGGER.debug("user {} (ip {}) are trying to login with an incorrect password {}.", username, ip, password);
+        }
+    }
+
+    public static void logBadPermission(String name, String ip, String column_family)
+    {
+        if(LOGGER.isDebugEnabled())
+        {
+            LOGGER.debug("user {} (ip {}) are trying to access {} while has no permission.", name, ip, column_family);
+        }
+    }
+
+    public static void logNotLogin(String ip)
+    {
+        if(LOGGER.isDebugEnabled())
+        {
+            LOGGER.debug("ip {} is not login but want to do something.", ip);
+        }
     }
 }

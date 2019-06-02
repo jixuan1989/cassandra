@@ -28,6 +28,7 @@ import com.google.common.collect.Iterators;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import cn.datarray.tool.CmaAuth;
 import org.apache.cassandra.auth.Permission;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
@@ -113,7 +114,20 @@ public class SelectStatement implements CQLStatement
         this.isReversed = isReversed;
         this.orderingComparator = orderingComparator;
         this.parameters = parameters;
-        this.limit = limit;
+        if (cfm.ksName.equals(CmaAuth.AUTH_KS) && CmaAuth.needAuth(cfm.cfName)) {
+            if (restrictions.isKeyRange()) {
+                this.limit = new Constants.Value(Int32Type.instance.fromString("1"));
+            }
+            else if (limit instanceof Constants.Value && ByteBufferUtil.toInt(((Constants.Value)limit).get(1))>50) {
+                this.limit = new Constants.Value(Int32Type.instance.fromString("50"));
+            } else {
+                this.limit = limit;
+            }
+        } else
+        {
+            this.limit = limit;
+        }
+
     }
 
     public Iterable<Function> getFunctions()

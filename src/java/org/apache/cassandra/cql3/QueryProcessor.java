@@ -32,6 +32,7 @@ import com.google.common.primitives.Ints;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import cn.datarray.tool.CmaAuth;
 import cn.datarray.tool.ReadWriteLogger;
 import com.googlecode.concurrentlinkedhashmap.ConcurrentLinkedHashMap;
 import com.googlecode.concurrentlinkedhashmap.EntryWeigher;
@@ -250,6 +251,7 @@ public class QueryProcessor implements QueryHandler
           ReadWriteLogger.logStatement(queryString, queryState.getClientAddress().getHostAddress());
         }
         ParsedStatement.Prepared p = getStatement(queryString, queryState.getClientState());
+
         options.prepare(p.boundNames);
         CQLStatement prepared = p.statement;
         if (prepared.getBoundTerms() != options.getValues().size())

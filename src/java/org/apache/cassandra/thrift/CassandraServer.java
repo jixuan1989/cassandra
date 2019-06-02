@@ -34,6 +34,7 @@ import com.google.common.primitives.Longs;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import cn.datarray.tool.CmaAuth;
 import cn.datarray.tool.ReadWriteLogger;
 import org.apache.cassandra.auth.Permission;
 import org.apache.cassandra.config.*;
@@ -286,8 +287,16 @@ public class CassandraServer implements Cassandra.Iface
     public List<ColumnOrSuperColumn> get_slice(ByteBuffer key, ColumnParent column_parent, SlicePredicate predicate, ConsistencyLevel consistency_level)
     throws InvalidRequestException, UnavailableException, TimedOutException
     {
+        if (state() != null && state().getKeyspace().equals(CmaAuth.AUTH_KS)) {
+            if(CmaAuth.needAuth(column_parent.getColumn_family())){
+                if (CmaAuth.tooLarge(predicate)) {
+                    ReadWriteLogger.logRejectedGetSlice(key, column_parent, predicate, consistency_level, state().getRemoteAddress().getHostString());
+                    return Collections.emptyList();
+                }
+            }
+            ReadWriteLogger.logGetSlice(key, column_parent, predicate, consistency_level, state().getRemoteAddress().getHostString());
+        }
 
-        ReadWriteLogger.logGetSlice(key, column_parent, predicate, consistency_level, state().getRemoteAddress().getHostString());
 
         if (startSessionIfRequested())
         {
@@ -334,7 +343,17 @@ public class CassandraServer implements Cassandra.Iface
     public Map<ByteBuffer, List<ColumnOrSuperColumn>> multiget_slice(List<ByteBuffer> keys, ColumnParent column_parent, SlicePredicate predicate, ConsistencyLevel consistency_level)
     throws InvalidRequestException, UnavailableException, TimedOutException
     {
-        ReadWriteLogger.logMultiGetSlice(keys, column_parent, predicate, consistency_level, state().getRemoteAddress().getHostString());
+        if (state() != null && state().getKeyspace().equals(CmaAuth.AUTH_KS)) {
+            if(CmaAuth.needAuth(column_parent.getColumn_family())){
+                if (CmaAuth.tooLarge(predicate) || keys.size()>50) {
+                    ReadWriteLogger.logRejectedMultiGetSlice(keys, column_parent, predicate, consistency_level, state().getRemoteAddress().getHostString());
+                    return Collections.emptyMap();
+                }
+            }
+            ReadWriteLogger.logMultiGetSlice(keys, column_parent, predicate, consistency_level, state().getRemoteAddress().getHostString());
+        }
+
+
         if (startSessionIfRequested())
         {
             List<String> keysList = Lists.newArrayList();
@@ -644,8 +663,16 @@ public class CassandraServer implements Cassandra.Iface
     {
         ThriftClientState cState = state();
         String keyspace = cState.getKeyspace();
-        cState.hasColumnFamilyAccess(keyspace, column_parent.column_family, Permission.MODIFY);
-
+        try
+        {
+            cState.hasColumnFamilyAccess(keyspace, column_parent.column_family, Permission.MODIFY);
+        } catch (RequestValidationException e) {
+            if (this.state().getUser()!=null &&  this.state().getUser().getName()!=null)
+            {
+                ReadWriteLogger.logBadPermission(this.state().getUser().getName(), state().getRemoteAddress().getHostString(), column_parent.getColumn_family());
+            }
+            throw e;
+        }
         CFMetaData metadata = ThriftValidation.validateColumnFamily(keyspace, column_parent.column_family, false);
         ThriftValidation.validateKey(metadata, key);
         ThriftValidation.validateColumnParent(metadata, column_parent);
@@ -1136,6 +1163,7 @@ public class CassandraServer implements Cassandra.Iface
     throws InvalidRequestException, UnavailableException, TException, TimedOutException
     {
         ReadWriteLogger.logGetRangeSlice(column_parent, predicate, range, consistency_level, state().getRemoteAddress().getHostString());
+
         if (startSessionIfRequested())
         {
             Map<String, String> traceParameters = ImmutableMap.of(
