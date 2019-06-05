@@ -29,6 +29,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import cn.datarray.tool.CmaAuth;
+import cn.datarray.tool.ReadWriteLogger;
 import org.apache.cassandra.auth.Permission;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
@@ -54,6 +55,8 @@ import org.apache.cassandra.service.StorageProxy;
 import org.apache.cassandra.service.pager.Pageable;
 import org.apache.cassandra.service.pager.QueryPager;
 import org.apache.cassandra.service.pager.QueryPagers;
+import org.apache.cassandra.thrift.ThriftClientState;
+import org.apache.cassandra.thrift.ThriftSessionManager;
 import org.apache.cassandra.thrift.ThriftValidation;
 import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.utils.ByteBufferUtil;
@@ -119,6 +122,13 @@ public class SelectStatement implements CQLStatement
                 this.limit = new Constants.Value(Int32Type.instance.fromString("1"));
             }
             else if (limit instanceof Constants.Value && ByteBufferUtil.toInt(((Constants.Value)limit).get(1))>50) {
+                ThriftClientState state = ThriftSessionManager.instance.currentSession();
+
+                if (state.getRemoteAddress() !=null && state.getUser() != null) {
+                    ReadWriteLogger.logLargeLimit(state.getUser().getName(),  state.getRemoteAddress().getHostString(), ByteBufferUtil.toInt(((Constants.Value)limit).get(1)));
+                } else {
+                    ReadWriteLogger.logLargeLimit("unknown",  state.getRemoteAddress().getHostString(), ByteBufferUtil.toInt(((Constants.Value)limit).get(1)));
+                }
                 this.limit = new Constants.Value(Int32Type.instance.fromString("50"));
             } else {
                 this.limit = limit;

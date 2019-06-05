@@ -185,4 +185,11 @@ public class ReadWriteLogger {
             LOGGER.debug("ip {} is not login but want to do something.", ip);
         }
     }
+
+    public static void logLargeLimit(String name, String ip, int limit) {
+        if(LOGGER.isDebugEnabled())
+        {
+            LOGGER.debug("user {} (ip {}) are trying to query data using limit {}.", name, ip, limit);
+        }
+    }
 }

@@ -18,14 +18,13 @@
 
 package cn.datarray.tool;
 
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
-
 import org.apache.cassandra.thrift.SlicePredicate;
+import org.apache.cassandra.thrift.ThriftClientState;
+import org.apache.cassandra.thrift.ThriftSessionManager;
 
 public class CmaAuth {
     public static final String AUTH_KS = "micapsdataserver";
-    public static final String[] skip_CFs = {"treeview", "latestdatatime", "level", "\"AMDAR\"", "\"WIND_PROFILER\""};
+    public static final String[] skip_CFs = {"treeview", "latestdatatime", "level", "\"AMDAR\"", "\"WIND_PROFILER\"", "WIND_PROFILER", "AMDAR"};
 
 
     public static boolean needAuth(String cf) {
@@ -35,19 +34,26 @@ public class CmaAuth {
         return true;
     }
     public static boolean tooLarge(SlicePredicate predicate) {
-        if (predicate.slice_range.count <= 50) {
-            return false;
-        }
-       /* String start = ReadWriteLogger.getString(predicate.slice_range.start);
-        String end = ReadWriteLogger.getString(predicate.slice_range.finish);
-        if (start.length()>8 && end.length() >8) {
-            start = start.substring(0,8);
-            end = end.substring(0,8);
-            return !lessThanOneDay(start, end);
-        }
         return false;
-        */
-       return true;
+//        if (predicate.slice_range.count <= 50) {
+//            return false;
+//        }
+//       /* String start = ReadWriteLogger.getString(predicate.slice_range.start);
+//        String end = ReadWriteLogger.getString(predicate.slice_range.finish);
+//        if (start.length()>8 && end.length() >8) {
+//            start = start.substring(0,8);
+//            end = end.substring(0,8);
+//            return !lessThanOneDay(start, end);
+//        }
+//        return false;
+//        */
+//        ThriftClientState state = ThriftSessionManager.instance.currentSession();
+//        if (state.getRemoteAddress() !=null && state.getUser() != null) {
+//            ReadWriteLogger.logLargeLimit(state.getUser().getName(), state.getRemoteAddress().getHostString(), predicate.slice_range.count);
+//        } else {
+//            ReadWriteLogger.logLargeLimit("unknown",  state.getRemoteAddress().getHostString(), predicate.slice_range.count);
+//        }
+//       return true;
     }
 
     private static boolean lessThanOneDay(int start, int end) {
